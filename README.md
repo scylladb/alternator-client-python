@@ -70,6 +70,58 @@ This feature requires server support, you can check if server supports this feat
         raise RuntimeError("failed to check")
 ```
 
+## Connection Pooling and Reuse
+
+### How it works by default
+
+The `alternator_lb` library implements connection pooling to ensure HTTP/HTTPS connections are reused efficiently, minimizing the overhead of establishing new connections to the server. This is critical for performance and reduces the load on the Alternator cluster.
+
+**Connection reuse is enabled by default** with the following configuration:
+- **Default pool size**: 10 connections per cluster
+- **Connection timeout**: 3600 seconds (1 hour)
+- **TCP keepalive**: Enabled when connection pooling is active
+
+The library uses `urllib3` connection pools under the hood, which automatically manages connection reuse. When you make multiple requests to the same node, the underlying connection is reused rather than creating a new one each time.
+
+### How many connections can be reused?
+
+By default, the library maintains a pool of **10 connections per cluster**. This means:
+- Up to 10 concurrent connections can be kept alive and reused
+- Idle connections are kept alive for the duration of the connection timeout
+
+### Configuring connection pool size
+
+You can increase (or decrease) the maximum number of pooled connections by setting the `max_pool_connections` parameter:
+
+```python
+from alternator_lb import AlternatorLB, Config
+
+lb = AlternatorLB(Config(
+    nodes=['x.x.x.x'],
+    port=9999,
+    max_pool_connections=50
+))
+dynamodb = lb.new_boto3_dynamodb_client()
+```
+
+**When to increase pool size:**
+- High-concurrency applications making many parallel requests
+- Applications with multiple threads/workers accessing DynamoDB
+- Workloads with sustained high request rates
+
+### Connection timeout
+
+You can also configure how long idle connections remain open:
+
+```python
+lb = AlternatorLB(Config(
+    nodes=['x.x.x.x'],
+    port=9999,
+    max_pool_connections=50,
+    connect_timeout=7200  # 2 hours in seconds
+))
+```
+
 ## Examples
 
 Find more examples in `alternator_lb_tests.py`
