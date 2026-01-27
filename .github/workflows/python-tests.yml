@@ -2,11 +2,11 @@ name: 'Python - Tests'
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main ]
     paths:
       - python/**
   pull_request:
-    branches: [ master ]
+    branches: [ main ]
     paths:
       - python/**
   workflow_dispatch:
