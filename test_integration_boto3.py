@@ -16,7 +16,7 @@ class TestAlternatorBotocore:
                           port=self.http_port, datacenter="fake_dc"))
         lb.check_if_rack_datacenter_feature_is_supported()
 
-    def test_check_if_rack_and_datacenter_set_correctly_wrong_dc(self):
+    def test_check_if_rack_and_datacenter_set_correctly_fake_dc(self):
         lb = AlternatorLB(Config(nodes=self.initial_nodes,
                           port=self.http_port, datacenter="fake_dc"))
         try:
