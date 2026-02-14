@@ -1,0 +1,53 @@
+services:
+  scylla-node1:
+    image: scylladb/scylla:latest
+    container_name: scylla-node1
+    command: --seeds=scylla-node1 --smp=1 --memory=750M --overprovisioned=1 --alternator-port=8000 --alternator-write-isolation=always
+    ports:
+      - "9042:9042"     # CQL
+      - "8000:8000"     # Alternator (node 1)
+    networks:
+      - scylla-net
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe cluster"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  scylla-node2:
+    image: scylladb/scylla:latest
+    container_name: scylla-node2
+    command: --seeds=scylla-node1 --smp=1 --memory=750M --overprovisioned=1 --alternator-port=8000 --alternator-write-isolation=always
+    ports:
+      - "9999:8000"     # Alternator (node 2)
+    networks:
+      - scylla-net
+    depends_on:
+      scylla-node1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe cluster"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  scylla-node3:
+    image: scylladb/scylla:latest
+    container_name: scylla-node3
+    command: --seeds=scylla-node1 --smp=1 --memory=750M --overprovisioned=1 --alternator-port=8000 --alternator-write-isolation=always
+    ports:
+      - "10000:8000"    # Alternator (node 3)
+    networks:
+      - scylla-net
+    depends_on:
+      scylla-node1:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "cqlsh", "-e", "describe cluster"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  scylla-net:
+    driver: bridge
