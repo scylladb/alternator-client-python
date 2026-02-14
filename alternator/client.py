@@ -8,6 +8,7 @@ import logging
 import threading
 import weakref
 from collections.abc import Callable
+from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
 import boto3
@@ -16,8 +17,7 @@ from botocore.config import Config as BotoConfig
 from alternator._constants import MANAGER_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
 from alternator.config import KeyRouteAffinityMode
-from alternator.core.execution_plan import create_execution_plan_factory
-from alternator.core.handlers import register_alternator_handlers
+from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     PartitionKeyCache,
@@ -61,7 +61,9 @@ def _cleanup_manager(manager_id: int) -> None:
         pass
 
 
-def _register_manager(manager: SyncLiveNodesManager, client: Any) -> None:
+def _register_manager(
+    manager: SyncLiveNodesManager, client: DynamoDBClient | DynamoDBServiceResource
+) -> None:
     """Register a manager for cleanup tracking and set up GC finalizer."""
     manager_id = id(manager)
     with _registry_lock:
@@ -104,7 +106,7 @@ def _create_and_start_manager(config: AlternatorConfig) -> SyncLiveNodesManager:
 
     # Create HTTP fetcher for /localnodes
     http_fetcher = create_sync_http_fetcher(
-        ssl_context, timeout_seconds=config.discovery_timeout_seconds
+        ssl_context, timeout_seconds=config.timeouts.discovery_seconds
     )
 
     # Create and start live nodes manager
@@ -123,35 +125,29 @@ def _create_and_start_manager(config: AlternatorConfig) -> SyncLiveNodesManager:
     return manager
 
 
-def _get_merged_boto_config(
-    config: AlternatorConfig,
-    boto_config: BotoConfig | None,
-) -> BotoConfig:
-    """
-    Merge user-provided boto config with Alternator defaults.
+def _create_boto_config(config: AlternatorConfig, *, auth_enabled: bool) -> BotoConfig:
+    """Create BotoConfig from AlternatorConfig settings.
 
-    Args:
-        config: Alternator configuration
-        boto_config: Optional user-provided BotoConfig
-
-    Returns:
-        Merged BotoConfig with pool connection settings
+    When no credentials are provided (auth_enabled=False), uses UNSIGNED
+    signature to skip request signing entirely.
     """
-    if boto_config is None:
-        return BotoConfig(
-            retries={"max_attempts": 3, "mode": "standard"},
-            max_pool_connections=config.max_pool_connections,
-        )
-    if "max_pool_connections" not in boto_config._user_provided_options:
-        return boto_config.merge(
-            BotoConfig(max_pool_connections=config.max_pool_connections)
-        )
-    return boto_config
+    from botocore import UNSIGNED
+
+    kwargs: dict[str, Any] = {
+        "retries": {
+            "max_attempts": config.retries.max_attempts,
+            "mode": config.retries.mode.value,
+        },
+        "max_pool_connections": config.max_pool_connections,
+    }
+    if not auth_enabled:
+        kwargs["signature_version"] = UNSIGNED
+    return BotoConfig(**kwargs)
 
 
 def _create_affinity_hash_computer(
     config: AlternatorConfig,
-    client: Any,
+    client: DynamoDBClient,
 ) -> Callable[[str, dict[str, Any]], int | None] | None:
     """
     Create a function that computes the partition key hash for affinity routing.
@@ -224,7 +220,7 @@ def _create_affinity_hash_computer(
 
 def create_client(
     config: AlternatorConfig,
-    **boto_kwargs: Any,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBClient:
     """
     Create a load-balanced DynamoDB client for Alternator.
@@ -232,9 +228,17 @@ def create_client(
     The returned client is a standard boto3 DynamoDB client that
     transparently distributes requests across cluster nodes.
 
+    Note:
+        When ``optimize_headers`` is enabled, authentication headers are
+        only preserved if credentials are passed explicitly via
+        ``aws_access_key_id`` in *boto_kwargs*. Unlike a regular boto3
+        DynamoDB client, credentials from environment variables or
+        ``~/.aws/credentials`` are not detected for this purpose.
+
     Args:
         config: Alternator configuration
         **boto_kwargs: Additional arguments passed to boto3.client()
+            (excluding ``config`` — BotoConfig is managed internally)
 
     Returns:
         A DynamoDB client with load balancing enabled
@@ -251,14 +255,21 @@ def create_client(
         # Use like a normal boto3 client
         response = client.list_tables()
     """
+    # BotoConfig is managed internally — don't let callers override it
+    boto_kwargs.pop("config", None)
+
     # Create and start manager (handles SSL, HTTP fetcher, node discovery)
     manager = _create_and_start_manager(config)
 
     # Get initial endpoint and merged boto config
     initial_endpoint = manager.next_node_uri()
-    boto_config = _get_merged_boto_config(config, boto_kwargs.pop("config", None))
+    auth_enabled = "aws_access_key_id" in boto_kwargs
+    boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
 
     # Create boto3 client
+    # Alternator doesn't use AWS regions, but boto3 requires one;
+    # default to "us-east-1" unless the caller overrides it.
+    boto_kwargs.setdefault("region_name", "us-east-1")
     client: DynamoDBClient = boto3.client(
         "dynamodb",
         endpoint_url=initial_endpoint,
@@ -269,13 +280,13 @@ def create_client(
     # Register manager for cleanup tracking (with GC finalizer on client)
     _register_manager(manager, client)
 
-    # Create execution plan factory and affinity hash computer
-    create_plan = create_execution_plan_factory(config, manager)
-    compute_affinity_hash = _create_affinity_hash_computer(config, client)
-
     # Register all handlers
-    register_alternator_handlers(
-        client.meta.events, create_plan, config, compute_affinity_hash
+    _register_alternator_handlers(
+        client.meta.events,
+        manager,
+        config,
+        _create_affinity_hash_computer(config, client),
+        auth_enabled=auth_enabled,
     )
 
     # Attach manager for cleanup reference
@@ -286,24 +297,38 @@ def create_client(
 
 def create_resource(
     config: AlternatorConfig,
-    **boto_kwargs: Any,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBServiceResource:
     """
     Create a load-balanced DynamoDB resource for Alternator.
+
+    Note:
+        When ``optimize_headers`` is enabled, authentication headers are
+        only preserved if credentials are passed explicitly via
+        ``aws_access_key_id`` in *boto_kwargs*. Unlike a regular boto3
+        DynamoDB client, credentials from environment variables or
+        ``~/.aws/credentials`` are not detected for this purpose.
 
     Example:
         resource = create_resource(config)
         table = resource.Table("my_table")
         table.put_item(Item={"pk": "123", "data": "hello"})
     """
+    # BotoConfig is managed internally — don't let callers override it
+    boto_kwargs.pop("config", None)
+
     # Create and start manager (handles SSL, HTTP fetcher, node discovery)
     manager = _create_and_start_manager(config)
 
     # Get initial endpoint and merged boto config
     initial_endpoint = manager.next_node_uri()
-    boto_config = _get_merged_boto_config(config, boto_kwargs.pop("config", None))
+    auth_enabled = "aws_access_key_id" in boto_kwargs
+    boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
 
     # Create boto3 resource
+    # Alternator doesn't use AWS regions, but boto3 requires one;
+    # default to "us-east-1" unless the caller overrides it.
+    boto_kwargs.setdefault("region_name", "us-east-1")
     resource: DynamoDBServiceResource = boto3.resource(
         "dynamodb",
         endpoint_url=initial_endpoint,
@@ -314,16 +339,13 @@ def create_resource(
     # Register manager for cleanup tracking (with GC finalizer on resource)
     _register_manager(manager, resource)
 
-    # Create execution plan factory and affinity hash computer
-    create_plan = create_execution_plan_factory(config, manager)
-    compute_affinity_hash = _create_affinity_hash_computer(config, resource.meta.client)
-
     # Register all handlers
-    register_alternator_handlers(
+    _register_alternator_handlers(
         resource.meta.client.meta.events,
-        create_plan,
+        manager,
         config,
-        compute_affinity_hash,
+        _create_affinity_hash_computer(config, resource.meta.client),
+        auth_enabled=auth_enabled,
     )
 
     # Attach manager for cleanup reference
@@ -368,7 +390,7 @@ class AlternatorClient:
             client.put_item(...)
     """
 
-    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:
+    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
         self._config = config
         self._boto_kwargs = boto_kwargs
         self._client: DynamoDBClient | None = None
@@ -381,7 +403,7 @@ class AlternatorClient:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: TracebackType | None,
     ) -> None:
         self.close()
 
@@ -411,7 +433,7 @@ class AlternatorResource:
             table.put_item(Item={"pk": "123", "data": "hello"})
     """
 
-    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:
+    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
         self._config = config
         self._boto_kwargs = boto_kwargs
         self._resource: DynamoDBServiceResource | None = None
@@ -424,7 +446,7 @@ class AlternatorResource:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: TracebackType | None,
     ) -> None:
         self.close()
 

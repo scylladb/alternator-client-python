@@ -3,10 +3,8 @@
 These tests require a running Scylla cluster with Alternator enabled.
 Start a local cluster with: make scylla-start
 
-The tests expect Scylla to be available at localhost:8000.
 """
 
-import os
 import uuid
 
 import pytest
@@ -17,14 +15,7 @@ from alternator import (
     AlternatorConfigBuilder,
     KeyRouteAffinityMode,
 )
-
-SCYLLA_HOST = os.environ.get("SCYLLA_HOST", "localhost")
-SCYLLA_PORT = int(os.environ.get("SCYLLA_PORT", "8000"))
-SKIP_INTEGRATION = os.environ.get("SKIP_INTEGRATION_TESTS", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
     pytest.mark.integration,
@@ -93,7 +84,8 @@ class TestCompositeKeyBasicOperations:
 
                 assert response["Item"]["pk"]["S"] == "user_1"
                 assert response["Item"]["sk"]["S"] == "order_100"
-                assert response["Item"]["total"]["N"] == "42.50"
+                # ScyllaDB may strip trailing zeros from decimals (e.g. "42.50" → "42.5")
+                assert response["Item"]["total"]["N"] in ("42.50", "42.5")
             finally:
                 client.delete_table(TableName=table_name)
 

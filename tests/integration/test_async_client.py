@@ -3,25 +3,16 @@
 These tests require a running Scylla cluster with Alternator enabled.
 Start a local cluster with: make scylla-start
 
-The tests expect Scylla to be available at localhost:8000.
 """
 
 import asyncio
-import os
 import uuid
+from collections.abc import Callable
 
 import pytest
 
 from alternator import AlternatorConfig
-
-# Skip all tests if integration tests are disabled
-SCYLLA_HOST = os.environ.get("SCYLLA_HOST", "localhost")
-SCYLLA_PORT = int(os.environ.get("SCYLLA_PORT", "8000"))
-SKIP_INTEGRATION = os.environ.get("SKIP_INTEGRATION_TESTS", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
     pytest.mark.integration,
@@ -352,13 +343,19 @@ class TestAsyncKeyAffinity:
 class TestAsyncCompression:
     """Test async client with compression."""
 
-    @pytest.mark.xfail(
-        reason="Gzip request compression requires ScyllaDB 2026.1.0+; CI image may be older"
-    )
-    async def test_async_compression(self, table_name: str) -> None:
+    async def test_async_compression(
+        self,
+        table_name: str,
+        skip_if_scylla_version_below: Callable[..., None],
+    ) -> None:
         """Test compression with async client."""
         from alternator import AlternatorConfigBuilder, CompressionAlgorithm
         from alternator.async_client import AsyncAlternatorClient
+        from tests.integration.scylla_version import ScyllaVersion
+
+        skip_if_scylla_version_below(
+            ScyllaVersion(2026, 1, 0), "gzip request compression"
+        )
 
         config = (
             AlternatorConfigBuilder()

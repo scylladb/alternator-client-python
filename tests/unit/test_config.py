@@ -72,13 +72,12 @@ class TestAlternatorConfig:
         """Test default configuration values."""
         config = AlternatorConfig(seed_hosts=["localhost"], port=8000)
         assert config.scheme == "http"
-        assert config.compression == CompressionAlgorithm.NONE
-        assert config.min_compression_size_bytes == 1024
-        assert config.optimize_headers is False
-        assert config.headers_whitelist is None
-        assert config.authentication_enabled is True
-        assert config.active_refresh_interval_ms == 1000
-        assert config.idle_refresh_interval_ms == 60000
+        assert config.request_compression.algorithm == CompressionAlgorithm.NONE
+        assert config.request_compression.min_size_bytes == 1024
+        assert config.header_optimization.enabled is False
+        assert config.header_optimization.whitelist is None
+        assert config.node_list_polling.active_interval_ms == 1000
+        assert config.node_list_polling.idle_interval_ms == 60000
         assert isinstance(config.routing_scope, ClusterScope)
 
 
@@ -150,8 +149,8 @@ class TestAlternatorConfigBuilder:
             .with_compression(CompressionAlgorithm.GZIP, min_size=2048)
             .build()
         )
-        assert config.compression == CompressionAlgorithm.GZIP
-        assert config.min_compression_size_bytes == 2048
+        assert config.request_compression.algorithm == CompressionAlgorithm.GZIP
+        assert config.request_compression.min_size_bytes == 2048
 
     def test_build_with_header_optimization(self) -> None:
         """Test building config with header optimization."""
@@ -162,8 +161,10 @@ class TestAlternatorConfigBuilder:
             .with_header_optimization(whitelist={"Host", "Content-Type"})
             .build()
         )
-        assert config.optimize_headers is True
-        assert config.headers_whitelist == {"Host", "Content-Type"}
+        assert config.header_optimization.enabled is True
+        assert config.header_optimization.whitelist == frozenset(
+            {"Host", "Content-Type"}
+        )
 
     def test_build_with_key_affinity(self) -> None:
         """Test building config with key affinity."""
@@ -180,17 +181,6 @@ class TestAlternatorConfigBuilder:
         assert config.key_affinity.mode == KeyRouteAffinityMode.RMW
         assert config.key_affinity.table_pk_attributes == {"users": "user_id"}
 
-    def test_build_without_authentication(self) -> None:
-        """Test building config without authentication."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .without_authentication()
-            .build()
-        )
-        assert config.authentication_enabled is False
-
     def test_build_with_refresh_intervals(self) -> None:
         """Test building config with custom refresh intervals."""
         config = (
@@ -200,8 +190,8 @@ class TestAlternatorConfigBuilder:
             .with_refresh_intervals(active_ms=500, idle_ms=30000)
             .build()
         )
-        assert config.active_refresh_interval_ms == 500
-        assert config.idle_refresh_interval_ms == 30000
+        assert config.node_list_polling.active_interval_ms == 500
+        assert config.node_list_polling.idle_interval_ms == 30000
 
     def test_build_with_timeouts(self) -> None:
         """Test building config with custom timeout values."""
@@ -216,9 +206,9 @@ class TestAlternatorConfigBuilder:
             )
             .build()
         )
-        assert config.discovery_timeout_seconds == 10.0
-        assert config.connect_timeout_seconds == 3.0
-        assert config.read_timeout_seconds == 60.0
+        assert config.timeouts.discovery_seconds == 10.0
+        assert config.timeouts.connect_seconds == 3.0
+        assert config.timeouts.read_seconds == 60.0
 
     def test_build_with_timeouts_default_values(self) -> None:
         """Test that with_timeouts preserves defaults when not overridden."""
@@ -229,9 +219,9 @@ class TestAlternatorConfigBuilder:
             .with_timeouts()
             .build()
         )
-        assert config.discovery_timeout_seconds == 5.0
-        assert config.connect_timeout_seconds == 5.0
-        assert config.read_timeout_seconds == 30.0
+        assert config.timeouts.discovery_seconds == 5.0
+        assert config.timeouts.connect_seconds == 5.0
+        assert config.timeouts.read_seconds == 30.0
 
     def test_build_with_pool_connections(self) -> None:
         """Test building config with custom pool connections."""

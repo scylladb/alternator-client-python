@@ -17,11 +17,13 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 
 ```bash
 # Basic installation (sync client only)
-pip install alternator
+pip install alternator-client
 
 # With async support
-pip install alternator[async]
+pip install alternator-client[async]
 ```
+
+> **Note:** The PyPI package name is `alternator-client`, but the Python import remains `alternator`.
 
 ## Quick Start
 

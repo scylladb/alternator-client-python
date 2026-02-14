@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
@@ -58,15 +57,9 @@ def scylla_version() -> ScyllaVersion | None:
         return env_version
 
     # Try auto-detection with a temporary client
-    scylla_host = os.environ.get("SCYLLA_HOST", "localhost")
-    scylla_port = int(os.environ.get("SCYLLA_PORT", "8000"))
-    skip_integration = os.environ.get("SKIP_INTEGRATION_TESTS", "").lower() in (
-        "1",
-        "true",
-        "yes",
-    )
+    from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
-    if skip_integration:
+    if SKIP_INTEGRATION:
         return None
 
     try:
@@ -74,8 +67,8 @@ def scylla_version() -> ScyllaVersion | None:
         from tests.integration.scylla_version import detect_version_from_cluster
 
         config = AlternatorConfig(
-            seed_hosts=[scylla_host],
-            port=scylla_port,
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
             scheme="http",
         )
         client = create_client(config)

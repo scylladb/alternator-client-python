@@ -1,0 +1,23 @@
+# Scylla configuration for integration tests
+# Mirrors Go client's tests/scylla/scylla.yaml
+
+cluster_name: 'alternator-python-test'
+num_tokens: 256
+commitlog_sync: periodic
+commitlog_sync_period_in_ms: 10000
+commitlog_segment_size_in_mb: 32
+seed_provider:
+  - class_name: org.apache.cassandra.locator.SimpleSeedProvider
+    parameters:
+      - seeds: "172.43.0.2"
+partitioner: org.apache.cassandra.dht.Murmur3Partitioner
+endpoint_snitch: SimpleSnitch
+
+alternator_port: 9998
+alternator_https_port: 9999
+alternator_write_isolation: always
+alternator_encryption_options:
+  certificate: /etc/scylla/db.crt
+  keyfile: /etc/scylla/db.key
+
+enable_tablets: true

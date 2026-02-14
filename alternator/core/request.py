@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from botocore.awsrequest import AWSPreparedRequest
+
 _PARSED_PARAMS_ATTR = "_alternator_parsed_params"
 
 
-def extract_operation_name(request: Any) -> str:
+def extract_operation_name(request: AWSPreparedRequest) -> str:
     """
     Extract operation name from the X-Amz-Target header.
 
@@ -24,7 +26,7 @@ def extract_operation_name(request: Any) -> str:
     return target.split(".")[-1] if "." in target else ""
 
 
-def extract_request_params(request: Any) -> dict[str, Any]:
+def extract_request_params(request: AWSPreparedRequest) -> dict[str, Any]:
     """
     Parse the request body to extract parameters.
 
@@ -38,7 +40,7 @@ def extract_request_params(request: Any) -> dict[str, Any]:
         Parsed request parameters dict
     """
     try:
-        cached = request.__dict__[_PARSED_PARAMS_ATTR]
+        cached: dict[str, Any] = request.__dict__[_PARSED_PARAMS_ATTR]
         return cached
     except (KeyError, AttributeError):
         pass
@@ -47,9 +49,10 @@ def extract_request_params(request: Any) -> dict[str, Any]:
     if request.body:
         try:
             body = request.body
-            if isinstance(body, bytes):
+            if isinstance(body, (bytes, bytearray)):
                 body = body.decode("utf-8")
-            result = json.loads(body)
+            if isinstance(body, str):
+                result = json.loads(body)
         except (json.JSONDecodeError, UnicodeDecodeError):
             pass
 

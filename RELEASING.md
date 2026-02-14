@@ -26,17 +26,16 @@ Commit and push this change to the main branch.
 2. Select the **Release** workflow
 3. Click **Run workflow**
 4. Enter the version number (must match `_version.py`)
-5. Choose whether to GPG sign the release (default: yes)
-6. Click **Run workflow**
+5. Click **Run workflow**
 
 The workflow will:
 - Validate the version format and match with `_version.py`
 - Run all tests and linters
 - Build the package (wheel and source distribution)
-- Sign artifacts with GPG (if enabled and configured)
+- Sign artifacts with GPG
 - Generate SHA256 checksums
 - Publish to PyPI
-- Create a GitHub release with the tag `python-vX.Y.Z`
+- Create a GitHub release with the tag `vX.Y.Z`
 
 ## GPG Signing Setup
 
@@ -105,10 +104,10 @@ Add the key ID and fingerprint to your project documentation so users know how t
 
 ```bash
 # Download the checksums file
-curl -LO https://github.com/scylladb/alternator-client-python/releases/download/python-v1.0.0/SHA256SUMS
+curl -LO https://github.com/scylladb/alternator-client-python/releases/download/v1.0.0/SHA256SUMS
 
 # Download the package
-curl -LO https://github.com/scylladb/alternator-client-python/releases/download/python-v1.0.0/alternator-1.0.0.tar.gz
+curl -LO https://github.com/scylladb/alternator-client-python/releases/download/v1.0.0/alternator_client-1.0.0.tar.gz
 
 # Verify
 sha256sum -c SHA256SUMS
@@ -118,17 +117,17 @@ sha256sum -c SHA256SUMS
 
 ```bash
 # Import the signing key (first time only)
-gpg --keyserver keyserver.ubuntu.com --recv-keys <KEY_ID>
+gpg --keyserver keyserver.ubuntu.com --recv-keys A97AF2DE72D4293398AF8274FC93C043D8ADA78E
 
 # Download the signature
-curl -LO https://github.com/scylladb/alternator-client-python/releases/download/python-v1.0.0/SHA256SUMS.asc
+curl -LO https://github.com/scylladb/alternator-client-python/releases/download/v1.0.0/SHA256SUMS.asc
 
 # Verify the checksums file signature
 gpg --verify SHA256SUMS.asc SHA256SUMS
 
 # Or verify individual files
-curl -LO https://github.com/scylladb/alternator-client-python/releases/download/python-v1.0.0/alternator-1.0.0.tar.gz.asc
-gpg --verify alternator-1.0.0.tar.gz.asc alternator-1.0.0.tar.gz
+curl -LO https://github.com/scylladb/alternator-client-python/releases/download/v1.0.0/alternator_client-1.0.0.tar.gz.asc
+gpg --verify alternator_client-1.0.0.tar.gz.asc alternator_client-1.0.0.tar.gz
 ```
 
 ### Verify Git Tag Signature
@@ -138,7 +137,7 @@ gpg --verify alternator-1.0.0.tar.gz.asc alternator-1.0.0.tar.gz
 git fetch --tags
 
 # Verify tag signature
-git tag -v python-v1.0.0
+git tag -v v1.0.0
 ```
 
 ## Troubleshooting
@@ -169,15 +168,15 @@ If a release needs to be removed:
 # Yank a specific version (marks it as not recommended but still installable
 # by pinned requirements)
 pip install twine
-twine yank alternator==1.0.0
+twine yank alternator-client==1.0.0
 ```
 
 ### Delete the GitHub Release
 
 1. Go to the repository's **Releases** page
-2. Find the release (e.g., `python-v1.0.0`)
+2. Find the release (e.g., `v1.0.0`)
 3. Click **Delete** on the release
-4. Optionally delete the git tag: `git push --delete origin python-v1.0.0`
+4. Optionally delete the git tag: `git push --delete origin v1.0.0`
 
 ### Re-release with a Fix
 

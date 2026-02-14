@@ -96,9 +96,14 @@ class LiveNodesManagerCore:
             return self._nodes
 
     def update_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
-        """Update node list (thread-safe)."""
+        """Update node list (thread-safe).
+
+        Nodes are sorted before storing to ensure deterministic ordering
+        across all clients, which is required by LazyQueryPlan for
+        consistent affinity-based routing.
+        """
         new_list = NodeList(
-            nodes=tuple(nodes),
+            nodes=tuple(sorted(nodes)),
             scope_name=scope.name,
         )
         with self._nodes_lock:
@@ -112,13 +117,14 @@ class LiveNodesManagerCore:
 
     def get_refresh_interval_seconds(self) -> float:
         """Get appropriate refresh interval based on activity."""
-        idle_threshold = self._config.idle_refresh_interval_ms / 1000.0
+        polling = self._config.node_list_polling
+        idle_threshold = polling.idle_interval_ms / 1000.0
         with self._nodes_lock:
             elapsed = time.monotonic() - self._last_activity
 
         if elapsed < idle_threshold:
-            return self._config.active_refresh_interval_ms / 1000.0
-        return self._config.idle_refresh_interval_ms / 1000.0
+            return polling.active_interval_ms / 1000.0
+        return polling.idle_interval_ms / 1000.0
 
     def build_localnodes_url(self, scope: RoutingScope, seed: str) -> str:
         """

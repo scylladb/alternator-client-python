@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
 
 if TYPE_CHECKING:
+    from mypy_boto3_dynamodb import DynamoDBClient
+
     from alternator.core.live_nodes import NodeList
 
 logger = logging.getLogger("alternator")
@@ -120,7 +122,7 @@ class PartitionKeyCache:
     avoiding repeated DescribeTable calls.
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: DynamoDBClient) -> None:
         """
         Initialize the cache.
 

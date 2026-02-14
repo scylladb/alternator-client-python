@@ -6,6 +6,7 @@ import asyncio
 import inspect
 import logging
 from collections.abc import Callable
+from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
 from alternator._constants import (
@@ -19,8 +20,7 @@ from alternator._http import (
     create_ssl_context,
 )
 from alternator.config import KeyRouteAffinityMode
-from alternator.core.execution_plan import create_execution_plan_factory
-from alternator.core.handlers import register_alternator_handlers
+from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     extract_partition_key,
@@ -46,7 +46,7 @@ class AsyncPartitionKeyCache:
     Uses a pending-state pattern to avoid duplicate DescribeTable calls.
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: AsyncDynamoDBClient) -> None:
         """
         Initialize the cache.
 
@@ -269,13 +269,20 @@ def _create_async_affinity_hash_computer(
 
 async def create_async_client(
     config: AlternatorConfig,
-    **boto_kwargs: Any,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> AsyncDynamoDBClient:
     """
     Create a load-balanced async DynamoDB client for Alternator.
 
     The returned client is an aioboto3 DynamoDB client that
     transparently distributes requests across cluster nodes.
+
+    Note:
+        When ``optimize_headers`` is enabled, authentication headers are
+        only preserved if credentials are passed explicitly via
+        ``aws_access_key_id`` in *boto_kwargs*. Unlike a regular boto3
+        DynamoDB client, credentials from environment variables or
+        ``~/.aws/credentials`` are not detected for this purpose.
 
     Args:
         config: Alternator configuration
@@ -313,7 +320,7 @@ async def create_async_client(
 
     # Create async HTTP fetcher for /localnodes
     http_fetcher = create_async_http_fetcher(
-        ssl_context, timeout_seconds=config.discovery_timeout_seconds
+        ssl_context, timeout_seconds=config.timeouts.discovery_seconds
     )
 
     # Create and start async live nodes manager
@@ -332,15 +339,28 @@ async def create_async_client(
     # Get initial endpoint
     initial_endpoint = manager.next_node_uri()
 
-    # Merge boto config
-    boto_config = boto_kwargs.pop("config", None)
-    if boto_config is None:
-        boto_config = AioConfig(
-            retries={"max_attempts": 3, "mode": "standard"},
-            max_pool_connections=config.max_pool_connections,
-        )
+    # BotoConfig is managed internally — don't let callers override it
+    boto_kwargs.pop("config", None)
+
+    # Create boto config from AlternatorConfig settings
+    from botocore import UNSIGNED
+
+    auth_enabled = "aws_access_key_id" in boto_kwargs
+    aio_kwargs: dict[str, Any] = {
+        "retries": {
+            "max_attempts": config.retries.max_attempts,
+            "mode": config.retries.mode.value,
+        },
+        "max_pool_connections": config.max_pool_connections,
+    }
+    if not auth_enabled:
+        aio_kwargs["signature_version"] = UNSIGNED
+    boto_config = AioConfig(**aio_kwargs)
 
     # Create aioboto3 session and client
+    # Alternator doesn't use AWS regions, but boto3 requires one;
+    # default to "us-east-1" unless the caller overrides it.
+    boto_kwargs.setdefault("region_name", "us-east-1")
     session = aioboto3.Session()
     client_ctx = session.client(
         "dynamodb",
@@ -359,13 +379,13 @@ async def create_async_client(
                 pk_cache.preload(dict(config.key_affinity.table_pk_attributes))
             setattr(client, PK_CACHE_ATTR, pk_cache)
 
-        # Create execution plan factory and affinity hash computer
-        create_plan = create_execution_plan_factory(config, manager)
-        compute_affinity_hash = _create_async_affinity_hash_computer(config, pk_cache)
-
         # Register all event handlers (endpoint routing, compression, headers)
-        register_alternator_handlers(
-            client.meta.events, create_plan, config, compute_affinity_hash
+        _register_alternator_handlers(
+            client.meta.events,
+            manager,
+            config,
+            _create_async_affinity_hash_computer(config, pk_cache),
+            auth_enabled=auth_enabled,
         )
 
         # Attach manager for cleanup reference
@@ -429,7 +449,7 @@ class AsyncAlternatorClient:
             await client.put_item(...)
     """
 
-    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:
+    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
         self._config = config
         self._boto_kwargs = boto_kwargs
         self._client: AsyncDynamoDBClient | None = None
@@ -442,7 +462,7 @@ class AsyncAlternatorClient:
         self,
         exc_type: type[BaseException] | None,
         exc_val: BaseException | None,
-        exc_tb: Any,
+        exc_tb: TracebackType | None,
     ) -> None:
         await self.close()
 

@@ -6,20 +6,11 @@ All implementations must produce identical hashes for key route affinity.
 
 from __future__ import annotations
 
-from typing import Any
-
 # Type prefix bytes for AttributeValue encoding
 # These must match the cross-language specification
 TYPE_PREFIX_STRING = b"\x01"
 TYPE_PREFIX_NUMBER = b"\x02"
 TYPE_PREFIX_BINARY = b"\x03"
-TYPE_PREFIX_BOOL = b"\x04"
-TYPE_PREFIX_NULL = b"\x05"
-TYPE_PREFIX_STRING_SET = b"\x06"
-TYPE_PREFIX_NUMBER_SET = b"\x07"
-TYPE_PREFIX_BINARY_SET = b"\x08"
-TYPE_PREFIX_LIST = b"\x09"
-TYPE_PREFIX_MAP = b"\x0a"
 
 # Constants for MurmurHash3
 _C1 = 0x87C37B91114253D5
@@ -144,6 +135,8 @@ def hash_attribute_value(attr_type: str, value: str | bytes) -> int:
     """
     Hash a DynamoDB AttributeValue for key affinity routing.
 
+    DynamoDB partition keys only support S, N, and B types.
+
     Args:
         attr_type: "S" (string), "N" (number), or "B" (binary)
         value: The attribute value
@@ -156,7 +149,6 @@ def hash_attribute_value(attr_type: str, value: str | bytes) -> int:
         data = value.encode("utf-8") if isinstance(value, str) else value
     elif attr_type == "N":
         prefix = TYPE_PREFIX_NUMBER
-        # Validate numeric format before hashing
         str_value = str(value)
         try:
             float(str_value)
@@ -180,112 +172,3 @@ def _to_signed_int64(h: int) -> int:
     if h >= 2**63:
         h -= 2**64
     return h
-
-
-def _write_with_length(data: bytes) -> bytes:
-    """Write a 4-byte big-endian length prefix followed by the data."""
-    return len(data).to_bytes(4, "big") + data
-
-
-def _encode_attribute_value(attr: dict[str, Any]) -> bytes:
-    """
-    Encode an AttributeValue into bytes following the cross-language specification.
-
-    This matches the Go implementation at:
-    https://github.com/scylladb/alternator-client-golang/blob/main/sdkv2/hasher.go
-    """
-    # String - prefix + raw data
-    if "S" in attr:
-        return TYPE_PREFIX_STRING + attr["S"].encode("utf-8")
-
-    # Number - prefix + raw data
-    if "N" in attr:
-        return TYPE_PREFIX_NUMBER + str(attr["N"]).encode("utf-8")
-
-    # Binary - prefix + raw data
-    if "B" in attr:
-        data = attr["B"] if isinstance(attr["B"], bytes) else attr["B"].encode()
-        return TYPE_PREFIX_BINARY + data
-
-    # Boolean - prefix + 0x01/0x00
-    if "BOOL" in attr:
-        return TYPE_PREFIX_BOOL + (b"\x01" if attr["BOOL"] else b"\x00")
-
-    # NULL - prefix + 0x01
-    if "NULL" in attr:
-        if not attr["NULL"]:
-            raise ValueError("NULL attribute must have true value")
-        return TYPE_PREFIX_NULL + b"\x01"
-
-    # String Set - prefix + sorted elements with length prefix
-    if "SS" in attr:
-        result = bytearray(TYPE_PREFIX_STRING_SET)
-        # Sort strings lexicographically by UTF-8 bytes
-        for s in sorted(attr["SS"]):
-            result.extend(_write_with_length(s.encode("utf-8")))
-        return bytes(result)
-
-    # Number Set - prefix + sorted elements with length prefix
-    if "NS" in attr:
-        result = bytearray(TYPE_PREFIX_NUMBER_SET)
-        # Sort number strings lexicographically (as strings)
-        for n in sorted(attr["NS"]):
-            result.extend(_write_with_length(str(n).encode("utf-8")))
-        return bytes(result)
-
-    # Binary Set - prefix + sorted elements with length prefix
-    if "BS" in attr:
-        result = bytearray(TYPE_PREFIX_BINARY_SET)
-        # Sort byte arrays lexicographically
-        elements = [b if isinstance(b, bytes) else b.encode() for b in attr["BS"]]
-        for b in sorted(elements):
-            result.extend(_write_with_length(b))
-        return bytes(result)
-
-    # List - prefix + ordered elements with length prefix (recursively encoded)
-    if "L" in attr:
-        result = bytearray(TYPE_PREFIX_LIST)
-        for elem in attr["L"]:
-            encoded = _encode_attribute_value(elem)
-            result.extend(_write_with_length(encoded))
-        return bytes(result)
-
-    # Map - prefix + sorted keys with their values (both with length prefix)
-    if "M" in attr:
-        result = bytearray(TYPE_PREFIX_MAP)
-        for key in sorted(attr["M"].keys()):
-            result.extend(_write_with_length(key.encode("utf-8")))
-            encoded_value = _encode_attribute_value(attr["M"][key])
-            result.extend(_write_with_length(encoded_value))
-        return bytes(result)
-
-    raise ValueError(f"Unsupported attribute type: {attr}")
-
-
-def hash_dynamodb_attribute(attr: dict[str, Any] | None) -> int:
-    """
-    Hash a DynamoDB AttributeValue dict for key affinity routing.
-
-    Supports all DynamoDB types: S, N, B, BOOL, NULL, SS, NS, BS, L, M.
-    This implementation follows the cross-language specification from
-    https://github.com/scylladb/alternator-load-balancing/issues/165
-
-    This is a public API function used for full AttributeValue hashing
-    (as opposed to ``hash_attribute_value`` which handles only S/N/B types
-    used in partition key routing).
-
-    Args:
-        attr: DynamoDB AttributeValue dict like {"S": "hello"} or None
-
-    Returns:
-        First 64 bits of MurmurHash3 as signed int64
-
-    Raises:
-        ValueError: For invalid attribute values (e.g., NULL with false value)
-    """
-    if attr is None:
-        return 0
-
-    encoded = _encode_attribute_value(attr)
-    h1, _ = murmurhash3_x64_128(encoded, seed=0)
-    return _to_signed_int64(h1)

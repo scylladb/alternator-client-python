@@ -1,0 +1,62 @@
+# Shared non-code glob: every label below requires ALL changed files
+# to be non-code. This lets non-code categories mix freely (e.g. a PR
+# touching both tests/ and .github/ gets both `test` and `ci`).
+# A PR that also touches alternator/ gets none of these labels and
+# appears in release notes.
+
+_non-code: &non-code
+  - all-globs-to-all-files:
+      - "{tests/**,.github/**,Makefile,docker-compose.yml,.pre-commit-config.yaml,**/*.md,docs/**,LICENSE,.gitignore,.editorconfig,.ruff.toml,ruff.toml,mypy.ini,.mypy.ini,pyproject.toml,uv.lock,requirements*.txt}"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .github/**
+          - Makefile
+          - docker-compose.yml
+          - .pre-commit-config.yaml
+  - changed-files: *non-code
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "**/*.md"
+          - docs/**
+          - LICENSE
+  - changed-files: *non-code
+
+test:
+  - changed-files:
+      - any-glob-to-any-file:
+          - tests/**
+  - changed-files: *non-code
+
+chore:
+  - changed-files:
+      - any-glob-to-any-file:
+          - .gitignore
+          - .editorconfig
+          - .ruff.toml
+          - ruff.toml
+          - mypy.ini
+          - .mypy.ini
+  - changed-files: *non-code
+
+dependencies:
+  - changed-files:
+      - any-glob-to-any-file:
+          - pyproject.toml
+          - uv.lock
+          - requirements*.txt
+  - changed-files: *non-code
+
+bug:
+  - head-branch:
+      - ^fix/.*
+      - ^bugfix/.*
+      - ^hotfix/.*
+
+enhancement:
+  - head-branch:
+      - ^feat/.*
+      - ^feature/.*

@@ -146,10 +146,12 @@ class TestAsyncLiveNodesManager:
             return [f"node{call_count}"]
 
         # Config with fast refresh
+        from alternator.config import NodeListPollingConfig
+
         fast_config = AlternatorConfig(
             seed_hosts=["192.168.1.1"],
             port=8000,
-            active_refresh_interval_ms=50,  # 50ms
+            node_list_polling=NodeListPollingConfig(active_interval_ms=50),
         )
 
         manager = AsyncLiveNodesManager(fast_config, mock_fetch)

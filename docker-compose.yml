@@ -1,53 +1,88 @@
+networks:
+  alb_python_network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.43.0.0/16
+
 services:
   scylla-node1:
-    image: scylladb/scylla:latest
+    image: scylladb/scylla:2025.1
     container_name: scylla-node1
-    command: --seeds=scylla-node1 --smp=1 --memory=750M --overprovisioned=1 --alternator-port=8000 --alternator-write-isolation=always
+    command: >
+      --smp 2
+      --memory 1G
+      --overprovisioned 1
+      --seeds 172.43.0.2
+      --listen-address 172.43.0.2
+      --rpc-address 172.43.0.2
+    volumes:
+      - ./tests/scylla:/etc/scylla
     ports:
-      - "9042:9042"     # CQL
-      - "8000:8000"     # Alternator (node 1)
+      - "9042:9042"
+      - "9998:9998"
+      - "9999:9999"
     networks:
-      - scylla-net
+      alb_python_network:
+        ipv4_address: 172.43.0.2
     healthcheck:
-      test: ["CMD", "cqlsh", "-e", "describe cluster"]
+      test: ["CMD", "cqlsh", "172.43.0.2", "-e", "select * from system.local WHERE key='local'"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
 
   scylla-node2:
-    image: scylladb/scylla:latest
+    image: scylladb/scylla:2025.1
     container_name: scylla-node2
-    command: --seeds=scylla-node1 --smp=1 --memory=750M --overprovisioned=1 --alternator-port=8000 --alternator-write-isolation=always
+    command: >
+      --smp 2
+      --memory 1G
+      --overprovisioned 1
+      --seeds 172.43.0.2
+      --listen-address 172.43.0.3
+      --rpc-address 172.43.0.3
+    volumes:
+      - ./tests/scylla:/etc/scylla
     ports:
-      - "9999:8000"     # Alternator (node 2)
+      - "9052:9042"
+      - "10998:9998"
+      - "10999:9999"
     networks:
-      - scylla-net
+      alb_python_network:
+        ipv4_address: 172.43.0.3
     depends_on:
       scylla-node1:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "cqlsh", "-e", "describe cluster"]
+      test: ["CMD", "cqlsh", "172.43.0.3", "-e", "select * from system.local WHERE key='local'"]
       interval: 10s
       timeout: 5s
-      retries: 10
+      retries: 30
 
   scylla-node3:
-    image: scylladb/scylla:latest
+    image: scylladb/scylla:2025.1
     container_name: scylla-node3
-    command: --seeds=scylla-node1 --smp=1 --memory=750M --overprovisioned=1 --alternator-port=8000 --alternator-write-isolation=always
+    command: >
+      --smp 2
+      --memory 1G
+      --overprovisioned 1
+      --seeds 172.43.0.2
+      --listen-address 172.43.0.4
+      --rpc-address 172.43.0.4
+    volumes:
+      - ./tests/scylla:/etc/scylla
     ports:
-      - "10000:8000"    # Alternator (node 3)
+      - "9062:9042"
+      - "11998:9998"
+      - "11999:9999"
     networks:
-      - scylla-net
+      alb_python_network:
+        ipv4_address: 172.43.0.4
     depends_on:
       scylla-node1:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "cqlsh", "-e", "describe cluster"]
+      test: ["CMD", "cqlsh", "172.43.0.4", "-e", "select * from system.local WHERE key='local'"]
       interval: 10s
       timeout: 5s
-      retries: 10
-
-networks:
-  scylla-net:
-    driver: bridge
+      retries: 30

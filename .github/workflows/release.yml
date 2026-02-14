@@ -7,18 +7,25 @@ on:
         description: "Version to release (e.g., 1.0.0)"
         required: true
         type: string
-      sign_release:
-        description: "GPG sign the release artifacts and tag"
+      dry_run:
+        description: "Dry run: build and publish to TestPyPI only (no real release)"
         required: false
         type: boolean
-        default: true
+        default: false
 
 jobs:
-  validate:
-    name: Validate Release
+  build:
+    name: Build & Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.11"
 
       - name: Validate version format
         run: |
@@ -39,61 +46,37 @@ jobs:
             exit 1
           fi
 
-  test:
-    name: Run Tests
-    runs-on: ubuntu-latest
-    needs: validate
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Check tag does not already exist
+        if: ${{ !inputs.dry_run }}
+        run: |
+          if git ls-remote --tags origin "refs/tags/v${{ inputs.version }}" | grep -q .; then
+            echo "Tag v${{ inputs.version }} already exists on remote!"
+            echo "Delete it first if you intend to re-release: git push origin :refs/tags/v${{ inputs.version }}"
+            exit 1
+          fi
 
       - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[dev,async]"
+        run: make install
 
       - name: Run tests
-        run: pytest tests/ -v
+        run: make test-unit
 
       - name: Run linters
-        run: |
-          ruff check .
-          mypy alternator --strict
-
-  build:
-    name: Build Package
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install build tools
-        run: pip install build twine
+        run: make lint
 
       - name: Build package
-        run: python -m build
+        run: uvx --from build pyproject-build
 
       - name: Check package
-        run: twine check dist/*
+        run: uvx twine check dist/*
 
       - name: Import GPG key
-        if: ${{ inputs.sign_release && secrets.GPG_PRIVATE_KEY != '' }}
         uses: crazy-max/ghaction-import-gpg@v6
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
 
       - name: Sign artifacts with GPG
-        if: ${{ inputs.sign_release && secrets.GPG_PRIVATE_KEY != '' }}
         run: |
           for file in dist/*; do
             gpg --batch --yes --detach-sign --armor "$file"
@@ -104,12 +87,10 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          # Only checksum the actual package files, not signatures
           sha256sum *.whl *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign checksums with GPG
-        if: ${{ inputs.sign_release && secrets.GPG_PRIVATE_KEY != '' }}
         run: |
           gpg --batch --yes --detach-sign --armor dist/SHA256SUMS
 
@@ -119,13 +100,38 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
-    name: Publish to PyPI
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: ${{ inputs.dry_run }}
     runs-on: ubuntu-latest
     needs: build
-    environment: pypi
     permissions:
-      id-token: write  # For trusted publishing
+      id-token: write
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Remove non-package files before upload
+        run: |
+          rm -f dist/*.asc dist/SHA256SUMS 2>/dev/null || true
+          ls -la dist/
+
+      - name: Publish to TestPyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          skip-existing: true
+
+  publish:
+    name: Publish to PyPI
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -135,7 +141,6 @@ jobs:
 
       - name: Remove non-package files before PyPI upload
         run: |
-          # PyPI only accepts .whl and .tar.gz files
           rm -f dist/*.asc dist/SHA256SUMS 2>/dev/null || true
           ls -la dist/
 
@@ -146,12 +151,13 @@ jobs:
 
   create-release:
     name: Create GitHub Release
+    if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     needs: publish
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
@@ -162,7 +168,6 @@ jobs:
           path: dist/
 
       - name: Import GPG key
-        if: ${{ inputs.sign_release && secrets.GPG_PRIVATE_KEY != '' }}
         uses: crazy-max/ghaction-import-gpg@v6
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -172,60 +177,55 @@ jobs:
           git_tag_gpgsign: true
 
       - name: Create signed tag
-        if: ${{ inputs.sign_release && secrets.GPG_PRIVATE_KEY != '' }}
         run: |
-          git tag -s "python-v${{ inputs.version }}" -m "Release v${{ inputs.version }}" || true
-          git push origin "python-v${{ inputs.version }}" || true
+          git tag -s "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"
 
-      - name: Create unsigned tag
-        if: ${{ !inputs.sign_release || secrets.GPG_PRIVATE_KEY == '' }}
+      - name: Build release body
+        id: release-body
         run: |
-          git tag "python-v${{ inputs.version }}" -m "Release v${{ inputs.version }}" || true
-          git push origin "python-v${{ inputs.version }}" || true
+          VERSION="${{ inputs.version }}"
+          REPO="${{ github.repository }}"
+          BODY="## Installation
 
-      - name: Check if GPG signed
-        id: gpg-check
-        run: |
-          if [ -f "dist/SHA256SUMS.asc" ]; then
-            echo "signed=true" >> $GITHUB_OUTPUT
-          else
-            echo "signed=false" >> $GITHUB_OUTPUT
-          fi
+          \`\`\`bash
+          pip install alternator-client==${VERSION}
+          \`\`\`
+
+          ## Verification
+
+          ### Checksum Verification
+
+          \`\`\`bash
+          curl -LO https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS
+          sha256sum -c SHA256SUMS
+          \`\`\`
+
+          ### GPG Signature Verification
+
+          All release artifacts are GPG signed. To verify:
+
+          \`\`\`bash
+          gpg --keyserver keyserver.ubuntu.com --recv-keys A97AF2DE72D4293398AF8274FC93C043D8ADA78E
+
+          # Download and verify
+          curl -LO https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS.asc
+          gpg --verify SHA256SUMS.asc SHA256SUMS
+          \`\`\`"
+
+          {
+            echo "body<<RELEASE_BODY_EOF"
+            echo "$BODY"
+            echo "RELEASE_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
-          tag_name: python-v${{ inputs.version }}
-          name: Python Client v${{ inputs.version }}
+          tag_name: v${{ inputs.version }}
+          name: v${{ inputs.version }}
           draft: false
           prerelease: ${{ contains(inputs.version, '-') }}
           files: dist/*
           generate_release_notes: true
-          body: |
-            ## Installation
-
-            ```bash
-            pip install alternator==${{ inputs.version }}
-            ```
-
-            ## Verification
-
-            ### Checksum Verification
-
-            ```bash
-            curl -LO https://github.com/${{ github.repository }}/releases/download/python-v${{ inputs.version }}/SHA256SUMS
-            sha256sum -c SHA256SUMS
-            ```
-
-            ${{ steps.gpg-check.outputs.signed == 'true' && '### GPG Signature Verification
-
-            All release artifacts are GPG signed. To verify:
-
-            ```bash
-            # Import the signing key (if not already imported)
-            # gpg --keyserver keyserver.ubuntu.com --recv-keys <KEY_ID>
-
-            # Download and verify
-            curl -LO https://github.com/${{ github.repository }}/releases/download/python-v${{ inputs.version }}/SHA256SUMS.asc
-            gpg --verify SHA256SUMS.asc SHA256SUMS
-            ```' || '' }}
+          body: ${{ steps.release-body.outputs.body }}

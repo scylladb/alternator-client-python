@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from alternator.config import AlternatorConfig
+from alternator.config import AlternatorConfig, NodeListPollingConfig
 from alternator.core.live_nodes import (
     LiveNodesManagerCore,
     NodeList,
@@ -38,7 +38,7 @@ class TestNodeList:
         """Test that NodeList is frozen."""
         nodes = NodeList(nodes=("host1",), scope_name="Cluster")
         with pytest.raises(AttributeError):
-            nodes.nodes = ("host2",)  # type: ignore[misc]
+            nodes.nodes = ("host2",)  # type: ignore[misc] -- testing frozen dataclass immutability
 
 
 class TestRoundRobinSelector:
@@ -122,8 +122,9 @@ class TestLiveNodesManagerCore:
         return AlternatorConfig(
             seed_hosts=["localhost"],
             port=8000,
-            active_refresh_interval_ms=100,
-            idle_refresh_interval_ms=1000,
+            node_list_polling=NodeListPollingConfig(
+                active_interval_ms=100, idle_interval_ms=1000
+            ),
         )
 
     def test_initial_state_empty(self, config: AlternatorConfig) -> None:
@@ -174,8 +175,10 @@ class TestLiveNodesManagerCore:
         config_short = AlternatorConfig(
             seed_hosts=["localhost"],
             port=8000,
-            active_refresh_interval_ms=100,
-            idle_refresh_interval_ms=200,  # Short for testing
+            node_list_polling=NodeListPollingConfig(
+                active_interval_ms=100,
+                idle_interval_ms=200,  # Short for testing
+            ),
         )
         manager = LiveNodesManagerCore(config_short)
 

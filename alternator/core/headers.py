@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
+
+from botocore.awsrequest import AWSPreparedRequest
 
 # Base required headers that are always needed
 BASE_REQUIRED_HEADERS = frozenset(
@@ -34,7 +37,7 @@ COMPRESSION_HEADERS = frozenset(
 
 def compute_header_whitelist(
     *,
-    auth_enabled: bool = True,
+    auth_enabled: bool = False,
     compression_enabled: bool = False,
     custom_whitelist: frozenset[str] | set[str] | None = None,
 ) -> frozenset[str]:
@@ -42,7 +45,7 @@ def compute_header_whitelist(
     Compute the complete header whitelist based on configuration.
 
     Args:
-        auth_enabled: Whether authentication is enabled
+        auth_enabled: Whether authentication credentials were provided
         compression_enabled: Whether compression is enabled
         custom_whitelist: Additional headers to whitelist
 
@@ -50,7 +53,6 @@ def compute_header_whitelist(
         Frozenset of headers to keep
     """
     result = set(BASE_REQUIRED_HEADERS)
-
     if auth_enabled:
         result.update(AUTH_HEADERS)
 
@@ -65,7 +67,7 @@ def compute_header_whitelist(
 
 def create_header_filter_handler(
     whitelist: frozenset[str],
-) -> Any:
+) -> Callable[..., None]:
     """
     Create a botocore event handler for header filtering.
 
@@ -81,7 +83,7 @@ def create_header_filter_handler(
     # Create case-insensitive lookup
     whitelist_lower = frozenset(h.lower() for h in whitelist)
 
-    def filter_headers(request: Any, **kwargs: Any) -> None:
+    def filter_headers(request: AWSPreparedRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
         """Filter request headers to only include whitelisted ones."""
         if not hasattr(request, "headers"):
             return

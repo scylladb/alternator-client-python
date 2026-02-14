@@ -142,11 +142,14 @@ class TestSyncManagerNetworkFailures:
 
     @pytest.fixture
     def config(self) -> AlternatorConfig:
+        from alternator.config import NodeListPollingConfig
+
         return AlternatorConfig(
             seed_hosts=["192.168.1.1"],
             port=8000,
-            active_refresh_interval_ms=100,
-            idle_refresh_interval_ms=500,
+            node_list_polling=NodeListPollingConfig(
+                active_interval_ms=100, idle_interval_ms=500
+            ),
         )
 
     def test_manager_survives_fetch_exception(self, config: AlternatorConfig) -> None:

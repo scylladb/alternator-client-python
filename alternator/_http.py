@@ -8,9 +8,11 @@ import logging
 import ssl
 import urllib.request
 from collections.abc import Awaitable, Sequence
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
+    import aiohttp
+
     from alternator.config import TlsConfig
 
 logger = logging.getLogger("alternator")
@@ -51,8 +53,8 @@ class AsyncHttpFetcher(Protocol):
 
 
 def create_sync_http_fetcher(
-        ssl_context: ssl.SSLContext | None = None,
-        timeout_seconds: float = 5.0,
+    ssl_context: ssl.SSLContext | None = None,
+    timeout_seconds: float = 5.0,
 ) -> SyncHttpFetcher:
     """
     Create a synchronous HTTP fetcher for /localnodes endpoint.
@@ -72,7 +74,7 @@ def create_sync_http_fetcher(
             request.add_header("Accept", "application/json")
 
             with urllib.request.urlopen(
-                    request, context=ssl_context, timeout=timeout_seconds
+                request, context=ssl_context, timeout=timeout_seconds
             ) as response:
                 data = response.read().decode("utf-8")
                 nodes = json.loads(data)
@@ -110,9 +112,9 @@ class AsyncNodeFetcher:
     """Async HTTP fetcher for /localnodes endpoint with session management."""
 
     def __init__(
-            self,
-            ssl_context: ssl.SSLContext | None = None,
-            timeout_seconds: float = 5.0,
+        self,
+        ssl_context: ssl.SSLContext | None = None,
+        timeout_seconds: float = 5.0,
     ) -> None:
         try:
             import aiohttp as _aiohttp
@@ -124,9 +126,9 @@ class AsyncNodeFetcher:
         self._aiohttp = _aiohttp
         self._ssl_context = ssl_context
         self._timeout_seconds = timeout_seconds
-        self._session: Any = None
+        self._session: aiohttp.ClientSession | None = None
 
-    async def _ensure_session(self) -> Any:
+    async def _ensure_session(self) -> aiohttp.ClientSession:
         """Ensure a valid session exists, creating one if needed."""
         aiohttp = self._aiohttp
         if self._session is None or self._session.closed:
@@ -135,7 +137,7 @@ class AsyncNodeFetcher:
                 connector=aiohttp.TCPConnector(
                     ssl=self._ssl_context if self._ssl_context else False
                 ),
-                timeout=timeout
+                timeout=timeout,
             )
         return self._session
 
@@ -145,7 +147,7 @@ class AsyncNodeFetcher:
         try:
             sess = await self._ensure_session()
             async with sess.get(
-                    url, headers={"Accept": "application/json"}
+                url, headers={"Accept": "application/json"}
             ) as response:
                 data = await response.text()
                 nodes = json.loads(data)
@@ -153,11 +155,11 @@ class AsyncNodeFetcher:
                     return [str(node) for node in nodes]
                 return []
         except (
-                aiohttp.ClientError,
-                json.JSONDecodeError,
-                asyncio.TimeoutError,
-                OSError,
-                ValueError,
+            aiohttp.ClientError,
+            json.JSONDecodeError,
+            asyncio.TimeoutError,
+            OSError,
+            ValueError,
         ) as e:
             logger.debug(
                 "Failed to fetch nodes from %s: %s",
@@ -175,8 +177,8 @@ class AsyncNodeFetcher:
 
 
 def create_async_http_fetcher(
-        ssl_context: ssl.SSLContext | None = None,
-        timeout_seconds: float = 5.0,
+    ssl_context: ssl.SSLContext | None = None,
+    timeout_seconds: float = 5.0,
 ) -> AsyncNodeFetcher:
     """
     Create an asynchronous HTTP fetcher for /localnodes endpoint.

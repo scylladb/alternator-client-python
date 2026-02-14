@@ -9,14 +9,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import Literal
 
+from alternator.core.routing_scope import ClusterScope, RoutingScope
 from alternator.exceptions import ConfigurationError
 
 logger = logging.getLogger("alternator")
-
-if TYPE_CHECKING:
-    from alternator.core.routing_scope import RoutingScope
 
 
 class CompressionAlgorithm(Enum):
@@ -110,6 +108,98 @@ class TlsConfig:
 
 
 @dataclass(frozen=True)
+class RequestCompressionConfig:
+    """Configuration for request compression."""
+
+    algorithm: CompressionAlgorithm = CompressionAlgorithm.NONE
+    min_size_bytes: int = 1024
+
+    def __post_init__(self) -> None:
+        if self.min_size_bytes < 0:
+            raise ConfigurationError(
+                f"min_size_bytes must be >= 0, got {self.min_size_bytes}"
+            )
+
+    @property
+    def enabled(self) -> bool:
+        """Whether compression is active."""
+        return self.algorithm != CompressionAlgorithm.NONE
+
+
+@dataclass(frozen=True)
+class HeaderOptimizationConfig:
+    """Configuration for request header optimization.
+
+    When enabled, non-essential HTTP headers are stripped from requests
+    to reduce bandwidth. Authentication headers (Authorization,
+    X-Amz-Date, X-Amz-Security-Token) are only preserved when
+    credentials are passed explicitly to create_client /
+    create_async_client via ``aws_access_key_id``. Unlike a regular
+    boto3 DynamoDB client, credentials from environment variables
+    or ~/.aws/credentials are not detected for this purpose — pass
+    them explicitly when using header optimization.
+    """
+
+    enabled: bool = False
+    whitelist: frozenset[str] | None = None
+
+
+class RetryMode(Enum):
+    """Retry mode for boto3/botocore requests."""
+
+    LEGACY = "legacy"
+    STANDARD = "standard"
+    ADAPTIVE = "adaptive"
+
+
+@dataclass(frozen=True)
+class RetryConfig:
+    """Retry settings for DynamoDB operations."""
+
+    max_attempts: int = 3
+    mode: RetryMode = RetryMode.STANDARD
+
+    def __post_init__(self) -> None:
+        if self.max_attempts < 0:
+            raise ConfigurationError(
+                f"max_attempts must be >= 0, got {self.max_attempts}"
+            )
+
+
+@dataclass(frozen=True)
+class TimeoutConfig:
+    """Timeout settings for Alternator operations (in seconds)."""
+
+    discovery_seconds: float = 5.0  # Timeout for /localnodes discovery requests
+    connect_seconds: float = 5.0  # TCP connection timeout for DynamoDB operations
+    read_seconds: float = 30.0  # Read timeout for DynamoDB operations
+
+    def __post_init__(self) -> None:
+        for field_name in ("discovery_seconds", "connect_seconds", "read_seconds"):
+            value = getattr(self, field_name)
+            if value <= 0:
+                raise ConfigurationError(f"{field_name} must be > 0, got {value}")
+
+
+@dataclass(frozen=True)
+class NodeListPollingConfig:
+    """Configuration for node list refresh intervals."""
+
+    active_interval_ms: int = 1000  # Refresh interval when client is active (1 second)
+    idle_interval_ms: int = 60000  # Refresh interval when client is idle (1 minute)
+
+    def __post_init__(self) -> None:
+        if self.active_interval_ms <= 0:
+            raise ConfigurationError(
+                f"active_interval_ms must be > 0, got {self.active_interval_ms}"
+            )
+        if self.idle_interval_ms <= 0:
+            raise ConfigurationError(
+                f"idle_interval_ms must be > 0, got {self.idle_interval_ms}"
+            )
+
+
+@dataclass(frozen=True)
 class KeyRouteAffinityConfig:
     """Configuration for LWT-optimized routing."""
 
@@ -137,23 +227,20 @@ class AlternatorConfig:
 
     # Required: Connection settings
     port: int
-    scheme: str = "http"  # "http" or "https"
+    scheme: Literal["http", "https"] = "http"
 
     # Routing scope for topology awareness
-    routing_scope: RoutingScope = field(
-        default_factory=lambda: _default_cluster_scope()
+    routing_scope: RoutingScope = field(default_factory=ClusterScope)
+
+    # Request compression settings
+    request_compression: RequestCompressionConfig = field(
+        default_factory=RequestCompressionConfig
     )
 
-    # Compression settings
-    compression: CompressionAlgorithm = CompressionAlgorithm.NONE
-    min_compression_size_bytes: int = 1024
-
     # Header optimization
-    optimize_headers: bool = False
-    headers_whitelist: frozenset[str] | None = None
-
-    # Authentication
-    authentication_enabled: bool = True
+    header_optimization: HeaderOptimizationConfig = field(
+        default_factory=HeaderOptimizationConfig
+    )
 
     # TLS configuration (used when scheme="https")
     tls: TlsConfig = field(default_factory=TlsConfig.system_default)
@@ -161,17 +248,19 @@ class AlternatorConfig:
     # Key route affinity for LWT optimization
     key_affinity: KeyRouteAffinityConfig = field(default_factory=KeyRouteAffinityConfig)
 
+    # Retry settings
+    retries: RetryConfig = field(default_factory=RetryConfig)
+
     # Connection pooling
     max_pool_connections: int = 200  # Max connections per host
 
-    # Refresh intervals (milliseconds)
-    active_refresh_interval_ms: int = 1000  # 1 second
-    idle_refresh_interval_ms: int = 60000  # 1 minute
+    # Node list refresh intervals
+    node_list_polling: NodeListPollingConfig = field(
+        default_factory=NodeListPollingConfig
+    )
 
-    # Timeout settings (seconds)
-    discovery_timeout_seconds: float = 5.0  # Timeout for /localnodes requests
-    connect_timeout_seconds: float = 5.0  # TCP connection timeout
-    read_timeout_seconds: float = 30.0  # Read timeout for operations
+    # Timeout settings
+    timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -183,41 +272,10 @@ class AlternatorConfig:
             )
         if self.port <= 0 or self.port > 65535:
             raise ConfigurationError(f"port must be 1-65535, got {self.port}")
-        if self.min_compression_size_bytes < 0:
-            raise ConfigurationError(
-                f"min_compression_size_bytes must be >= 0, got {self.min_compression_size_bytes}"
-            )
         if self.max_pool_connections <= 0:
             raise ConfigurationError(
                 f"max_pool_connections must be > 0, got {self.max_pool_connections}"
             )
-        if self.active_refresh_interval_ms <= 0:
-            raise ConfigurationError(
-                f"active_refresh_interval_ms must be > 0, got {self.active_refresh_interval_ms}"
-            )
-        if self.idle_refresh_interval_ms <= 0:
-            raise ConfigurationError(
-                f"idle_refresh_interval_ms must be > 0, got {self.idle_refresh_interval_ms}"
-            )
-        if self.discovery_timeout_seconds <= 0:
-            raise ConfigurationError(
-                f"discovery_timeout_seconds must be > 0, got {self.discovery_timeout_seconds}"
-            )
-        if self.connect_timeout_seconds <= 0:
-            raise ConfigurationError(
-                f"connect_timeout_seconds must be > 0, got {self.connect_timeout_seconds}"
-            )
-        if self.read_timeout_seconds <= 0:
-            raise ConfigurationError(
-                f"read_timeout_seconds must be > 0, got {self.read_timeout_seconds}"
-            )
-
-
-def _default_cluster_scope() -> RoutingScope:
-    """Create default ClusterScope (avoids circular import)."""
-    from alternator.core.routing_scope import ClusterScope
-
-    return ClusterScope()
 
 
 class AlternatorConfigBuilder:
@@ -239,21 +297,16 @@ class AlternatorConfigBuilder:
     def __init__(self) -> None:
         self._seed_hosts: list[str] = []
         self._port: int = 8000
-        self._scheme: str = "http"
+        self._scheme: Literal["http", "https"] = "http"
         self._routing_scope: RoutingScope | None = None
-        self._compression = CompressionAlgorithm.NONE
-        self._min_compression_size = 1024
-        self._optimize_headers = False
-        self._headers_whitelist: frozenset[str] | None = None
-        self._auth_enabled = True
+        self._request_compression = RequestCompressionConfig()
+        self._header_optimization = HeaderOptimizationConfig()
         self._tls = TlsConfig.system_default()
         self._key_affinity = KeyRouteAffinityConfig()
+        self._retries = RetryConfig()
         self._max_pool_connections = 200
-        self._active_refresh_ms = 1000
-        self._idle_refresh_ms = 60000
-        self._discovery_timeout = 5.0
-        self._connect_timeout = 5.0
-        self._read_timeout = 30.0
+        self._node_list_polling = NodeListPollingConfig()
+        self._timeouts = TimeoutConfig()
 
     def with_seeds(self, *hosts: str) -> AlternatorConfigBuilder:
         """Add seed hosts for node discovery."""
@@ -304,17 +357,28 @@ class AlternatorConfigBuilder:
         self, algorithm: CompressionAlgorithm, min_size: int = 1024
     ) -> AlternatorConfigBuilder:
         """Enable request compression."""
-        self._compression = algorithm
-        self._min_compression_size = min_size
+        self._request_compression = RequestCompressionConfig(
+            algorithm=algorithm, min_size_bytes=min_size
+        )
         return self
 
     def with_header_optimization(
         self, whitelist: frozenset[str] | set[str] | None = None
     ) -> AlternatorConfigBuilder:
-        """Enable header optimization (filtering)."""
-        self._optimize_headers = True
-        self._headers_whitelist = (
-            frozenset(whitelist) if whitelist is not None else None
+        """Enable header optimization (filtering).
+
+        When enabled, non-essential HTTP headers are stripped from requests
+        to reduce bandwidth. Authentication headers (Authorization,
+        X-Amz-Date, X-Amz-Security-Token) are only preserved when
+        credentials are passed explicitly to create_client /
+        create_async_client via ``aws_access_key_id``. Unlike a regular
+        boto3 DynamoDB client, credentials from environment variables
+        or ~/.aws/credentials are not detected for this purpose — pass
+        them explicitly when using header optimization.
+        """
+        self._header_optimization = HeaderOptimizationConfig(
+            enabled=True,
+            whitelist=frozenset(whitelist) if whitelist is not None else None,
         )
         return self
 
@@ -330,17 +394,22 @@ class AlternatorConfigBuilder:
         )
         return self
 
-    def without_authentication(self) -> AlternatorConfigBuilder:
-        """Disable authentication headers."""
-        self._auth_enabled = False
-        return self
-
     def with_refresh_intervals(
         self, active_ms: int = 1000, idle_ms: int = 60000
     ) -> AlternatorConfigBuilder:
         """Set node refresh intervals."""
-        self._active_refresh_ms = active_ms
-        self._idle_refresh_ms = idle_ms
+        self._node_list_polling = NodeListPollingConfig(
+            active_interval_ms=active_ms, idle_interval_ms=idle_ms
+        )
+        return self
+
+    def with_retries(
+        self,
+        max_attempts: int = 3,
+        mode: RetryMode = RetryMode.STANDARD,
+    ) -> AlternatorConfigBuilder:
+        """Set retry configuration for DynamoDB operations."""
+        self._retries = RetryConfig(max_attempts=max_attempts, mode=mode)
         return self
 
     def with_pool_connections(self, max_connections: int) -> AlternatorConfigBuilder:
@@ -355,9 +424,11 @@ class AlternatorConfigBuilder:
         read_seconds: float = 30.0,
     ) -> AlternatorConfigBuilder:
         """Set timeout values for discovery and operations."""
-        self._discovery_timeout = discovery_seconds
-        self._connect_timeout = connect_seconds
-        self._read_timeout = read_seconds
+        self._timeouts = TimeoutConfig(
+            discovery_seconds=discovery_seconds,
+            connect_seconds=connect_seconds,
+            read_seconds=read_seconds,
+        )
         return self
 
     def build(self) -> AlternatorConfig:
@@ -369,17 +440,12 @@ class AlternatorConfigBuilder:
             port=self._port,
             scheme=self._scheme,
             routing_scope=self._routing_scope or ClusterScope(),
-            compression=self._compression,
-            min_compression_size_bytes=self._min_compression_size,
-            optimize_headers=self._optimize_headers,
-            headers_whitelist=self._headers_whitelist,
-            authentication_enabled=self._auth_enabled,
+            request_compression=self._request_compression,
+            header_optimization=self._header_optimization,
             tls=self._tls,
             key_affinity=self._key_affinity,
+            retries=self._retries,
             max_pool_connections=self._max_pool_connections,
-            active_refresh_interval_ms=self._active_refresh_ms,
-            idle_refresh_interval_ms=self._idle_refresh_ms,
-            discovery_timeout_seconds=self._discovery_timeout,
-            connect_timeout_seconds=self._connect_timeout,
-            read_timeout_seconds=self._read_timeout,
+            node_list_polling=self._node_list_polling,
+            timeouts=self._timeouts,
         )

@@ -1,0 +1,26 @@
+changelog:
+  exclude:
+    labels:
+      - ci
+      - docs
+      - chore
+      - dependencies
+      - test
+    authors:
+      - dependabot
+      - dependabot[bot]
+  categories:
+    - title: Breaking Changes
+      labels:
+        - breaking
+    - title: New Features
+      labels:
+        - enhancement
+        - feature
+    - title: Bug Fixes
+      labels:
+        - bug
+        - fix
+    - title: Other Changes
+      labels:
+        - "*"
