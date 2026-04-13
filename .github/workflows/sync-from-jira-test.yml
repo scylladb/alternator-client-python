@@ -1,0 +1,25 @@
+name: Sync From Jira Test
+
+on:
+  repository_dispatch:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  dump-event:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Print event metadata
+        run: |
+          echo "event_name=${GITHUB_EVENT_NAME}"
+          echo "repository=${GITHUB_REPOSITORY}"
+          echo "ref=${GITHUB_REF}"
+          echo "sha=${GITHUB_SHA}"
+
+      - name: Print event payload
+        run: |
+          jq . "$GITHUB_EVENT_PATH"
