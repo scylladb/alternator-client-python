@@ -63,10 +63,15 @@ Exceptions
 - ``NoNodesAvailableError``: Raised when no nodes are available for routing
 - ``ConfigurationError``: Raised for invalid configuration
 
+Vector Search (ScyllaDB Extension)
+-----------------------------------
+- ``Vector``: Optimized vector type stored as ``FLOAT32VECTOR`` on the wire
+
 Notes
 -----
 - Gzip compression requires ScyllaDB 2026.1.0 or later
 - For async support, install with: ``pip install alternator[async]``
+- Vector search is a ScyllaDB Alternator extension not available on AWS DynamoDB
 """
 
 from alternator._version import __version__
@@ -104,6 +109,7 @@ from alternator.exceptions import (
     ConfigurationError,
     NoNodesAvailableError,
 )
+from alternator.vector import Vector
 
 __all__ = [
     # Version
@@ -142,6 +148,8 @@ __all__ = [
     "DatacenterScope",
     "RackScope",
     "RoutingScope",
+    # Vector Search (ScyllaDB extension)
+    "Vector",
 ]
 
 

@@ -28,6 +28,7 @@ from alternator.core.key_affinity import (
     should_use_affinity,
 )
 from alternator.core.live_nodes import AsyncLiveNodesManager
+from alternator.vector import enable_vector_support
 
 if TYPE_CHECKING:
     from types_aiobotocore_dynamodb import DynamoDBClient as AsyncDynamoDBClient
@@ -390,6 +391,9 @@ async def create_async_client(
 
         # Attach manager for cleanup reference
         setattr(client, MANAGER_ATTR, manager)
+
+        # Enable Alternator vector search extensions
+        enable_vector_support(client)
     except Exception:
         # Clean up the HTTP fetcher session on failure
         if isinstance(http_fetcher, AsyncNodeFetcher):

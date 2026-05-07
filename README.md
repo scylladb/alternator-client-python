@@ -315,6 +315,103 @@ finally:
     close_resource(resource)
 ```
 
+## Vector Search (ScyllaDB Extension)
+
+ScyllaDB Alternator supports vector similarity search, which is not part of the standard AWS DynamoDB API. All clients and resources created by this library have vector search support enabled automatically — no extra setup is needed.
+
+> **Note:** Vector search requires ScyllaDB with Alternator vector search support enabled. These operations are not available on AWS DynamoDB. The feature is fully supported from ScyllaDB 2026.3, and only partially supported in ScyllaDB 2026.2: Version 2026.2 did not yet support the optimized "Vector" type, configurable SimilarityFunction, returning scores (ReturnScores), pre-filtering (KeyConditionExpression) or projected attributes (ProjectionType=INCLUDE).
+
+### Creating a Table with a Vector Index
+
+```python
+client.create_table(
+    TableName="embeddings",
+    KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+    AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+    BillingMode="PAY_PER_REQUEST",
+    VectorIndexes=[{
+        "IndexName": "embedding_index",
+        "VectorAttribute": {"AttributeName": "embedding", "Dimensions": 128},
+        "SimilarityFunction": "COSINE",  # or "DOT_PRODUCT" / "EUCLIDEAN"
+    }],
+)
+```
+
+You can also add a vector index to an existing table via `UpdateTable`:
+
+```python
+client.update_table(
+    TableName="embeddings",
+    VectorIndexUpdates=[{
+        "Create": {
+            "IndexName": "embedding_index",
+            "VectorAttribute": {"AttributeName": "embedding", "Dimensions": 128},
+            "SimilarityFunction": "COSINE",
+        }
+    }],
+)
+```
+
+### Storing and Querying Vectors
+
+#### Low-level client (FLOAT32VECTOR wire format)
+
+```python
+# Store an item with a vector attribute
+client.put_item(
+    TableName="embeddings",
+    Item={
+        "id": {"S": "item1"},
+        "embedding": {"FLOAT32VECTOR": [0.1, 0.2, 0.3, 0.4]},
+    },
+)
+
+# Query by vector similarity (returns the k nearest neighbors)
+result = client.query(
+    TableName="embeddings",
+    VectorSearch={
+        "QueryVector": {"FLOAT32VECTOR": [0.1, 0.2, 0.3, 0.4]},
+        "ReturnScores": "SIMILARITY",  # optional: include similarity scores
+    },
+    Limit=10,
+)
+for item in result["Items"]:
+    print(item)
+# If ReturnScores was set, similarity scores are in result["Scores"]
+```
+
+#### High-level resource interface (Vector type)
+
+The `Vector` class is a `list` subclass that signals to Alternator that the
+value should be stored as an array of 32-bit floats using the `FLOAT32VECTOR`
+wire type. Without `Vector`, a list of numbers is serialized as a DynamoDB `L`
+(list) of high-precision `N` (decimal) values — correct for arbitrary numbers,
+but wasteful for embedding vectors where 32-bit precision is sufficient.
+Using `Vector` for stored attributes reduces storage significantly (4 bytes per
+element instead of a variable-length decimal string). For query vectors it
+makes less difference, but using `Vector` consistently keeps the code uniform.
+
+```python
+from alternator.vector import Vector
+
+table = resource.Table("embeddings")
+
+# Store a vector (sent as FLOAT32VECTOR, stored as compact 32-bit floats)
+table.put_item(Item={"id": "item1", "embedding": Vector([0.1, 0.2, 0.3, 0.4])})
+
+# Query by vector similarity
+result = table.query(
+    VectorSearch={
+        "QueryVector": Vector([0.1, 0.2, 0.3, 0.4]),
+        "ReturnScores": "SIMILARITY",
+    },
+    Limit=10,
+)
+for item in result["Items"]:
+    # embedding is automatically deserialized back as a Vector instance
+    print(item["embedding"])
+```
+
 ## Manual Resource Management
 
 If you prefer not to use context managers:
