@@ -26,6 +26,7 @@ from alternator.core.key_affinity import (
     should_use_affinity,
 )
 from alternator.core.live_nodes import SyncLiveNodesManager
+from alternator.vector import enable_vector_support
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
@@ -292,6 +293,13 @@ def create_client(
     # Attach manager for cleanup reference
     setattr(client, MANAGER_ATTR, manager)
 
+    # Enable Alternator vector search extensions
+    try:
+        enable_vector_support(client)
+    except Exception:
+        manager.stop()
+        raise
+
     return client
 
 
@@ -350,6 +358,13 @@ def create_resource(
 
     # Attach manager for cleanup reference
     setattr(resource, MANAGER_ATTR, manager)
+
+    # Enable Alternator vector search extensions
+    try:
+        enable_vector_support(resource)
+    except Exception:
+        manager.stop()
+        raise
 
     return resource
 
