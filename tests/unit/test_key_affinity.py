@@ -112,12 +112,30 @@ class TestShouldUseAffinity:
         params = {}
         assert should_use_affinity("RMW", "PutItem", params) is False
 
+    def test_rmw_mode_with_batch_write(self) -> None:
+        """Test RMW mode does not use affinity for BatchWriteItem."""
+        params = {
+            "RequestItems": {
+                "users": [
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "user_id": {"S": "user123"},
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+        assert should_use_affinity("RMW", "BatchWriteItem", params) is False
+
     def test_any_write_mode_with_write(self) -> None:
         """Test ANY_WRITE mode with write operation."""
         params = {}
         assert should_use_affinity("ANY_WRITE", "PutItem", params) is True
         assert should_use_affinity("ANY_WRITE", "UpdateItem", params) is True
         assert should_use_affinity("ANY_WRITE", "DeleteItem", params) is True
+        assert should_use_affinity("ANY_WRITE", "BatchWriteItem", params) is True
 
     def test_any_write_mode_with_read(self) -> None:
         """Test ANY_WRITE mode with read operation."""
@@ -153,6 +171,65 @@ class TestExtractPartitionKey:
         params = {"Item": {"pk": {"S": "partition_key_value"}}}
         result = extract_partition_key(params, "pk")
         assert result == ("S", "partition_key_value")
+
+    def test_extract_from_batch_write_put_request(self) -> None:
+        """Test extracting PK from BatchWriteItem PutRequest."""
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "order_id": {"S": "order123"},
+                                "data": {"S": "value"},
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+        result = extract_partition_key(params, "order_id")
+        assert result == ("S", "order123")
+
+    def test_extract_from_batch_write_delete_request(self) -> None:
+        """Test extracting PK from BatchWriteItem DeleteRequest."""
+        params = {
+            "RequestItems": {
+                "sessions": [
+                    {
+                        "DeleteRequest": {
+                            "Key": {
+                                "session_id": {"S": "session123"},
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+        result = extract_partition_key(params, "session_id")
+        assert result == ("S", "session123")
+
+    def test_extract_from_empty_batch_write(self) -> None:
+        """Test empty BatchWriteItem does not produce a PK."""
+        params: dict[str, object] = {"RequestItems": {}}
+        result = extract_partition_key(params, "pk")
+        assert result is None
+
+    def test_extract_from_batch_get_shape(self) -> None:
+        """Test BatchGetItem RequestItems are not treated as batch writes."""
+        params = {
+            "RequestItems": {
+                "users": {
+                    "Keys": [
+                        {
+                            "user_id": {"S": "user123"},
+                        }
+                    ]
+                }
+            }
+        }
+        result = extract_partition_key(params, "user_id")
+        assert result is None
 
     def test_key_not_found(self) -> None:
         """Test when partition key is not in params."""
@@ -212,6 +289,60 @@ class TestGetTableName:
         """Test extracting present table name."""
         params = {"TableName": "users"}
         assert get_table_name(params) == "users"
+
+    def test_table_name_from_batch_write_put_request(self) -> None:
+        """Test extracting table name from BatchWriteItem PutRequest."""
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "order_id": {"S": "order123"},
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+        assert get_table_name(params) == "orders"
+
+    def test_table_name_from_batch_write_delete_request(self) -> None:
+        """Test extracting table name from BatchWriteItem DeleteRequest."""
+        params = {
+            "RequestItems": {
+                "sessions": [
+                    {
+                        "DeleteRequest": {
+                            "Key": {
+                                "session_id": {"S": "session123"},
+                            }
+                        }
+                    }
+                ]
+            }
+        }
+        assert get_table_name(params) == "sessions"
+
+    def test_table_name_from_empty_batch_write(self) -> None:
+        """Test empty BatchWriteItem does not produce a table name."""
+        params: dict[str, object] = {"RequestItems": {}}
+        assert get_table_name(params) is None
+
+    def test_table_name_from_batch_get_shape(self) -> None:
+        """Test BatchGetItem RequestItems are not treated as batch writes."""
+        params = {
+            "RequestItems": {
+                "users": {
+                    "Keys": [
+                        {
+                            "user_id": {"S": "user123"},
+                        }
+                    ]
+                }
+            }
+        }
+        assert get_table_name(params) is None
 
     def test_table_name_missing(self) -> None:
         """Test when table name is missing."""
