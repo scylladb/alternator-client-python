@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
 
@@ -14,6 +14,11 @@ if TYPE_CHECKING:
     from alternator.core.live_nodes import NodeList
 
 logger = logging.getLogger("alternator")
+
+
+class _BatchWriteRoutingTarget(NamedTuple):
+    table_name: str
+    attributes: dict[str, Any]
 
 
 class AffinitySelector:
@@ -98,6 +103,11 @@ def extract_partition_key(
         pk_value = params["Item"][pk_name]
         return _extract_typed_value(pk_value)
 
+    batch_target = _find_batch_write_routing_target(params)
+    if batch_target and pk_name in batch_target.attributes:
+        pk_value = batch_target.attributes[pk_name]
+        return _extract_typed_value(pk_value)
+
     return None
 
 
@@ -111,7 +121,44 @@ def _extract_typed_value(attr_value: dict[str, Any]) -> tuple[str, Any] | None:
 
 def get_table_name(params: dict[str, Any]) -> str | None:
     """Extract table name from request params."""
-    return params.get("TableName")
+    table_name = params.get("TableName")
+    if isinstance(table_name, str):
+        return table_name
+
+    batch_target = _find_batch_write_routing_target(params)
+    if batch_target:
+        return batch_target.table_name
+
+    return None
+
+
+def _find_batch_write_routing_target(
+    params: dict[str, Any],
+) -> _BatchWriteRoutingTarget | None:
+    request_items = params.get("RequestItems")
+    if not isinstance(request_items, dict):
+        return None
+
+    for table_name, writes in request_items.items():
+        if not isinstance(table_name, str) or not isinstance(writes, list):
+            continue
+        for write in writes:
+            if not isinstance(write, dict):
+                continue
+
+            put_request = write.get("PutRequest")
+            if isinstance(put_request, dict):
+                item = put_request.get("Item")
+                if isinstance(item, dict):
+                    return _BatchWriteRoutingTarget(table_name, item)
+
+            delete_request = write.get("DeleteRequest")
+            if isinstance(delete_request, dict):
+                key = delete_request.get("Key")
+                if isinstance(key, dict):
+                    return _BatchWriteRoutingTarget(table_name, key)
+
+    return None
 
 
 class PartitionKeyCache:
