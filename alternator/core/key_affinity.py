@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -19,6 +20,7 @@ logger = logging.getLogger("alternator")
 class _BatchWriteRoutingTarget(NamedTuple):
     table_name: str
     attributes: dict[str, Any]
+    sort_key: tuple[str, str, str]
 
 
 class AffinitySelector:
@@ -139,6 +141,7 @@ def _find_batch_write_routing_target(
     if not isinstance(request_items, dict):
         return None
 
+    target: _BatchWriteRoutingTarget | None = None
     for table_name, writes in request_items.items():
         if not isinstance(table_name, str) or not isinstance(writes, list):
             continue
@@ -150,15 +153,70 @@ def _find_batch_write_routing_target(
             if isinstance(put_request, dict):
                 item = put_request.get("Item")
                 if isinstance(item, dict):
-                    return _BatchWriteRoutingTarget(table_name, item)
+                    target = _min_batch_write_target(
+                        target,
+                        _BatchWriteRoutingTarget(
+                            table_name,
+                            item,
+                            _batch_write_sort_key(table_name, "PutRequest", item),
+                        ),
+                    )
 
             delete_request = write.get("DeleteRequest")
             if isinstance(delete_request, dict):
                 key = delete_request.get("Key")
                 if isinstance(key, dict):
-                    return _BatchWriteRoutingTarget(table_name, key)
+                    target = _min_batch_write_target(
+                        target,
+                        _BatchWriteRoutingTarget(
+                            table_name,
+                            key,
+                            _batch_write_sort_key(table_name, "DeleteRequest", key),
+                        ),
+                    )
 
-    return None
+    return target
+
+
+def _min_batch_write_target(
+    current: _BatchWriteRoutingTarget | None,
+    candidate: _BatchWriteRoutingTarget,
+) -> _BatchWriteRoutingTarget:
+    if current is None or candidate.sort_key < current.sort_key:
+        return candidate
+    return current
+
+
+def _batch_write_sort_key(
+    table_name: str,
+    operation: str,
+    attributes: dict[str, Any],
+) -> tuple[str, str, str]:
+    return (table_name, _canonical_json(attributes), operation)
+
+
+def _canonical_json(value: object) -> str:
+    return json.dumps(
+        _to_jsonable(value),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _to_jsonable(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            str(key): _to_jsonable(item_value)
+            for key, item_value in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, list):
+        return [_to_jsonable(item) for item in value]
+    if isinstance(value, bytes | bytearray):
+        return {"__bytes__": bytes(value).hex()}
+    if isinstance(value, str | int | float | bool) or value is None:
+        return value
+    return repr(value)
 
 
 class PartitionKeyCache:

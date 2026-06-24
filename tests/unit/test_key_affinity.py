@@ -3,8 +3,10 @@
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 from unittest.mock import MagicMock
 
+from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     AffinitySelector,
     PartitionKeyCache,
@@ -15,6 +17,18 @@ from alternator.core.key_affinity import (
     should_use_affinity,
 )
 from alternator.core.live_nodes import NodeList
+
+
+def _batch_write_routing_target(
+    params: dict[str, Any],
+) -> tuple[str | None, tuple[str, Any] | None, int | None]:
+    table_name = get_table_name(params)
+    pk = extract_partition_key(params, "pk")
+    if pk is None:
+        return (table_name, None, None)
+
+    attr_type, value = pk
+    return (table_name, pk, hash_attribute_value(attr_type, value))
 
 
 class TestIsRmwOperation:
@@ -208,6 +222,161 @@ class TestExtractPartitionKey:
         }
         result = extract_partition_key(params, "session_id")
         assert result == ("S", "session123")
+
+    def test_extract_from_batch_write_is_table_order_independent(self) -> None:
+        """Test batch affinity target is independent of RequestItems order."""
+        orders = [
+            {
+                "PutRequest": {
+                    "Item": {
+                        "pk": {"S": "order123"},
+                    }
+                }
+            }
+        ]
+        sessions = [
+            {
+                "DeleteRequest": {
+                    "Key": {
+                        "pk": {"S": "session123"},
+                    }
+                }
+            }
+        ]
+        params_a = {"RequestItems": {"orders": orders, "sessions": sessions}}
+        params_b = {"RequestItems": {"sessions": sessions, "orders": orders}}
+
+        assert get_table_name(params_a) == "orders"
+        assert get_table_name(params_b) == "orders"
+        assert extract_partition_key(params_a, "pk") == ("S", "order123")
+        assert extract_partition_key(params_b, "pk") == ("S", "order123")
+
+    def test_extract_from_batch_write_is_write_order_independent(self) -> None:
+        """Test batch affinity target is independent of write order."""
+        write_a = {
+            "PutRequest": {
+                "Item": {
+                    "pk": {"S": "order123"},
+                }
+            }
+        }
+        write_b = {
+            "PutRequest": {
+                "Item": {
+                    "pk": {"S": "order456"},
+                }
+            }
+        }
+        params_a = {"RequestItems": {"orders": [write_a, write_b]}}
+        params_b = {"RequestItems": {"orders": [write_b, write_a]}}
+
+        assert extract_partition_key(params_a, "pk") == ("S", "order123")
+        assert extract_partition_key(params_b, "pk") == ("S", "order123")
+
+    def test_batch_write_routing_hash_is_deterministic_for_same_request(self) -> None:
+        """Test equivalent BatchWriteItem requests use the same routing hash."""
+        params_a = {
+            "RequestItems": {
+                "sessions": [
+                    {
+                        "DeleteRequest": {
+                            "Key": {
+                                "pk": {"S": "session123"},
+                            }
+                        }
+                    }
+                ],
+                "orders": [
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "data": {"S": "value"},
+                                "pk": {"S": "order123"},
+                            }
+                        }
+                    },
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "pk": {"S": "order456"},
+                                "data": {"S": "value"},
+                            }
+                        }
+                    },
+                ],
+            }
+        }
+        params_b = {
+            "RequestItems": {
+                "orders": [
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "data": {"S": "value"},
+                                "pk": {"S": "order456"},
+                            }
+                        }
+                    },
+                    {
+                        "PutRequest": {
+                            "Item": {
+                                "pk": {"S": "order123"},
+                                "data": {"S": "value"},
+                            }
+                        }
+                    },
+                ],
+                "sessions": [
+                    {
+                        "DeleteRequest": {
+                            "Key": {
+                                "pk": {"S": "session123"},
+                            }
+                        }
+                    }
+                ],
+            }
+        }
+
+        assert _batch_write_routing_target(params_a) == _batch_write_routing_target(
+            params_b
+        )
+
+    def test_batch_write_routing_hash_is_deterministic_for_repeated_build(
+        self,
+    ) -> None:
+        """Test repeated same-way BatchWriteItem construction routes identically."""
+
+        def build_request() -> dict[str, Any]:
+            return {
+                "RequestItems": {
+                    "orders": [
+                        {
+                            "PutRequest": {
+                                "Item": {
+                                    "pk": {"S": "order123"},
+                                    "data": {"S": "value"},
+                                }
+                            }
+                        }
+                    ],
+                    "sessions": [
+                        {
+                            "DeleteRequest": {
+                                "Key": {
+                                    "pk": {"S": "session123"},
+                                }
+                            }
+                        }
+                    ],
+                }
+            }
+
+        targets = {_batch_write_routing_target(build_request()) for _ in range(10)}
+
+        assert targets == {
+            ("orders", ("S", "order123"), hash_attribute_value("S", "order123"))
+        }
 
     def test_extract_from_empty_batch_write(self) -> None:
         """Test empty BatchWriteItem does not produce a PK."""
