@@ -462,7 +462,7 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 - **Request Compression**: Gzip compression requires ScyllaDB 2026.1.0+. Response compression is not yet supported by Alternator.
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
 - **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
-- **Batch Operations**: `BatchWriteItem` key affinity is based on the first `PutRequest` or `DeleteRequest` in the batch. Batches with items targeting different partition keys are not split by affinity target.
+- **Batch Operations**: `BatchWriteItem` key affinity is based on a deterministic `PutRequest` or `DeleteRequest` selected from the batch. Batches with items targeting different partition keys are not split by affinity target.
 
 ## Development
 
