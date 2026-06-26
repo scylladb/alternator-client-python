@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import gzip
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
-from botocore.awsrequest import AWSPreparedRequest
+from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 
 
 def create_compression_handler(
@@ -27,7 +27,10 @@ def create_compression_handler(
         Event handler function for botocore
     """
 
-    def compress_request(request: AWSPreparedRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
+    def compress_request(
+        request: AWSPreparedRequest | AWSRequest,
+        **kwargs: Any,  # noqa: ANN401 -- botocore event handler signature
+    ) -> None:
         """Compress request body if it exceeds threshold."""
         raw_body = request.body
         if raw_body is None:
@@ -51,8 +54,20 @@ def create_compression_handler(
             return
 
         # Update request with compressed body
-        request.body = compressed
+        _set_request_body(request, compressed)
         request.headers["Content-Encoding"] = "gzip"
         request.headers["Content-Length"] = str(len(compressed))
 
     return compress_request
+
+
+def _set_request_body(request: AWSPreparedRequest | AWSRequest, body: bytes) -> None:
+    """Set request body for both prepared and pre-signing request objects."""
+    mutable_request = cast(Any, request)
+    if isinstance(request, AWSPreparedRequest):
+        mutable_request.body = body
+        return
+    if isinstance(request, AWSRequest):
+        mutable_request.data = body
+        return
+    mutable_request.body = body
