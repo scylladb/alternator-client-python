@@ -9,12 +9,12 @@ import threading
 import weakref
 from collections.abc import Callable, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 import boto3
 from botocore.config import Config as BotoConfig
 
-from alternator._constants import MANAGER_ATTR, PK_CACHE_ATTR
+from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
 from alternator.config import Config, KeyRouteAffinityMode
 from alternator.core.auth import apply_auth
@@ -44,6 +44,7 @@ _active_managers: weakref.WeakValueDictionary[int, SyncLiveNodesManager] = (
     weakref.WeakValueDictionary()
 )
 _registry_lock = threading.Lock()
+_AUTH_UNSET = object()
 
 
 def _cleanup_manager(manager_id: int) -> None:
@@ -65,13 +66,24 @@ def _cleanup_manager(manager_id: int) -> None:
         pass
 
 
+def _register_active_manager(manager: SyncLiveNodesManager) -> None:
+    """Register a manager for process-exit cleanup."""
+    with _registry_lock:
+        _active_managers[id(manager)] = manager
+
+
+def _unregister_active_manager(manager: SyncLiveNodesManager) -> None:
+    """Remove a manager from process-exit cleanup tracking."""
+    with _registry_lock:
+        _active_managers.pop(id(manager), None)
+
+
 def _register_manager(
     manager: SyncLiveNodesManager, client: DynamoDBClient | DynamoDBServiceResource
 ) -> None:
     """Register a manager for cleanup tracking and set up GC finalizer."""
     manager_id = id(manager)
-    with _registry_lock:
-        _active_managers[manager_id] = manager
+    _register_active_manager(manager)
     weakref.finalize(client, _cleanup_manager, manager_id)
 
 
@@ -87,7 +99,7 @@ def _cleanup_all_managers() -> None:
             manager.stop()
 
 
-def _create_and_start_manager(config: Config) -> SyncLiveNodesManager:
+def _create_manager(config: Config) -> SyncLiveNodesManager:
     """
     Create and initialize a SyncLiveNodesManager.
 
@@ -95,7 +107,6 @@ def _create_and_start_manager(config: Config) -> SyncLiveNodesManager:
     - SSL context creation for HTTPS
     - HTTP fetcher setup
     - Initial node discovery with fallback
-    - Starting background refresh thread
 
     Args:
         config: Alternator configuration
@@ -123,9 +134,13 @@ def _create_and_start_manager(config: Config) -> SyncLiveNodesManager:
 
         manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
 
-    # Start background refresh thread
-    manager.start()
+    return manager
 
+
+def _create_and_start_manager(config: Config) -> SyncLiveNodesManager:
+    """Create a manager and start its background refresh thread."""
+    manager = _create_manager(config)
+    manager.start()
     return manager
 
 
@@ -222,6 +237,56 @@ def _create_affinity_hash_computer(
     return compute_affinity_hash
 
 
+def _create_client_with_manager(
+    config: Config,
+    manager: SyncLiveNodesManager,
+    *,
+    auth: Auth | None = None,
+    owns_manager: bool,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+) -> DynamoDBClient:
+    """Create a boto3 client using an already initialized manager."""
+    # BotoConfig is managed internally — don't let callers override it
+    boto_kwargs.pop("config", None)
+
+    # Get initial endpoint and merged boto config
+    initial_endpoint = manager.next_node_uri()
+    auth_enabled = apply_auth(auth, boto_kwargs)
+    boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
+
+    # Create boto3 client
+    # Alternator doesn't use AWS regions, but boto3 requires one;
+    # default to "us-east-1" unless the caller overrides it.
+    boto_kwargs.setdefault("region_name", "us-east-1")
+    client: DynamoDBClient = boto3.client(
+        "dynamodb",
+        endpoint_url=initial_endpoint,
+        config=boto_config,
+        **boto_kwargs,
+    )
+
+    # Register all handlers
+    _register_alternator_handlers(
+        client.meta.events,
+        manager,
+        config,
+        _create_affinity_hash_computer(config, client),
+        auth_enabled=auth_enabled,
+    )
+
+    # Attach manager for cleanup reference
+    setattr(client, MANAGER_ATTR, manager)
+    setattr(client, MANAGER_OWNS_ATTR, owns_manager)
+
+    # Enable Alternator vector search extensions before registering finalizers.
+    enable_vector_support(client)
+
+    if owns_manager:
+        _register_manager(manager, client)
+
+    return client
+
+
 def create_client(
     config: Config,
     *,
@@ -260,51 +325,19 @@ def create_client(
         # Use like a normal boto3 client
         response = client.list_tables()
     """
-    # BotoConfig is managed internally — don't let callers override it
-    boto_kwargs.pop("config", None)
-
-    # Create and start manager (handles SSL, HTTP fetcher, node discovery)
     manager = _create_and_start_manager(config)
-
-    # Get initial endpoint and merged boto config
-    initial_endpoint = manager.next_node_uri()
-    auth_enabled = apply_auth(auth, boto_kwargs)
-    boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
-
-    # Create boto3 client
-    # Alternator doesn't use AWS regions, but boto3 requires one;
-    # default to "us-east-1" unless the caller overrides it.
-    boto_kwargs.setdefault("region_name", "us-east-1")
-    client: DynamoDBClient = boto3.client(
-        "dynamodb",
-        endpoint_url=initial_endpoint,
-        config=boto_config,
-        **boto_kwargs,
-    )
-
-    # Register manager for cleanup tracking (with GC finalizer on client)
-    _register_manager(manager, client)
-
-    # Register all handlers
-    _register_alternator_handlers(
-        client.meta.events,
-        manager,
-        config,
-        _create_affinity_hash_computer(config, client),
-        auth_enabled=auth_enabled,
-    )
-
-    # Attach manager for cleanup reference
-    setattr(client, MANAGER_ATTR, manager)
-
-    # Enable Alternator vector search extensions
     try:
-        enable_vector_support(client)
+        return _create_client_with_manager(
+            config,
+            manager,
+            auth=auth,
+            owns_manager=True,
+            **boto_kwargs,
+        )
     except Exception:
         manager.stop()
+        _unregister_active_manager(manager)
         raise
-
-    return client
 
 
 def _seed_has_port(seed: str) -> bool:
@@ -377,11 +410,32 @@ def create_resource(
         table = resource.Table("my_table")
         table.put_item(Item={"pk": "123", "data": "hello"})
     """
+    manager = _create_and_start_manager(config)
+    try:
+        return _create_resource_with_manager(
+            config,
+            manager,
+            auth=auth,
+            owns_manager=True,
+            **boto_kwargs,
+        )
+    except Exception:
+        manager.stop()
+        _unregister_active_manager(manager)
+        raise
+
+
+def _create_resource_with_manager(
+    config: Config,
+    manager: SyncLiveNodesManager,
+    *,
+    auth: Auth | None = None,
+    owns_manager: bool,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+) -> DynamoDBServiceResource:
+    """Create a boto3 resource using an already initialized manager."""
     # BotoConfig is managed internally — don't let callers override it
     boto_kwargs.pop("config", None)
-
-    # Create and start manager (handles SSL, HTTP fetcher, node discovery)
-    manager = _create_and_start_manager(config)
 
     # Get initial endpoint and merged boto config
     initial_endpoint = manager.next_node_uri()
@@ -399,9 +453,6 @@ def create_resource(
         **boto_kwargs,
     )
 
-    # Register manager for cleanup tracking (with GC finalizer on resource)
-    _register_manager(manager, resource)
-
     # Register all handlers
     _register_alternator_handlers(
         resource.meta.client.meta.events,
@@ -413,13 +464,13 @@ def create_resource(
 
     # Attach manager for cleanup reference
     setattr(resource, MANAGER_ATTR, manager)
+    setattr(resource, MANAGER_OWNS_ATTR, owns_manager)
 
-    # Enable Alternator vector search extensions
-    try:
-        enable_vector_support(resource)
-    except Exception:
-        manager.stop()
-        raise
+    # Enable Alternator vector search extensions before registering finalizers.
+    enable_vector_support(resource)
+
+    if owns_manager:
+        _register_manager(manager, resource)
 
     return resource
 
@@ -436,17 +487,208 @@ def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
     """
     manager = getattr(client, MANAGER_ATTR, None)
     if manager is not None:
-        # Remove from registry first
-        manager_id = id(manager)
-        with _registry_lock:
-            _active_managers.pop(manager_id, None)
-
-        manager.stop()
+        owns_manager = bool(getattr(client, MANAGER_OWNS_ATTR, True))
+        if owns_manager:
+            _unregister_active_manager(manager)
+            manager.stop()
         setattr(client, MANAGER_ATTR, None)
+        setattr(client, MANAGER_OWNS_ATTR, False)
 
     # Clear PK cache reference
     if hasattr(client, PK_CACHE_ATTR):
         setattr(client, PK_CACHE_ATTR, None)
+
+
+class Helper:
+    """
+    Public facade for Alternator client lifecycle and diagnostics.
+
+    The helper owns one live-node manager and can create standard boto3
+    DynamoDB clients and resources that share that discovery state.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        *,
+        auth: Auth | None = None,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> None:
+        self._config = config
+        self._auth = auth
+        self._boto_kwargs = dict(boto_kwargs)
+        self._manager: SyncLiveNodesManager | None = None
+        self._manager_finalizer: Any | None = None
+        self._clients: list[DynamoDBClient | DynamoDBServiceResource] = []
+
+    def __enter__(self) -> Helper:
+        self.start()
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        self.stop()
+
+    @property
+    def config(self) -> Config:
+        """Return this helper's configuration."""
+        return self._config
+
+    def update(
+        self,
+        config: Config | None = None,
+        *,
+        auth: Auth | None | object = _AUTH_UNSET,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> Helper:
+        """Return a new helper with updated config, auth, or boto kwargs."""
+        next_auth = self._auth if auth is _AUTH_UNSET else cast("Auth | None", auth)
+        next_kwargs = {**self._boto_kwargs, **boto_kwargs}
+        return type(self)(config or self._config, auth=next_auth, **next_kwargs)
+
+    def start(self) -> Helper:
+        """Start background node discovery."""
+        self._ensure_manager().start()
+        return self
+
+    def stop(self) -> None:
+        """Stop background node discovery and detach helper-created clients."""
+        for created_client in list(self._clients):
+            with contextlib.suppress(Exception):
+                close_client(created_client)
+        self._clients.clear()
+
+        if self._manager is not None:
+            _unregister_active_manager(self._manager)
+            self._manager.stop()
+            self._manager = None
+
+        if self._manager_finalizer is not None:
+            self._manager_finalizer.detach()
+            self._manager_finalizer = None
+
+    def client(
+        self,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> DynamoDBClient:
+        """Create a standard boto3 DynamoDB client using this helper."""
+        manager = self._ensure_manager()
+        manager.start()
+        client = _create_client_with_manager(
+            self._config,
+            manager,
+            auth=self._auth,
+            owns_manager=False,
+            **{**self._boto_kwargs, **boto_kwargs},
+        )
+        self._clients.append(client)
+        return client
+
+    def resource(
+        self,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> DynamoDBServiceResource:
+        """Create a standard boto3 DynamoDB resource using this helper."""
+        manager = self._ensure_manager()
+        manager.start()
+        resource = _create_resource_with_manager(
+            self._config,
+            manager,
+            auth=self._auth,
+            owns_manager=False,
+            **{**self._boto_kwargs, **boto_kwargs},
+        )
+        self._clients.append(resource)
+        return resource
+
+    def update_live_nodes(self) -> bool:
+        """Refresh the live-node list immediately."""
+        return self._ensure_manager().refresh_nodes()
+
+    def next_node(self) -> str | None:
+        """Return the next live node selected for diagnostics."""
+        return self._ensure_manager().next_node()
+
+    def get_nodes(self) -> list[str]:
+        """Return the current live-node hostnames."""
+        if self._manager is None:
+            return []
+        return list(self._manager.nodes.nodes)
+
+    def get_active_nodes(self) -> list[str]:
+        """Return active nodes; currently this is the live-node list."""
+        return self.get_nodes()
+
+    def get_quarantined_nodes(self) -> list[str]:
+        """Return quarantined nodes; node quarantine is not implemented."""
+        return []
+
+    def check_rack_and_datacenter_set_correctly(self) -> bool:
+        """Return whether the configured rack/datacenter scope is complete."""
+        from alternator.core.routing_scope import DatacenterScope, RackScope
+
+        scope = self._config.routing_scope
+        if isinstance(scope, RackScope):
+            return bool(scope.datacenter and scope.rack)
+        if isinstance(scope, DatacenterScope):
+            return bool(scope.datacenter)
+        return True
+
+    def check_rack_datacenter_feature_supported(self) -> bool:
+        """Return whether this client supports rack/datacenter scoped discovery."""
+        from alternator.core.routing_scope import (
+            ClusterScope,
+            DatacenterScope,
+            RackScope,
+        )
+
+        return isinstance(
+            self._config.routing_scope,
+            ClusterScope | DatacenterScope | RackScope,
+        )
+
+    def get_partition_key_name(self, table_name: str) -> str | None:
+        """Return a known partition key name for diagnostics."""
+        configured = self._config.key_affinity.table_pk_attributes.get(table_name)
+        if configured is not None:
+            return configured
+
+        for created_client in self._clients:
+            pk_cache = self._get_partition_key_cache(created_client)
+            if pk_cache is None:
+                continue
+            get_pk_name = getattr(pk_cache, "get_pk_name", None)
+            if callable(get_pk_name):
+                return cast("str | None", get_pk_name(table_name))
+        return None
+
+    def _ensure_manager(self) -> SyncLiveNodesManager:
+        if self._manager is None:
+            manager = _create_manager(self._config)
+            _register_active_manager(manager)
+            self._manager_finalizer = weakref.finalize(
+                self,
+                _cleanup_manager,
+                id(manager),
+            )
+            self._manager = manager
+        return self._manager
+
+    def _get_partition_key_cache(
+        self,
+        created_client: DynamoDBClient | DynamoDBServiceResource,
+    ) -> object | None:
+        pk_cache = getattr(created_client, PK_CACHE_ATTR, None)
+        if pk_cache is not None:
+            return cast(object, pk_cache)
+
+        meta = getattr(created_client, "meta", None)
+        service_client = getattr(meta, "client", None)
+        return cast(object | None, getattr(service_client, PK_CACHE_ATTR, None))
 
 
 class AlternatorClient:

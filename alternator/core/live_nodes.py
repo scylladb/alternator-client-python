@@ -237,6 +237,9 @@ class SyncLiveNodesManager:
 
     def start(self) -> None:
         """Start background refresh thread."""
+        if self._refresh_thread is not None and self._refresh_thread.is_alive():
+            return
+        self._stop_event.clear()
         self._refresh_thread = threading.Thread(
             target=self._refresh_loop,
             daemon=True,
@@ -249,11 +252,16 @@ class SyncLiveNodesManager:
         self._stop_event.set()
         if self._refresh_thread:
             self._refresh_thread.join(timeout=5.0)
+            self._refresh_thread = None
 
     @property
     def nodes(self) -> NodeList:
         """Get current node list."""
         return self._core.nodes
+
+    def next_node(self) -> str | None:
+        """Get next node hostname using round-robin."""
+        return self._core.next_node()
 
     def set_fallback_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
         """
@@ -358,6 +366,8 @@ class AsyncLiveNodesManager:
 
     async def start(self) -> None:
         """Start background refresh task."""
+        if self._refresh_task is not None and not self._refresh_task.done():
+            return
         self._stop_event.clear()
         self._refresh_task = asyncio.create_task(
             self._refresh_loop(),
@@ -377,6 +387,10 @@ class AsyncLiveNodesManager:
     def nodes(self) -> NodeList:
         """Get current node list."""
         return self._core.nodes
+
+    def next_node(self) -> str | None:
+        """Get next node hostname using round-robin."""
+        return self._core.next_node()
 
     def set_fallback_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
         """

@@ -20,7 +20,7 @@ and intentionally deferred behavior.
 | TLS key log file | Missing | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file support is planned. |
 | Transport and SDK config knobs | Partial | [#34](https://github.com/scylladb/alternator-client-python/issues/34) | Retry and pool config exist; connect/read timeout and customizer wiring are planned. |
 | Key route affinity | Partial | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | Partition-key cache exists; RMW rules and BatchWriteItem voting need alignment with the request-routing specification. |
-| Helper lifecycle facade | Missing | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | Public lifecycle, diagnostics, and inspection facade is planned. |
+| Helper lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Helper` and `AsyncHelper` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
 | Vector search extension | Supported | Existing API | Python client enables ScyllaDB Alternator vector extensions. |
 | Capability test harness | Partial | [#36](https://github.com/scylladb/alternator-client-python/issues/36) | Fake Alternator server fixture introduced for deterministic unit tests. |
