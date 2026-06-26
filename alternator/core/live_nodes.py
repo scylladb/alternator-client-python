@@ -213,6 +213,12 @@ def _uses_topology_filter(scope: RoutingScope) -> bool:
     return isinstance(scope, DatacenterScope | RackScope)
 
 
+def _uses_cluster_scope(scope: RoutingScope) -> bool:
+    from alternator.core.routing_scope import ClusterScope
+
+    return isinstance(scope, ClusterScope)
+
+
 def _validate_topology_scope_values(scope: RoutingScope) -> None:
     from alternator.core.routing_scope import DatacenterScope, RackScope
 
@@ -366,6 +372,12 @@ class SyncLiveNodesManager:
         scope: RoutingScope | None = self._config.routing_scope
 
         while scope is not None:
+            if _uses_cluster_scope(scope):
+                if self._refresh_cluster_scope_nodes(scope):
+                    return True
+                scope = scope.fallback
+                continue
+
             for seed in self._config.seed_hosts:
                 url = self._core.build_localnodes_url(scope, seed)
                 try:
@@ -378,6 +390,27 @@ class SyncLiveNodesManager:
 
         self._core.log_all_scopes_failed()
         return False
+
+    def _refresh_cluster_scope_nodes(self, scope: RoutingScope) -> bool:
+        """Fetch cluster scope by aggregating local node lists from every seed."""
+        discovered: list[str] = []
+        seen: set[str] = set()
+
+        for seed in self._config.seed_hosts:
+            url = self._core.build_localnodes_url(scope, seed)
+            try:
+                nodes = self._http_fetch(url)
+            except Exception as e:
+                self._core.log_fetch_error(scope, e)
+                continue
+
+            for node in nodes:
+                if node in seen:
+                    continue
+                seen.add(node)
+                discovered.append(node)
+
+        return self._core.process_fetch_result(discovered, scope)
 
     def _fetch_scope_nodes(self, scope: RoutingScope) -> list[str]:
         """Fetch nodes for one scope without updating current routing state."""
@@ -533,6 +566,12 @@ class AsyncLiveNodesManager:
         scope: RoutingScope | None = self._config.routing_scope
 
         while scope is not None:
+            if _uses_cluster_scope(scope):
+                if await self._refresh_cluster_scope_nodes(scope):
+                    return True
+                scope = scope.fallback
+                continue
+
             for seed in self._config.seed_hosts:
                 url = self._core.build_localnodes_url(scope, seed)
                 try:
@@ -545,6 +584,27 @@ class AsyncLiveNodesManager:
 
         self._core.log_all_scopes_failed()
         return False
+
+    async def _refresh_cluster_scope_nodes(self, scope: RoutingScope) -> bool:
+        """Fetch cluster scope by aggregating local node lists from every seed."""
+        discovered: list[str] = []
+        seen: set[str] = set()
+
+        for seed in self._config.seed_hosts:
+            url = self._core.build_localnodes_url(scope, seed)
+            try:
+                nodes = await self._http_fetch(url)
+            except Exception as e:
+                self._core.log_fetch_error(scope, e)
+                continue
+
+            for node in nodes:
+                if node in seen:
+                    continue
+                seen.add(node)
+                discovered.append(node)
+
+        return self._core.process_fetch_result(discovered, scope)
 
     async def _fetch_scope_nodes(self, scope: RoutingScope) -> list[str]:
         """Fetch nodes for one scope without updating current routing state."""

@@ -9,7 +9,7 @@ and intentionally deferred behavior.
 | DynamoDB resource | Supported | Existing API | `create_resource` and `AlternatorResource` wrap boto3 resource usage. |
 | Async DynamoDB client | Supported | Existing API | `create_async_client` and `AsyncAlternatorClient` use aioboto3. |
 | Host-only seeds with one shared port | Supported | Existing API | Seeds must not include ports; one port applies to all nodes. |
-| Node discovery | Supported | Existing API | `/localnodes` refresh updates the live node list. |
+| Node discovery | Supported | Existing API | `/localnodes` refresh updates the live node list. `ClusterScope` combines results from all configured seeds so multi-DC users can seed each datacenter. |
 | Routing scopes | Supported | [#35](https://github.com/scylladb/alternator-client-python/issues/35) | Cluster, datacenter, and rack scopes support explicit fallback chains and scoped validation helpers. |
 | Request query plans | Supported | Existing API | Requests use stable seeded node ordering for retries. |
 | Auth | Supported | Existing API | Disabled by default; explicit static credentials enable signing. |

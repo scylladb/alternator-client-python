@@ -295,6 +295,11 @@ config = Config(
 )
 ```
 
+`ClusterScope` queries every configured seed host and combines the returned
+`/localnodes` results. Because ScyllaDB's optionless `/localnodes` endpoint
+returns nodes from the contacted seed's local datacenter, pass at least one seed
+from each datacenter when cluster-wide routing should span multiple datacenters.
+
 Default constructors keep compatibility fallback behavior:
 
 - `DatacenterScope("dc1")` uses `DatacenterScope` -> `ClusterScope`

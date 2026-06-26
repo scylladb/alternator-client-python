@@ -7,7 +7,7 @@ import pytest
 
 from alternator.config import Config
 from alternator.core.live_nodes import NoNodesAvailableError, SyncLiveNodesManager
-from alternator.core.routing_scope import DatacenterScope, RackScope
+from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from alternator.exceptions import ConfigurationError
 
 
@@ -96,6 +96,55 @@ class TestSyncLiveNodesManager:
         assert len(calls) == 2  # DC scope then cluster scope
         assert "dc=dc1" in calls[0]
         assert "dc=" not in calls[1]
+
+    def test_cluster_scope_aggregates_all_seed_localnodes(self) -> None:
+        """Cluster scope unions local-DC node lists returned by each seed."""
+        config = Config(
+            seed_hosts=["seed-dc1", "seed-dc2"],
+            port=8000,
+            routing_scope=ClusterScope(),
+        )
+        calls: list[str] = []
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            calls.append(url)
+            if "seed-dc1" in url:
+                return ["dc1-node1", "dc1-node2"]
+            if "seed-dc2" in url:
+                return ["dc2-node1", "dc2-node2"]
+            return []
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+
+        assert manager.refresh_nodes() is True
+        assert calls == [
+            "http://seed-dc1:8000/localnodes",
+            "http://seed-dc2:8000/localnodes",
+        ]
+        assert manager.nodes.nodes == (
+            "dc1-node1",
+            "dc1-node2",
+            "dc2-node1",
+            "dc2-node2",
+        )
+
+    def test_cluster_scope_aggregates_reachable_seed_localnodes(self) -> None:
+        """Cluster scope keeps usable seed results when another seed fails."""
+        config = Config(
+            seed_hosts=["seed-dc1", "seed-dc2"],
+            port=8000,
+            routing_scope=ClusterScope(),
+        )
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            if "seed-dc1" in url:
+                raise OSError("seed unavailable")
+            return ["dc2-node1", "dc2-node2"]
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+
+        assert manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
 
     def test_url_construction(self, config: Config) -> None:
         """Test URL is constructed correctly."""
