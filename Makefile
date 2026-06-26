@@ -36,19 +36,20 @@ test:
 
 # Run linters
 lint:
-	uv run ruff check alternator/ tests/
-	uv run ruff format --check alternator/ tests/
+	uv run ruff check alternator/ tests/ examples/
+	uv run ruff format --check alternator/ tests/ examples/
+	uv run python -m py_compile examples/*.py
 	uv run mypy alternator/ --strict
 	@# Ensure every noqa/type: ignore has an explanation after it
-	@if grep -rn --include='*.py' -P '#\s*(noqa|type:\s*ignore)(?::\s*\S+)?\s*$$' alternator/ tests/; then \
+	@if grep -rn --include='*.py' -P '#\s*(noqa|type:\s*ignore)(?::\s*\S+)?\s*$$' alternator/ tests/ examples/; then \
 		echo "ERROR: Found noqa/type: ignore comments without explanations. Add ' -- reason' after each."; \
 		exit 1; \
 	fi
 
 # Auto-fix linting issues
 lint-fix:
-	uv run ruff check --fix alternator/ tests/
-	uv run ruff format alternator/ tests/
+	uv run ruff check --fix alternator/ tests/ examples/
+	uv run ruff format alternator/ tests/ examples/
 
 # Remove build artifacts
 clean:

@@ -25,7 +25,7 @@ and intentionally deferred behavior.
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
 | Vector search extension | Supported | Existing API | Python client enables ScyllaDB Alternator vector extensions. |
 | Capability test harness | Partial | [#36](https://github.com/scylladb/alternator-client-python/issues/36) | Fake Alternator server fixture introduced for deterministic unit tests. |
-| Documentation and examples | Partial | [#40](https://github.com/scylladb/alternator-client-python/issues/40) | README and examples should stay aligned with implemented APIs. |
+| Documentation and examples | Supported | [#40](https://github.com/scylladb/alternator-client-python/issues/40) | README, examples, and release-note guidance are aligned with implemented APIs. |
 
 ## Deterministic Test Harness
 

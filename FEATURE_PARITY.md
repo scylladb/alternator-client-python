@@ -36,6 +36,7 @@ Supported or close:
 - key route affinity with partition-key cache and batch-write voting
 - helper lifecycle facade and public inspection methods
 - compatibility and release decision record
+- documentation, examples, and release-note guidance
 - vector search support
 
 Tracked gaps:
@@ -43,7 +44,6 @@ Tracked gaps:
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
 - decommission and dead-node scenario tracking, covered by the deferred node
   health plan: [#3](https://github.com/scylladb/alternator-client-python/issues/3)
-- documentation, examples, and release notes: [#40](https://github.com/scylladb/alternator-client-python/issues/40)
 
 ## Compatibility Decisions
 

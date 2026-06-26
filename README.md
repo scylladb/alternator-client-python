@@ -30,6 +30,19 @@ pip install alternator-client[async]
 
 ## Quick Start
 
+### Which API Should I Use?
+
+Use `alternator.client(...)` for the common synchronous case where a context
+manager can own the SDK client and background node refresh.
+
+Use `create_client` / `close_client` when the SDK client must be created in one
+place and closed elsewhere. Use `create_resource` / `close_resource` for the
+boto3 table-oriented resource interface.
+
+Use `Helper` or `AsyncHelper` when one object should own client/resource
+lifecycle and expose topology diagnostics such as node refresh, node inspection,
+routing validation, and partition-key cache inspection.
+
 ### Synchronous Client
 
 For the common case, use the top-level `alternator.client` context manager.
@@ -683,6 +696,22 @@ your own deadline wrapper for end-to-end call deadlines.
 to the generated SDK config. `aws_region` is a placeholder required by the SDK;
 Alternator request routing still uses discovered Alternator endpoints.
 
+```python
+from alternator import Config, RetryConfig, RetryMode, TimeoutConfig
+
+config = Config(
+    seed_hosts=["node1", "node2"],
+    port=8000,
+    retries=RetryConfig(max_attempts=4, mode=RetryMode.STANDARD),
+    max_pool_connections=300,
+    timeouts=TimeoutConfig(
+        discovery_seconds=3.0,
+        connect_seconds=2.0,
+        read_seconds=10.0,
+    ),
+)
+```
+
 Use `sdk_config_customizer` for supported SDK config kwargs that are not modeled
 directly:
 
@@ -709,7 +738,7 @@ instead.
 
 - **Connection pool sizing**: The default `max_pool_connections=200` works for most workloads. Increase if you see connection pool exhaustion warnings under high concurrency.
 - **Refresh intervals**: Default active refresh (1s) is appropriate for dynamic clusters. For stable clusters, increase `active_refresh_interval_ms` to reduce discovery overhead.
-- **Timeouts**: Default `discovery_timeout_seconds=5.0` and `read_timeout_seconds=30.0` are conservative. Tune based on your network latency and query complexity.
+- **Timeouts**: Default `TimeoutConfig.discovery_seconds=5.0`, `connect_seconds=5.0`, and `read_seconds=30.0` are conservative. Tune based on your network latency and query complexity.
 - **Monitoring**: Enable `INFO`-level logging for the `alternator` logger to track node discovery events. Use `DEBUG` for detailed routing decisions during troubleshooting.
 - **Seed hosts**: Configure at least 2-3 seed hosts for redundancy in case one seed is temporarily unavailable during startup.
 
@@ -727,7 +756,21 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
 - **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
-- **Batch Operations**: `BatchWriteItem` key affinity is based on a deterministic `PutRequest` or `DeleteRequest` selected from the batch. Batches with items targeting different partition keys are not split by affinity target.
+- **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Ties, missing partition-key metadata, unsupported key values, no active nodes, or no eligible votes fall back to normal routing. Batches are not split by affinity target.
+- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `get_quarantined_nodes()` returns an empty list until a future implementation is explicitly added.
+
+## Examples
+
+- `examples/sync_demo.py`: synchronous client lifecycle and basic operations
+- `examples/async_demo.py`: async client lifecycle and concurrent operations
+- `examples/compare_aws_sdk.py`: Alternator client setup compared with a regular AWS SDK DynamoDB client
+- `examples/capability_configuration.py`: helper lifecycle, explicit routing fallback, static auth, timeouts/retries, mTLS, compression/header optimization, and key affinity configuration recipes
+
+## Release Notes
+
+See [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) for capability release-note
+guidance covering additive APIs, deprecations, behavior notes, migration steps,
+and versioning expectations.
 
 ## Development
 
