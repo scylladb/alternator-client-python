@@ -7,16 +7,16 @@ import contextlib
 import logging
 import threading
 import weakref
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import boto3
 from botocore.config import Config as BotoConfig
 
 from alternator._constants import MANAGER_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
-from alternator.config import KeyRouteAffinityMode
+from alternator.config import Config, KeyRouteAffinityMode
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
@@ -27,15 +27,17 @@ from alternator.core.key_affinity import (
     should_use_affinity,
 )
 from alternator.core.live_nodes import SyncLiveNodesManager
+from alternator.exceptions import ConfigurationError
 from alternator.vector import enable_vector_support
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
     from mypy_boto3_dynamodb.service_resource import DynamoDBServiceResource
 
-    from alternator.config import Auth, Config
+    from alternator.config import Auth
 
 logger = logging.getLogger("alternator")
+DEFAULT_PORT = 8000
 
 # Registry of active managers for cleanup on exit
 _active_managers: weakref.WeakValueDictionary[int, SyncLiveNodesManager] = (
@@ -303,6 +305,57 @@ def create_client(
         raise
 
     return client
+
+
+def _seed_has_port(seed: str) -> bool:
+    """Return whether a seed appears to include a port."""
+    if "://" in seed:
+        return True
+    if seed.startswith("["):
+        return "]:" in seed
+    if seed.count(":") == 1:
+        _, maybe_port = seed.rsplit(":", 1)
+        return maybe_port.isdigit()
+    return False
+
+
+def _validate_host_only_seeds(seed_hosts: Sequence[str]) -> None:
+    invalid = [seed for seed in seed_hosts if _seed_has_port(seed)]
+    if invalid:
+        raise ConfigurationError(
+            "seeds must be host names or IP addresses without ports; "
+            "use the port argument for the single Alternator port"
+        )
+
+
+def client(
+    seeds: Sequence[str] | Config | None = None,
+    *,
+    port: int = DEFAULT_PORT,
+    scheme: Literal["http", "https"] = "http",
+    auth: Auth | None = None,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+) -> AlternatorClient:
+    """
+    Create a context-manager friendly Alternator client.
+
+    This is a convenience alias for the common case. Seeds are host names or
+    IP addresses only; provide the shared Alternator port with ``port``.
+    """
+    if isinstance(seeds, Config):
+        if port != DEFAULT_PORT or scheme != "http":
+            raise ConfigurationError(
+                "Do not combine a Config object with port or scheme overrides"
+            )
+        config = seeds
+    else:
+        if seeds is None:
+            raise ConfigurationError("seeds is required when Config is not provided")
+        _validate_host_only_seeds(seeds)
+        config = Config(seed_hosts=tuple(seeds), port=port, scheme=scheme)
+
+    _validate_host_only_seeds(config.seed_hosts)
+    return AlternatorClient(config, auth=auth, **boto_kwargs)
 
 
 def create_resource(

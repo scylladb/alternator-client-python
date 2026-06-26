@@ -29,6 +29,21 @@ pip install alternator-client[async]
 
 ### Synchronous Client
 
+For the common case, use the top-level `alternator.client` context manager.
+Seeds are host names or IP addresses only; use `port` for the single Alternator
+port.
+
+```python
+import alternator
+
+with alternator.client(
+    seeds=["192.168.1.1", "192.168.1.2"],
+    port=8000,
+) as client:
+    response = client.list_tables()
+    print(response["TableNames"])
+```
+
 ```python
 from alternator import Config, AlternatorClient
 
