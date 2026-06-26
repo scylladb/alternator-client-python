@@ -118,8 +118,8 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
     def fail_send(request: AWSPreparedRequest) -> None:
         raise EndpointConnectionError(endpoint_url=request.url)
 
-    def retry_without_sleep(attempts: int, **_: object) -> int | bool:
-        return 0 if attempts < 3 else False
+    def retry_without_sleep(attempts: int, **_: object) -> int | None:
+        return 0 if attempts < 3 else None
 
     client.meta.events.register_last("before-send.dynamodb.PutItem", capture_before_send)
     client.meta.events.register_first(
