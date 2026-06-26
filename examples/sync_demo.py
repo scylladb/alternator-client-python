@@ -13,7 +13,7 @@ import sys
 
 from botocore.exceptions import ClientError
 
-from alternator import AlternatorClient, AlternatorConfig, NoNodesAvailableError
+from alternator import AlternatorClient, Config, NoNodesAvailableError
 
 # Enable logging to see load balancing in action
 logging.basicConfig(
@@ -25,7 +25,7 @@ logging.basicConfig(
 def main() -> None:
     """Run the sync demo."""
     # Configure the client
-    config = AlternatorConfig(
+    config = Config(
         seed_hosts=["localhost"],  # Replace with your Scylla nodes
         port=8000,
         scheme="http",  # Use "https" for TLS

@@ -30,10 +30,10 @@ pip install alternator-client[async]
 ### Synchronous Client
 
 ```python
-from alternator import AlternatorConfig, AlternatorClient
+from alternator import Config, AlternatorClient
 
 # Configure the client
-config = AlternatorConfig(
+config = Config(
     seed_hosts=["192.168.1.1", "192.168.1.2"],
     port=8000,
 )
@@ -58,11 +58,11 @@ with AlternatorClient(config) as client:
 
 ```python
 import asyncio
-from alternator import AlternatorConfig
+from alternator import Config
 from alternator.async_client import AsyncAlternatorClient
 
 async def main():
-    config = AlternatorConfig(
+    config = Config(
         seed_hosts=["192.168.1.1"],
         port=8000,
     )
@@ -80,14 +80,17 @@ asyncio.run(main())
 ### Basic Configuration
 
 ```python
-from alternator import AlternatorConfig
+from alternator import Config
 
-config = AlternatorConfig(
+config = Config(
     seed_hosts=["node1.example.com", "node2.example.com"],
     port=8000,
     scheme="http",  # or "https" for TLS
 )
 ```
+
+> **Compatibility:** `AlternatorConfig` and `TlsConfig` remain available for
+> existing callers, but are deprecated. Prefer `Config` and `TLS` for new code.
 
 ### Using the Builder Pattern
 
@@ -96,14 +99,14 @@ from alternator import (
     AlternatorConfigBuilder,
     CompressionAlgorithm,
     KeyRouteAffinityMode,
-    TlsConfig,
+    TLS,
 )
 
 config = (
     AlternatorConfigBuilder()
     .with_seeds("node1.example.com", "node2.example.com")
     .with_port(8000)
-    .with_https(TlsConfig.system_default())
+    .with_https(TLS.system_default())
     .with_datacenter("us-east-1")
     .with_compression(CompressionAlgorithm.GZIP, min_size=1024)
     .with_key_affinity(KeyRouteAffinityMode.RMW)
@@ -125,7 +128,7 @@ config = (
 | `optimize_headers` | `bool` | `False` | Enable header filtering |
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
 | `authentication_enabled` | `bool` | `True` | Include auth headers |
-| `tls` | `TlsConfig` | system default | TLS configuration |
+| `tls` | `TLS` | system default | TLS configuration |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
 | `max_pool_connections` | `int` | `200` | Max connections per host |
 | `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
@@ -136,24 +139,24 @@ config = (
 Control which nodes receive your requests based on topology:
 
 ```python
-from alternator import ClusterScope, DatacenterScope, RackScope
+from alternator import Config, ClusterScope, DatacenterScope, RackScope
 
 # Route to any node in the cluster (default)
-config = AlternatorConfig(
+config = Config(
     seed_hosts=["node1"],
     port=8000,
     routing_scope=ClusterScope(),
 )
 
 # Route to nodes in a specific datacenter
-config = AlternatorConfig(
+config = Config(
     seed_hosts=["node1"],
     port=8000,
     routing_scope=DatacenterScope(datacenter="us-east-1"),
 )
 
 # Route to nodes in a specific rack (with fallback)
-config = AlternatorConfig(
+config = Config(
     seed_hosts=["node1"],
     port=8000,
     routing_scope=RackScope(datacenter="us-east-1", rack="rack1"),
@@ -196,20 +199,20 @@ config = (
 ## TLS Configuration
 
 ```python
-from alternator import TlsConfig, TlsSessionCacheConfig
+from alternator import TLS, TlsSessionCacheConfig
 from pathlib import Path
 
 # Use system CA certificates (default)
-tls = TlsConfig.system_default()
+tls = TLS.system_default()
 
 # Use custom CA certificate
-tls = TlsConfig.with_custom_ca(Path("/path/to/ca.pem"))
+tls = TLS.with_custom_ca(Path("/path/to/ca.pem"))
 
 # Trust all certificates (INSECURE - dev only)
-tls = TlsConfig.trust_all()
+tls = TLS.trust_all()
 
 # Full configuration
-tls = TlsConfig(
+tls = TLS(
     custom_ca_cert_paths=[Path("/path/to/ca.pem")],
     trust_system_ca_certs=True,
     verify_hostname=True,
@@ -247,14 +250,14 @@ config = (
 ```python
 from alternator import (
     AlternatorClient,
-    AlternatorConfig,
+    Config,
     AlternatorError,
     NoNodesAvailableError,
     ConfigurationError,
 )
 
 try:
-    config = AlternatorConfig(seed_hosts=[], port=8000)
+    config = Config(seed_hosts=[], port=8000)
 except ConfigurationError as e:
     print(f"Invalid configuration: {e}")
 
@@ -290,9 +293,9 @@ Log levels:
 For table-oriented operations, use `AlternatorResource` which wraps boto3's DynamoDB resource:
 
 ```python
-from alternator import AlternatorConfig, AlternatorResource
+from alternator import Config, AlternatorResource
 
-config = AlternatorConfig(seed_hosts=["192.168.1.1"], port=8000)
+config = Config(seed_hosts=["192.168.1.1"], port=8000)
 
 with AlternatorResource(config) as resource:
     table = resource.Table("my_table")
@@ -303,9 +306,9 @@ with AlternatorResource(config) as resource:
 You can also use the factory function:
 
 ```python
-from alternator import create_resource, close_resource, AlternatorConfig
+from alternator import create_resource, close_resource, Config
 
-config = AlternatorConfig(seed_hosts=["node1"], port=8000)
+config = Config(seed_hosts=["node1"], port=8000)
 resource = create_resource(config)
 
 try:
@@ -417,9 +420,9 @@ for item in result["Items"]:
 If you prefer not to use context managers:
 
 ```python
-from alternator import create_client, close_client, AlternatorConfig
+from alternator import create_client, close_client, Config
 
-config = AlternatorConfig(seed_hosts=["node1"], port=8000)
+config = Config(seed_hosts=["node1"], port=8000)
 client = create_client(config)
 
 try:
@@ -431,10 +434,10 @@ finally:
 Async equivalent:
 
 ```python
-from alternator import AlternatorConfig
+from alternator import Config
 from alternator.async_client import create_async_client, close_async_client
 
-config = AlternatorConfig(seed_hosts=["node1"], port=8000)
+config = Config(seed_hosts=["node1"], port=8000)
 client = await create_async_client(config)
 
 try:

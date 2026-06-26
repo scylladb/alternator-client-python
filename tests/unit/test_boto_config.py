@@ -5,19 +5,19 @@ import contextlib
 from botocore import UNSIGNED
 
 from alternator.client import _create_boto_config
-from alternator.config import AlternatorConfig, RetryConfig, RetryMode
+from alternator.config import Config, RetryConfig, RetryMode
 
 
 class TestCreateBotoConfig:
     """Tests for _create_boto_config."""
 
-    def _make_config(self, **overrides: object) -> AlternatorConfig:
+    def _make_config(self, **overrides: object) -> Config:
         defaults = {
             "seed_hosts": ["localhost"],
             "port": 9998,
         }
         defaults.update(overrides)
-        return AlternatorConfig(**defaults)  # type: ignore[arg-type]  -- test helper
+        return Config(**defaults)  # type: ignore[arg-type]  -- test helper
 
     def test_unsigned_when_no_credentials(self) -> None:
         """Without credentials the signature must be UNSIGNED."""
@@ -35,7 +35,7 @@ class TestCreateBotoConfig:
         assert "signature_version" not in boto_config._user_provided_options
 
     def test_retry_settings_propagated(self) -> None:
-        """Retry config from AlternatorConfig flows into BotoConfig."""
+        """Retry config from Config flows into BotoConfig."""
         config = self._make_config(
             retries=RetryConfig(max_attempts=5, mode=RetryMode.ADAPTIVE),
         )
@@ -46,7 +46,7 @@ class TestCreateBotoConfig:
         assert retries["mode"] == "adaptive"
 
     def test_pool_connections_propagated(self) -> None:
-        """max_pool_connections from AlternatorConfig flows into BotoConfig."""
+        """max_pool_connections from Config flows into BotoConfig."""
         config = self._make_config(max_pool_connections=42)
         boto_config = _create_boto_config(config, auth_enabled=False)
 
@@ -88,10 +88,10 @@ class TestUnsignedRequestNoAuthHeader:
         assert "Authorization" not in captured[0].headers
 
     @staticmethod
-    def _make_config(**overrides: object) -> AlternatorConfig:
+    def _make_config(**overrides: object) -> Config:
         defaults = {
             "seed_hosts": ["localhost"],
             "port": 9998,
         }
         defaults.update(overrides)
-        return AlternatorConfig(**defaults)  # type: ignore[arg-type]  -- test helper
+        return Config(**defaults)  # type: ignore[arg-type]  -- test helper

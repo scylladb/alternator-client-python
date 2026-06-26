@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
     from mypy_boto3_dynamodb.service_resource import DynamoDBServiceResource
 
-    from alternator.config import AlternatorConfig
+    from alternator.config import Config
 
 logger = logging.getLogger("alternator")
 
@@ -84,7 +84,7 @@ def _cleanup_all_managers() -> None:
             manager.stop()
 
 
-def _create_and_start_manager(config: AlternatorConfig) -> SyncLiveNodesManager:
+def _create_and_start_manager(config: Config) -> SyncLiveNodesManager:
     """
     Create and initialize a SyncLiveNodesManager.
 
@@ -126,8 +126,8 @@ def _create_and_start_manager(config: AlternatorConfig) -> SyncLiveNodesManager:
     return manager
 
 
-def _create_boto_config(config: AlternatorConfig, *, auth_enabled: bool) -> BotoConfig:
-    """Create BotoConfig from AlternatorConfig settings.
+def _create_boto_config(config: Config, *, auth_enabled: bool) -> BotoConfig:
+    """Create BotoConfig from Config settings.
 
     When no credentials are provided (auth_enabled=False), uses UNSIGNED
     signature to skip request signing entirely.
@@ -147,7 +147,7 @@ def _create_boto_config(config: AlternatorConfig, *, auth_enabled: bool) -> Boto
 
 
 def _create_affinity_hash_computer(
-    config: AlternatorConfig,
+    config: Config,
     client: DynamoDBClient,
 ) -> Callable[[str, dict[str, Any]], int | None] | None:
     """
@@ -220,7 +220,7 @@ def _create_affinity_hash_computer(
 
 
 def create_client(
-    config: AlternatorConfig,
+    config: Config,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBClient:
     """
@@ -245,9 +245,9 @@ def create_client(
         A DynamoDB client with load balancing enabled
 
     Example:
-        from alternator import AlternatorConfig, create_client
+        from alternator import Config, create_client
 
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["node1.example.com"],
             port=8000,
         )
@@ -304,7 +304,7 @@ def create_client(
 
 
 def create_resource(
-    config: AlternatorConfig,
+    config: Config,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBServiceResource:
     """
@@ -405,7 +405,7 @@ class AlternatorClient:
             client.put_item(...)
     """
 
-    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
+    def __init__(self, config: Config, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
         self._config = config
         self._boto_kwargs = boto_kwargs
         self._client: DynamoDBClient | None = None
@@ -448,7 +448,7 @@ class AlternatorResource:
             table.put_item(Item={"pk": "123", "data": "hello"})
     """
 
-    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
+    def __init__(self, config: Config, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
         self._config = config
         self._boto_kwargs = boto_kwargs
         self._resource: DynamoDBServiceResource | None = None

@@ -15,7 +15,7 @@ from alternator._http import AsyncHttpFetcher, SyncHttpFetcher
 from alternator.exceptions import NoNodesAvailableError
 
 if TYPE_CHECKING:
-    from alternator.config import AlternatorConfig
+    from alternator.config import Config
     from alternator.core.routing_scope import RoutingScope
 
 logger = logging.getLogger("alternator")
@@ -82,7 +82,7 @@ class LiveNodesManagerCore:
     - URL building for /localnodes endpoint
     """
 
-    def __init__(self, config: AlternatorConfig) -> None:
+    def __init__(self, config: Config) -> None:
         self._config = config
         self._nodes: NodeList = NodeList(nodes=(), scope_name="")
         self._nodes_lock = threading.Lock()
@@ -219,7 +219,7 @@ class SyncLiveNodesManager:
 
     def __init__(
         self,
-        config: AlternatorConfig,
+        config: Config,
         http_fetch: SyncHttpFetcher,
     ) -> None:
         """
@@ -340,7 +340,7 @@ class AsyncLiveNodesManager:
 
     def __init__(
         self,
-        config: AlternatorConfig,
+        config: Config,
         http_fetch: AsyncHttpFetcher,
     ) -> None:
         """

@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 import pytest
 
-from alternator import AlternatorConfig
+from alternator import Config
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -22,9 +22,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def config() -> AlternatorConfig:
+def config() -> Config:
     """Create test configuration."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
         scheme="http",
@@ -40,7 +40,7 @@ def table_name() -> str:
 class TestAsyncBasicOperations:
     """Test basic async DynamoDB operations."""
 
-    async def test_list_tables(self, config: AlternatorConfig) -> None:
+    async def test_list_tables(self, config: Config) -> None:
         """Test listing tables asynchronously."""
         from alternator.async_client import AsyncAlternatorClient
 
@@ -49,9 +49,7 @@ class TestAsyncBasicOperations:
             assert "TableNames" in response
             assert isinstance(response["TableNames"], list)
 
-    async def test_put_and_get_item(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    async def test_put_and_get_item(self, config: Config, table_name: str) -> None:
         """Test putting and getting an item asynchronously."""
         from alternator.async_client import AsyncAlternatorClient
 
@@ -96,9 +94,7 @@ class TestAsyncBasicOperations:
 class TestAsyncConcurrency:
     """Test concurrent async operations."""
 
-    async def test_concurrent_writes(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    async def test_concurrent_writes(self, config: Config, table_name: str) -> None:
         """Test concurrent write operations."""
         from alternator.async_client import AsyncAlternatorClient
 
@@ -148,7 +144,7 @@ class TestAsyncConcurrency:
             finally:
                 await client.delete_table(TableName=table_name)
 
-    async def test_high_concurrency(self, config: AlternatorConfig) -> None:
+    async def test_high_concurrency(self, config: Config) -> None:
         """Test high concurrency list_tables operations."""
         from alternator.async_client import AsyncAlternatorClient
 

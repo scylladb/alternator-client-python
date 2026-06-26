@@ -29,7 +29,7 @@ Usage::
 
     import alternator
 
-    config = alternator.AlternatorConfig(seed_hosts=["192.168.1.1"], port=8000)
+    config = alternator.Config(seed_hosts=["192.168.1.1"], port=8000)
     client = alternator.create_client(config)  # vector support enabled automatically
 
     # Create a table with a vector index
@@ -62,7 +62,7 @@ With the high-level Resource interface, use :class:`Vector` directly::
     import alternator
     from alternator.vector import Vector
 
-    config = alternator.AlternatorConfig(seed_hosts=["192.168.1.1"], port=8000)
+    config = alternator.Config(seed_hosts=["192.168.1.1"], port=8000)
     resource = alternator.create_resource(config)  # vector support enabled automatically
 
     table = resource.Table("embeddings")

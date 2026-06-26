@@ -14,8 +14,8 @@ import pytest
 
 from alternator import (
     AlternatorClient,
-    AlternatorConfig,
     AlternatorConfigBuilder,
+    Config,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
@@ -26,9 +26,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def config() -> AlternatorConfig:
+def config() -> Config:
     """Create test configuration."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
         scheme="http",
@@ -38,7 +38,7 @@ def config() -> AlternatorConfig:
 class TestNodeDiscovery:
     """Test that the client discovers nodes from the cluster."""
 
-    def test_discovers_multiple_nodes(self, config: AlternatorConfig) -> None:
+    def test_discovers_multiple_nodes(self, config: Config) -> None:
         """Test that the client discovers nodes via /localnodes endpoint."""
         with AlternatorClient(config) as client:
             # Perform a request to trigger node discovery
@@ -52,7 +52,7 @@ class TestNodeDiscovery:
 
     def test_seed_host_used_for_initial_discovery(self) -> None:
         """Test that the seed host is used when initial discovery hasn't completed."""
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
             scheme="http",
@@ -67,9 +67,7 @@ class TestNodeDiscovery:
 class TestNodeRecoveryDetection:
     """Test that the client detects when nodes recover via periodic refresh."""
 
-    def test_continuous_operations_after_recovery(
-        self, config: AlternatorConfig
-    ) -> None:
+    def test_continuous_operations_after_recovery(self, config: Config) -> None:
         """Test that operations continue to work after the node list refreshes.
 
         This simulates the background refresh cycle by making requests
@@ -91,7 +89,7 @@ class TestActiveVsQuarantinedNodeTracking:
     current behavior of node list management.
     """
 
-    def test_all_nodes_active_after_startup(self, config: AlternatorConfig) -> None:
+    def test_all_nodes_active_after_startup(self, config: Config) -> None:
         """Test that all discovered nodes are active after client startup."""
         with AlternatorClient(config) as client:
             # Multiple requests should succeed, indicating active nodes
@@ -107,7 +105,7 @@ class TestActiveVsQuarantinedNodeTracking:
             # All requests should succeed when all nodes are healthy
             assert success_count == 50
 
-    def test_node_list_refreshed_periodically(self, config: AlternatorConfig) -> None:
+    def test_node_list_refreshed_periodically(self, config: Config) -> None:
         """Test that the node list is refreshed by the background thread."""
         with AlternatorClient(config) as client:
             # Initial request
@@ -155,7 +153,7 @@ class TestQuarantineAndRelease:
         When multiple seed hosts are provided, the client should try
         them in order for node discovery.
         """
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=[SCYLLA_HOST, SCYLLA_HOST],  # Same host twice for testing
             port=SCYLLA_PORT,
             scheme="http",
@@ -173,7 +171,7 @@ class TestQuarantineReleaseConcurrency:
     the current round-robin + retry mechanism.
     """
 
-    def test_concurrent_requests_with_refresh(self, config: AlternatorConfig) -> None:
+    def test_concurrent_requests_with_refresh(self, config: Config) -> None:
         """Test that concurrent requests work during node list refresh."""
         import threading
 

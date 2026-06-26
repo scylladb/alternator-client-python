@@ -9,7 +9,7 @@ import uuid
 
 import pytest
 
-from alternator import AlternatorClient, AlternatorConfig
+from alternator import AlternatorClient, Config
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -19,9 +19,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def config() -> AlternatorConfig:
+def config() -> Config:
     """Create test configuration."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
         scheme="http",
@@ -37,9 +37,7 @@ def table_name() -> str:
 class TestBatchWriteItem:
     """Test BatchWriteItem operations through the load-balanced client."""
 
-    def test_batch_write_multiple_items(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_batch_write_multiple_items(self, config: Config, table_name: str) -> None:
         """Test writing multiple items in a single batch."""
         with AlternatorClient(config) as client:
             client.create_table(
@@ -76,9 +74,7 @@ class TestBatchWriteItem:
             finally:
                 client.delete_table(TableName=table_name)
 
-    def test_batch_write_with_deletes(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_batch_write_with_deletes(self, config: Config, table_name: str) -> None:
         """Test batch write mixing puts and deletes."""
         with AlternatorClient(config) as client:
             client.create_table(
@@ -134,9 +130,7 @@ class TestBatchWriteItem:
 class TestBatchGetItem:
     """Test BatchGetItem operations through the load-balanced client."""
 
-    def test_batch_get_multiple_items(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_batch_get_multiple_items(self, config: Config, table_name: str) -> None:
         """Test getting multiple items in a single batch."""
         with AlternatorClient(config) as client:
             client.create_table(
@@ -175,9 +169,7 @@ class TestBatchGetItem:
             finally:
                 client.delete_table(TableName=table_name)
 
-    def test_batch_get_nonexistent_keys(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_batch_get_nonexistent_keys(self, config: Config, table_name: str) -> None:
         """Test batch get with keys that don't exist."""
         with AlternatorClient(config) as client:
             client.create_table(

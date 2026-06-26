@@ -11,8 +11,8 @@ import pytest
 
 from alternator import (
     AlternatorClient,
-    AlternatorConfig,
     AlternatorConfigBuilder,
+    Config,
     KeyRouteAffinityMode,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
@@ -24,9 +24,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def config() -> AlternatorConfig:
+def config() -> Config:
     """Create test configuration."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
         scheme="http",
@@ -60,7 +60,7 @@ def _create_composite_table(client: AlternatorClient, table_name: str) -> None:
 class TestCompositeKeyBasicOperations:
     """Test basic CRUD with composite (HASH + RANGE) keys."""
 
-    def test_put_and_get_item(self, config: AlternatorConfig, table_name: str) -> None:
+    def test_put_and_get_item(self, config: Config, table_name: str) -> None:
         """Test put and get with composite key."""
         with AlternatorClient(config) as client:
             _create_composite_table(client, table_name)
@@ -90,7 +90,7 @@ class TestCompositeKeyBasicOperations:
                 client.delete_table(TableName=table_name)
 
     def test_multiple_range_keys_same_partition(
-        self, config: AlternatorConfig, table_name: str
+        self, config: Config, table_name: str
     ) -> None:
         """Test multiple items with same HASH key but different RANGE keys."""
         with AlternatorClient(config) as client:
@@ -119,9 +119,7 @@ class TestCompositeKeyBasicOperations:
             finally:
                 client.delete_table(TableName=table_name)
 
-    def test_update_item_composite_key(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_update_item_composite_key(self, config: Config, table_name: str) -> None:
         """Test updating an item with composite key."""
         with AlternatorClient(config) as client:
             _create_composite_table(client, table_name)
@@ -157,9 +155,7 @@ class TestCompositeKeyBasicOperations:
             finally:
                 client.delete_table(TableName=table_name)
 
-    def test_delete_item_composite_key(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_delete_item_composite_key(self, config: Config, table_name: str) -> None:
         """Test deleting an item with composite key."""
         with AlternatorClient(config) as client:
             _create_composite_table(client, table_name)
@@ -196,9 +192,7 @@ class TestCompositeKeyBasicOperations:
 class TestCompositeKeyQuery:
     """Test query operations with composite keys."""
 
-    def test_query_by_partition_key(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_query_by_partition_key(self, config: Config, table_name: str) -> None:
         """Test querying all range keys for a given partition key."""
         with AlternatorClient(config) as client:
             _create_composite_table(client, table_name)
@@ -229,7 +223,7 @@ class TestCompositeKeyQuery:
                 client.delete_table(TableName=table_name)
 
     def test_query_with_range_key_condition(
-        self, config: AlternatorConfig, table_name: str
+        self, config: Config, table_name: str
     ) -> None:
         """Test querying with both partition and range key conditions."""
         with AlternatorClient(config) as client:

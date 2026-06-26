@@ -12,7 +12,7 @@ from threading import Thread
 import pytest
 
 from alternator._http import create_sync_http_fetcher
-from alternator.config import AlternatorConfig
+from alternator.config import Config
 from alternator.core.live_nodes import SyncLiveNodesManager
 
 # ---------------------------------------------------------------------------
@@ -141,10 +141,10 @@ class TestSyncManagerNetworkFailures:
     """Network failure scenarios for the SyncLiveNodesManager."""
 
     @pytest.fixture
-    def config(self) -> AlternatorConfig:
+    def config(self) -> Config:
         from alternator.config import NodeListPollingConfig
 
-        return AlternatorConfig(
+        return Config(
             seed_hosts=["192.168.1.1"],
             port=8000,
             node_list_polling=NodeListPollingConfig(
@@ -152,7 +152,7 @@ class TestSyncManagerNetworkFailures:
             ),
         )
 
-    def test_manager_survives_fetch_exception(self, config: AlternatorConfig) -> None:
+    def test_manager_survives_fetch_exception(self, config: Config) -> None:
         """Manager keeps existing nodes when fetcher raises."""
         call_count = 0
 
@@ -171,7 +171,7 @@ class TestSyncManagerNetworkFailures:
         assert manager.refresh_nodes() is False
         assert len(manager.nodes) == 2
 
-    def test_manager_survives_timeout_exception(self, config: AlternatorConfig) -> None:
+    def test_manager_survives_timeout_exception(self, config: Config) -> None:
         """Manager keeps existing nodes when fetcher times out."""
         call_count = 0
 
@@ -190,7 +190,7 @@ class TestSyncManagerNetworkFailures:
 
     def test_manager_all_seeds_fail(self) -> None:
         """Manager returns False when all seed hosts fail."""
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["host1", "host2", "host3"],
             port=8000,
         )
@@ -204,7 +204,7 @@ class TestSyncManagerNetworkFailures:
 
     def test_manager_partial_seed_failure(self) -> None:
         """Manager succeeds if at least one seed host responds."""
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["bad-host", "good-host"],
             port=8000,
         )

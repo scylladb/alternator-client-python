@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from alternator.config import TlsConfig, TlsSessionCacheConfig
+from alternator.config import TLS, TlsSessionCacheConfig
 from alternator.core.tls import create_ssl_context
 
 
@@ -14,7 +14,7 @@ class TestCreateSslContext:
 
     def test_system_default(self) -> None:
         """Test creating SSL context with system defaults."""
-        tls_config = TlsConfig.system_default()
+        tls_config = TLS.system_default()
         ctx = create_ssl_context(tls_config)
 
         assert isinstance(ctx, ssl.SSLContext)
@@ -23,7 +23,7 @@ class TestCreateSslContext:
 
     def test_trust_all_insecure(self) -> None:
         """Test creating insecure SSL context that trusts all certificates."""
-        tls_config = TlsConfig.trust_all()
+        tls_config = TLS.trust_all()
         ctx = create_ssl_context(tls_config)
 
         assert isinstance(ctx, ssl.SSLContext)
@@ -32,21 +32,21 @@ class TestCreateSslContext:
 
     def test_hostname_verification_disabled(self) -> None:
         """Test disabling hostname verification."""
-        tls_config = TlsConfig(verify_hostname=False)
+        tls_config = TLS(verify_hostname=False)
         ctx = create_ssl_context(tls_config)
 
         assert ctx.check_hostname is False
 
     def test_hostname_verification_enabled(self) -> None:
         """Test enabling hostname verification (default)."""
-        tls_config = TlsConfig(verify_hostname=True)
+        tls_config = TLS(verify_hostname=True)
         ctx = create_ssl_context(tls_config)
 
         assert ctx.check_hostname is True
 
     def test_session_cache_enabled(self) -> None:
         """Test session tickets enabled when session cache is enabled."""
-        tls_config = TlsConfig(session_cache=TlsSessionCacheConfig(enabled=True))
+        tls_config = TLS(session_cache=TlsSessionCacheConfig(enabled=True))
         ctx = create_ssl_context(tls_config)
 
         # OP_NO_TICKET should NOT be set (tickets enabled)
@@ -54,7 +54,7 @@ class TestCreateSslContext:
 
     def test_session_cache_disabled(self) -> None:
         """Test session tickets disabled when session cache is disabled."""
-        tls_config = TlsConfig(session_cache=TlsSessionCacheConfig(enabled=False))
+        tls_config = TLS(session_cache=TlsSessionCacheConfig(enabled=False))
         ctx = create_ssl_context(tls_config)
 
         # OP_NO_TICKET should be set (tickets disabled)
@@ -69,7 +69,7 @@ class TestCreateSslContext:
         # Test with system CA files if available
         ca_file = ssl_module.get_default_verify_paths().cafile
         if ca_file and Path(ca_file).exists():
-            tls_config = TlsConfig.with_custom_ca(Path(ca_file))
+            tls_config = TLS.with_custom_ca(Path(ca_file))
             ctx = create_ssl_context(tls_config)
             assert isinstance(ctx, ssl.SSLContext)
         else:
@@ -78,7 +78,7 @@ class TestCreateSslContext:
 
     def test_custom_ca_with_nonexistent_path(self) -> None:
         """Test error when custom CA cert path doesn't exist."""
-        tls_config = TlsConfig(custom_ca_cert_paths=[Path("/nonexistent/ca.pem")])
+        tls_config = TLS(custom_ca_cert_paths=[Path("/nonexistent/ca.pem")])
 
         with pytest.raises(FileNotFoundError):
             create_ssl_context(tls_config)
@@ -91,7 +91,7 @@ class TestCreateSslContext:
         ca_file = ssl_module.get_default_verify_paths().cafile
         if ca_file and Path(ca_file).exists():
             # Test with the same cert twice (valid scenario)
-            tls_config = TlsConfig(custom_ca_cert_paths=(Path(ca_file), Path(ca_file)))
+            tls_config = TLS(custom_ca_cert_paths=(Path(ca_file), Path(ca_file)))
             ctx = create_ssl_context(tls_config)
             assert isinstance(ctx, ssl.SSLContext)
         else:
@@ -103,7 +103,7 @@ class TestCreateSslContext:
 
         ca_file = ssl_module.get_default_verify_paths().cafile
         if ca_file and Path(ca_file).exists():
-            tls_config = TlsConfig(
+            tls_config = TLS(
                 custom_ca_cert_paths=[Path(ca_file)],
                 trust_system_ca_certs=False,
             )
@@ -114,11 +114,11 @@ class TestCreateSslContext:
 
 
 class TestTlsConfig:
-    """Tests for TlsConfig class."""
+    """Tests for TLS class."""
 
     def test_default_values(self) -> None:
-        """Test TlsConfig default values."""
-        config = TlsConfig()
+        """Test TLS default values."""
+        config = TLS()
 
         assert config.custom_ca_cert_paths == ()
         assert config.trust_system_ca_certs is True
@@ -127,25 +127,25 @@ class TestTlsConfig:
         assert config.session_cache.enabled is True
 
     def test_trust_all_factory(self) -> None:
-        """Test TlsConfig.trust_all() factory method."""
-        config = TlsConfig.trust_all()
+        """Test TLS.trust_all() factory method."""
+        config = TLS.trust_all()
 
         assert config.trust_all_certificates is True
         assert config.verify_hostname is False
 
     def test_system_default_factory(self) -> None:
-        """Test TlsConfig.system_default() factory method."""
-        config = TlsConfig.system_default()
+        """Test TLS.system_default() factory method."""
+        config = TLS.system_default()
 
         assert config.trust_system_ca_certs is True
         assert config.trust_all_certificates is False
 
     def test_with_custom_ca_factory(self) -> None:
-        """Test TlsConfig.with_custom_ca() factory method."""
+        """Test TLS.with_custom_ca() factory method."""
         path1 = Path("/path/to/ca1.pem")
         path2 = Path("/path/to/ca2.pem")
 
-        config = TlsConfig.with_custom_ca(path1, path2)
+        config = TLS.with_custom_ca(path1, path2)
 
         assert config.custom_ca_cert_paths == (path1, path2)
 
