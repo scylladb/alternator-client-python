@@ -174,6 +174,33 @@ with AlternatorClient(
 Passing raw boto credential kwargs such as `aws_access_key_id` still works for
 compatibility, but is deprecated. Prefer `auth=Auth.static_credentials(...)`.
 
+## Comparing with a Regular AWS SDK Client
+
+An Alternator client is a boto3 DynamoDB client configured with ScyllaDB
+Alternator node discovery and load balancing. A regular AWS SDK client uses the
+normal AWS DynamoDB regional endpoint and AWS SDK credential chain.
+
+```python
+import boto3
+import alternator
+
+with alternator.client(
+    seeds=["node1.example.com", "node2.example.com"],
+    port=8000,
+) as alternator_client:
+    aws_client = boto3.client("dynamodb", region_name="us-east-1")
+
+    print("Alternator endpoint:", alternator_client.meta.endpoint_url)
+    print("AWS endpoint:", aws_client.meta.endpoint_url)
+
+    print("Alternator tables:", alternator_client.list_tables()["TableNames"])
+    # Requires normal AWS credentials:
+    # print("AWS tables:", aws_client.list_tables()["TableNames"])
+```
+
+See `examples/compare_aws_sdk.py` for a runnable version. The example keeps
+Alternator seeds host-only and uses one `port` setting for all seeds.
+
 ## Routing Scopes
 
 Control which nodes receive your requests based on topology:
