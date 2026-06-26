@@ -161,6 +161,24 @@ def test_no_fallback_scope_does_not_use_seed_hosts(
         create_client(config)
 
 
+def test_create_client_uses_configured_aws_region(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    """Config aws_region is passed to the generated boto3 client."""
+    fake_alternator_server.set_localnodes(["node1"])
+    base_config = _config_for_server(fake_alternator_server)
+    config = Config(
+        seed_hosts=base_config.seed_hosts,
+        port=base_config.port,
+        aws_region="us-west-2",
+    )
+    client = create_client(config)
+    try:
+        assert client.meta.region_name == "us-west-2"
+    finally:
+        close_client(client)
+
+
 @pytest.mark.asyncio
 async def test_async_helper_lifecycle_and_node_diagnostics(
     fake_alternator_server: FakeAlternatorServer,

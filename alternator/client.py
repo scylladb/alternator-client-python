@@ -16,7 +16,7 @@ from botocore.config import Config as BotoConfig
 
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
-from alternator.config import Config, KeyRouteAffinityMode
+from alternator.config import Config, KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
@@ -160,13 +160,8 @@ def _create_boto_config(config: Config, *, auth_enabled: bool) -> BotoConfig:
     """
     from botocore import UNSIGNED
 
-    kwargs: dict[str, Any] = {
-        "retries": {
-            "max_attempts": config.retries.max_attempts,
-            "mode": config.retries.mode.value,
-        },
-        "max_pool_connections": config.max_pool_connections,
-    }
+    kwargs = build_sdk_config_kwargs(config)
+    kwargs.pop("signature_version", None)
     if not auth_enabled:
         kwargs["signature_version"] = UNSIGNED
     return BotoConfig(**kwargs)
@@ -265,7 +260,7 @@ def _create_client_with_manager(
     # Create boto3 client
     # Alternator doesn't use AWS regions, but boto3 requires one;
     # default to "us-east-1" unless the caller overrides it.
-    boto_kwargs.setdefault("region_name", "us-east-1")
+    boto_kwargs.setdefault("region_name", config.aws_region)
     client: DynamoDBClient = boto3.client(
         "dynamodb",
         endpoint_url=initial_endpoint,
@@ -453,7 +448,7 @@ def _create_resource_with_manager(
     # Create boto3 resource
     # Alternator doesn't use AWS regions, but boto3 requires one;
     # default to "us-east-1" unless the caller overrides it.
-    boto_kwargs.setdefault("region_name", "us-east-1")
+    boto_kwargs.setdefault("region_name", config.aws_region)
     resource: DynamoDBServiceResource = boto3.resource(
         "dynamodb",
         endpoint_url=initial_endpoint,

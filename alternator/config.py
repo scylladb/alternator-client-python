@@ -5,16 +5,18 @@ from __future__ import annotations
 import logging
 import os
 import warnings
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from alternator.core.routing_scope import ClusterScope, RoutingScope
 from alternator.exceptions import ConfigurationError
 
 logger = logging.getLogger("alternator")
+
+SDKConfigCustomizer = Callable[[dict[str, Any]], None]
 
 
 class CompressionAlgorithm(Enum):
@@ -341,6 +343,10 @@ class Config:
     # Timeout settings
     timeouts: TimeoutConfig = field(default_factory=TimeoutConfig)
 
+    # SDK settings
+    aws_region: str = "us-east-1"
+    sdk_config_customizer: SDKConfigCustomizer | None = None
+
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if not self.seed_hosts:
@@ -355,6 +361,8 @@ class Config:
             raise ConfigurationError(
                 f"max_pool_connections must be > 0, got {self.max_pool_connections}"
             )
+        if not self.aws_region:
+            raise ConfigurationError("aws_region must not be empty")
 
 
 @dataclass(frozen=True)
@@ -399,6 +407,8 @@ class AlternatorConfigBuilder:
         self._max_pool_connections = 200
         self._node_list_polling = NodeListPollingConfig()
         self._timeouts = TimeoutConfig()
+        self._aws_region = "us-east-1"
+        self._sdk_config_customizer: SDKConfigCustomizer | None = None
 
     def with_seeds(self, *hosts: str) -> AlternatorConfigBuilder:
         """Add seed hosts for node discovery."""
@@ -517,6 +527,19 @@ class AlternatorConfigBuilder:
         )
         return self
 
+    def with_aws_region(self, region_name: str) -> AlternatorConfigBuilder:
+        """Set the AWS region placeholder passed to the SDK client."""
+        self._aws_region = region_name
+        return self
+
+    def with_sdk_config_customizer(
+        self,
+        customizer: SDKConfigCustomizer | None,
+    ) -> AlternatorConfigBuilder:
+        """Set a callback that can adjust generated SDK config kwargs."""
+        self._sdk_config_customizer = customizer
+        return self
+
     def build(self) -> Config:
         """Build the configuration object."""
         from alternator.core.routing_scope import ClusterScope
@@ -534,4 +557,22 @@ class AlternatorConfigBuilder:
             max_pool_connections=self._max_pool_connections,
             node_list_polling=self._node_list_polling,
             timeouts=self._timeouts,
+            aws_region=self._aws_region,
+            sdk_config_customizer=self._sdk_config_customizer,
         )
+
+
+def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
+    """Build SDK config kwargs shared by sync and async clients."""
+    kwargs: dict[str, Any] = {
+        "retries": {
+            "max_attempts": config.retries.max_attempts,
+            "mode": config.retries.mode.value,
+        },
+        "max_pool_connections": config.max_pool_connections,
+        "connect_timeout": config.timeouts.connect_seconds,
+        "read_timeout": config.timeouts.read_seconds,
+    }
+    if config.sdk_config_customizer is not None:
+        config.sdk_config_customizer(kwargs)
+    return kwargs

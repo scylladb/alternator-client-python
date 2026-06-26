@@ -70,6 +70,11 @@ class TestAlternatorConfig:
         with pytest.raises(ConfigurationError, match="port must be 1-65535"):
             Config(seed_hosts=["localhost"], port=65536)
 
+    def test_empty_aws_region_raises(self) -> None:
+        """Test that empty SDK region placeholder raises."""
+        with pytest.raises(ConfigurationError, match="aws_region must not be empty"):
+            Config(seed_hosts=["localhost"], port=8000, aws_region="")
+
     def test_default_values(self) -> None:
         """Test default configuration values."""
         config = Config(seed_hosts=["localhost"], port=8000)
@@ -80,6 +85,8 @@ class TestAlternatorConfig:
         assert config.header_optimization.whitelist is None
         assert config.node_list_polling.active_interval_ms == 1000
         assert config.node_list_polling.idle_interval_ms == 60000
+        assert config.aws_region == "us-east-1"
+        assert config.sdk_config_customizer is None
         assert isinstance(config.routing_scope, ClusterScope)
 
 
@@ -277,6 +284,32 @@ class TestAlternatorConfigBuilder:
             AlternatorConfigBuilder().with_seeds("localhost").with_port(8000).build()
         )
         assert config.max_pool_connections == 200
+
+    def test_build_with_aws_region(self) -> None:
+        """Test building config with custom SDK region placeholder."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_aws_region("us-west-2")
+            .build()
+        )
+        assert config.aws_region == "us-west-2"
+
+    def test_build_with_sdk_config_customizer(self) -> None:
+        """Test building config with SDK config customizer."""
+
+        def customize(kwargs: dict[str, object]) -> None:
+            kwargs["user_agent_extra"] = "test"
+
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_sdk_config_customizer(customize)
+            .build()
+        )
+        assert config.sdk_config_customizer is customize
 
 
 class TestTlsConfig:

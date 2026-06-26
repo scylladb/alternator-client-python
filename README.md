@@ -188,7 +188,11 @@ config = (
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
 | `tls` | `TLS` | system default | TLS configuration |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
+| `retries` | `RetryConfig` | standard, 3 attempts | SDK retry behavior |
 | `max_pool_connections` | `int` | `200` | Max connections per host |
+| `timeouts` | `TimeoutConfig` | discovery 5s, connect 5s, read 30s | Discovery and SDK per-attempt timeouts |
+| `aws_region` | `str` | `"us-east-1"` | Region placeholder required by the SDK |
+| `sdk_config_customizer` | callable | `None` | Callback for safe SDK config kwargs adjustments |
 | `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
 | `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
 
@@ -580,6 +584,40 @@ try:
 finally:
     await close_async_client(client)
 ```
+
+## Transport Configuration
+
+`TimeoutConfig.discovery_seconds` applies only to `/localnodes` discovery
+requests. `TimeoutConfig.connect_seconds` and `TimeoutConfig.read_seconds` are
+passed to botocore/aiobotocore as per-attempt SDK connect and read timeouts;
+they are not whole-operation deadlines. Use application-level cancellation or
+your own deadline wrapper for end-to-end call deadlines.
+
+`RetryConfig`, `max_pool_connections`, `aws_region`, and SDK timeouts are passed
+to the generated SDK config. `aws_region` is a placeholder required by the SDK;
+Alternator request routing still uses discovered Alternator endpoints.
+
+Use `sdk_config_customizer` for supported SDK config kwargs that are not modeled
+directly:
+
+```python
+from alternator import Config
+
+def customize_sdk(kwargs: dict[str, object]) -> None:
+    kwargs["user_agent_extra"] = "my-service"
+
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    sdk_config_customizer=customize_sdk,
+)
+```
+
+The client still owns the SDK config object and endpoint routing. Auth-managed
+signature settings are reapplied after the customizer. Python botocore does not
+expose direct knobs for max idle connections, max idle connections per host, or
+idle connection timeout; tune `max_pool_connections`, retries, and timeouts
+instead.
 
 ## Production Recommendations
 

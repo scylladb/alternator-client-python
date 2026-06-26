@@ -29,6 +29,7 @@ Supported or close:
 - gzip request compression
 - header optimization
 - static Alternator auth, disabled by default
+- transport timeout, retry, pool, region, and SDK customizer settings
 - TLS server CA and insecure trust-all modes
 - key route affinity with partition-key cache
 - helper lifecycle facade and public inspection methods
@@ -37,7 +38,6 @@ Supported or close:
 Tracked gaps:
 
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
-- transport and SDK configuration propagation: [#34](https://github.com/scylladb/alternator-client-python/issues/34)
 - TLS client certificate and key log file support: [#38](https://github.com/scylladb/alternator-client-python/issues/38)
 - configurable compression and header whitelist behavior: [#37](https://github.com/scylladb/alternator-client-python/issues/37)
 - key-affinity RMW and BatchWriteItem routing semantics: [#23](https://github.com/scylladb/alternator-client-python/issues/23)
@@ -62,6 +62,8 @@ Tracked by [#39](https://github.com/scylladb/alternator-client-python/issues/39)
 ## Node Health Constraint
 
 Tracked by [#32](https://github.com/scylladb/alternator-client-python/issues/32).
+Related legacy tracking:
+[#3](https://github.com/scylladb/alternator-client-python/issues/3).
 
 Node health is planning-only in this roadmap. Do not add node health code, tests,
 configuration objects, routing behavior, or default behavior changes unless a
