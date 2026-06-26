@@ -26,8 +26,8 @@ Supported or close:
 - `/localnodes` node discovery
 - explicit cluster/datacenter/rack routing scopes and fallback chains
 - request-scoped lazy query plans with stable seeded ordering
-- gzip request compression
-- header optimization
+- configurable gzip request compression
+- static and callback-based header optimization
 - static Alternator auth, disabled by default
 - transport timeout, retry, pool, region, and SDK customizer settings
 - TLS server CA and insecure trust-all modes
@@ -39,7 +39,6 @@ Supported or close:
 Tracked gaps:
 
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
-- configurable compression and header whitelist behavior: [#37](https://github.com/scylladb/alternator-client-python/issues/37)
 - key-affinity RMW and BatchWriteItem routing semantics: [#23](https://github.com/scylladb/alternator-client-python/issues/23)
 - compatibility and release decisions: [#39](https://github.com/scylladb/alternator-client-python/issues/39)
 - documentation, examples, and release notes: [#40](https://github.com/scylladb/alternator-client-python/issues/40)

@@ -1,8 +1,17 @@
 """Tests for header filtering functionality."""
 
+from collections.abc import Callable
 from unittest.mock import MagicMock
 
-from alternator.config import Config
+import pytest
+
+from alternator.config import (
+    CompressionAlgorithm,
+    Config,
+    HeaderOptimizationConfig,
+    HeaderWhitelistContext,
+    RequestCompressionConfig,
+)
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.headers import (
     AUTH_HEADERS,
@@ -72,6 +81,58 @@ class TestComputeHeaderWhitelist:
         assert "Authorization" in whitelist  # auth
         assert "Content-Encoding" in whitelist  # compression
         assert "X-Custom" in whitelist  # custom
+
+    def test_custom_whitelist_callback_added(self) -> None:
+        """Test callback-computed headers are added to the whitelist."""
+        config = Config(seed_hosts=["localhost"], port=8000)
+
+        def whitelist_callback(context: HeaderWhitelistContext) -> set[str]:
+            assert context.config is config
+            assert context.auth_enabled is True
+            assert context.compression_enabled is True
+            assert "Authorization" in context.required_headers
+            assert "Content-Encoding" in context.required_headers
+            return {"X-Dynamic-Header"}
+
+        whitelist = compute_header_whitelist(
+            config=config,
+            auth_enabled=True,
+            compression_enabled=True,
+            custom_whitelist={"X-Static-Header"},
+            whitelist_callback=whitelist_callback,
+        )
+
+        assert "X-Dynamic-Header" in whitelist
+        assert "X-Static-Header" in whitelist
+        assert "Authorization" in whitelist
+        assert "Content-Encoding" in whitelist
+
+    def test_custom_whitelist_callback_cannot_remove_required_headers(self) -> None:
+        """Test required headers remain even when callback returns no headers."""
+        config = Config(seed_hosts=["localhost"], port=8000)
+
+        def whitelist_callback(context: HeaderWhitelistContext) -> set[str]:
+            return set()
+
+        whitelist = compute_header_whitelist(
+            config=config,
+            auth_enabled=True,
+            compression_enabled=True,
+            whitelist_callback=whitelist_callback,
+        )
+
+        assert BASE_REQUIRED_HEADERS.issubset(whitelist)
+        assert AUTH_HEADERS.issubset(whitelist)
+        assert COMPRESSION_HEADERS.issubset(whitelist)
+
+    def test_custom_whitelist_callback_requires_config(self) -> None:
+        """Test callback usage requires config context."""
+
+        def whitelist_callback(context: HeaderWhitelistContext) -> set[str]:
+            return {"X-Dynamic-Header"}
+
+        with pytest.raises(ValueError, match="config is required"):
+            compute_header_whitelist(whitelist_callback=whitelist_callback)
 
 
 class TestHeaderFilterHandler:
@@ -196,14 +257,31 @@ class TestCompressionHeaders:
         assert "Content-Encoding" in COMPRESSION_HEADERS
 
 
-def _make_config(*, optimize_headers: bool = True) -> Config:
+def _make_config(
+    *,
+    optimize_headers: bool = True,
+    compression_enabled: bool = False,
+    whitelist_callback: Callable[
+        [HeaderWhitelistContext],
+        frozenset[str] | set[str],
+    ]
+    | None = None,
+) -> Config:
     """Create a minimal config for handler registration tests."""
-    from alternator.config import HeaderOptimizationConfig
-
+    request_compression = RequestCompressionConfig()
+    if compression_enabled:
+        request_compression = RequestCompressionConfig(
+            algorithm=CompressionAlgorithm.GZIP,
+            min_size_bytes=1,
+        )
     return Config(
         seed_hosts=("localhost",),
         port=8000,
-        header_optimization=HeaderOptimizationConfig(enabled=optimize_headers),
+        request_compression=request_compression,
+        header_optimization=HeaderOptimizationConfig(
+            enabled=optimize_headers,
+            whitelist_callback=whitelist_callback,
+        ),
     )
 
 
@@ -304,3 +382,54 @@ class TestHeaderFilterWithHandlerRegistration:
 
         handler_names = [call[0][1].__name__ for call in events.register.call_args_list]
         assert "filter_headers" not in handler_names
+
+    def test_compression_header_kept_when_compression_enabled(self) -> None:
+        """Test compression plus header optimization preserves Content-Encoding."""
+        config = _make_config(compression_enabled=True)
+        manager = _make_manager()
+        events = MagicMock()
+
+        _register_alternator_handlers(events, manager, config, auth_enabled=False)
+
+        handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+
+        request = _make_request(include_auth_headers=False)
+        request.headers["Content-Encoding"] = "gzip"
+        handlers["filter_headers"](request)
+
+        assert "Content-Encoding" in request.headers
+        assert "Authorization" not in request.headers
+
+    def test_custom_whitelist_callback_with_handler_registration(self) -> None:
+        """Test callback headers are honored by registered header filter."""
+        callback_state: dict[str, bool] = {}
+
+        def whitelist_callback(context: HeaderWhitelistContext) -> set[str]:
+            callback_state["auth_enabled"] = context.auth_enabled
+            callback_state["compression_enabled"] = context.compression_enabled
+            return {"X-Dynamic-Header"}
+
+        config = _make_config(whitelist_callback=whitelist_callback)
+        manager = _make_manager()
+        events = MagicMock()
+
+        _register_alternator_handlers(events, manager, config, auth_enabled=True)
+
+        handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+
+        request = _make_request(include_auth_headers=True)
+        request.headers["X-Dynamic-Header"] = "keep"
+        request.headers["X-Remove-Me"] = "remove"
+        handlers["filter_headers"](request)
+
+        assert callback_state == {
+            "auth_enabled": True,
+            "compression_enabled": False,
+        }
+        assert "X-Dynamic-Header" in request.headers
+        assert "X-Remove-Me" not in request.headers
+        assert "Authorization" in request.headers

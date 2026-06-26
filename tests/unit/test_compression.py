@@ -1,7 +1,7 @@
 """Tests for request body compression."""
 
 import gzip
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from alternator.core.compression import create_compression_handler
 
@@ -36,6 +36,34 @@ class TestCompressionHandler:
         assert gzip.decompress(request.body) == original_body
         assert request.headers["Content-Encoding"] == "gzip"
         assert request.headers["Content-Length"] == str(len(request.body))
+
+    def test_default_gzip_level_is_used(self) -> None:
+        """Test default gzip level is passed to gzip.compress."""
+        handler = create_compression_handler(10)
+        request = MagicMock()
+        request.body = b"x" * 200
+        request.headers = {}
+
+        with patch("gzip.compress", return_value=b"compressed") as mock_compress:
+            handler(request)
+
+        mock_compress.assert_called_once_with(b"x" * 200, compresslevel=9)
+        assert request.body == b"compressed"
+        assert request.headers["Content-Encoding"] == "gzip"
+        assert request.headers["Content-Length"] == str(len(b"compressed"))
+
+    def test_configured_gzip_levels_are_used(self) -> None:
+        """Test configured gzip levels are passed to gzip.compress."""
+        for level in (0, 1, 6, 9):
+            handler = create_compression_handler(10, gzip_level=level)
+            request = MagicMock()
+            request.body = b"x" * 200
+            request.headers = {}
+
+            with patch("gzip.compress", return_value=b"compressed") as mock_compress:
+                handler(request)
+
+            mock_compress.assert_called_once_with(b"x" * 200, compresslevel=level)
 
     def test_no_compression_if_not_beneficial(self) -> None:
         """Test no compression if compressed size >= original."""

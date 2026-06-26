@@ -150,17 +150,36 @@ class RequestCompressionConfig:
 
     algorithm: CompressionAlgorithm = CompressionAlgorithm.NONE
     min_size_bytes: int = 1024
+    gzip_level: int = 9
 
     def __post_init__(self) -> None:
         if self.min_size_bytes < 0:
             raise ConfigurationError(
                 f"min_size_bytes must be >= 0, got {self.min_size_bytes}"
             )
+        if self.gzip_level < 0 or self.gzip_level > 9:
+            raise ConfigurationError(f"gzip_level must be 0-9, got {self.gzip_level}")
 
     @property
     def enabled(self) -> bool:
         """Whether compression is active."""
         return self.algorithm != CompressionAlgorithm.NONE
+
+
+@dataclass(frozen=True)
+class HeaderWhitelistContext:
+    """Context passed to custom header whitelist callbacks."""
+
+    config: Config
+    auth_enabled: bool
+    compression_enabled: bool
+    required_headers: frozenset[str]
+
+
+HeaderWhitelistCallback = Callable[
+    [HeaderWhitelistContext],
+    frozenset[str] | set[str],
+]
 
 
 @dataclass(frozen=True)
@@ -175,6 +194,7 @@ class HeaderOptimizationConfig:
 
     enabled: bool = False
     whitelist: frozenset[str] | None = None
+    whitelist_callback: HeaderWhitelistCallback | None = None
 
 
 @dataclass(frozen=True)
@@ -477,16 +497,23 @@ class AlternatorConfigBuilder:
         return self
 
     def with_compression(
-        self, algorithm: CompressionAlgorithm, min_size: int = 1024
+        self,
+        algorithm: CompressionAlgorithm,
+        min_size: int = 1024,
+        gzip_level: int = 9,
     ) -> AlternatorConfigBuilder:
         """Enable request compression."""
         self._request_compression = RequestCompressionConfig(
-            algorithm=algorithm, min_size_bytes=min_size
+            algorithm=algorithm,
+            min_size_bytes=min_size,
+            gzip_level=gzip_level,
         )
         return self
 
     def with_header_optimization(
-        self, whitelist: frozenset[str] | set[str] | None = None
+        self,
+        whitelist: frozenset[str] | set[str] | None = None,
+        whitelist_callback: HeaderWhitelistCallback | None = None,
     ) -> AlternatorConfigBuilder:
         """Enable header optimization (filtering).
 
@@ -498,6 +525,7 @@ class AlternatorConfigBuilder:
         self._header_optimization = HeaderOptimizationConfig(
             enabled=True,
             whitelist=frozenset(whitelist) if whitelist is not None else None,
+            whitelist_callback=whitelist_callback,
         )
         return self
 

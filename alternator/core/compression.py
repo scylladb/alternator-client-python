@@ -11,6 +11,7 @@ from botocore.awsrequest import AWSPreparedRequest
 
 def create_compression_handler(
     min_size: int,
+    gzip_level: int = 9,
 ) -> Callable[..., None]:
     """
     Create a botocore event handler for request compression.
@@ -20,6 +21,7 @@ def create_compression_handler(
 
     Args:
         min_size: Minimum body size in bytes to trigger compression
+        gzip_level: gzip compression level, from 0 through 9
 
     Returns:
         Event handler function for botocore
@@ -42,7 +44,7 @@ def create_compression_handler(
         if len(body_bytes) < min_size:
             return
 
-        compressed = gzip.compress(body_bytes)
+        compressed = gzip.compress(body_bytes, compresslevel=gzip_level)
 
         # Only use compression if it actually reduces size
         if len(compressed) >= len(body_bytes):

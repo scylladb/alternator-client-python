@@ -13,8 +13,8 @@ and intentionally deferred behavior.
 | Routing scopes | Supported | [#35](https://github.com/scylladb/alternator-client-python/issues/35) | Cluster, datacenter, and rack scopes support explicit fallback chains and scoped validation helpers. |
 | Request query plans | Supported | Existing API | Requests use stable seeded node ordering for retries. |
 | Auth | Supported | Existing API | Disabled by default; explicit static credentials enable signing. |
-| Request compression | Partial | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip exists; configurable levels and custom compressors are planned. |
-| Header optimization | Partial | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Basic whitelist exists; custom whitelist callback is planned. |
+| Request compression | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip request compression supports threshold and compression-level configuration. |
+| Header optimization | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Required headers are preserved, with static and callback-computed whitelist additions. |
 | TLS server trust | Supported | Existing API | System CA, custom CA, hostname verification, and trust-all mode exist. |
 | TLS client certificates | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS certificate/key paths are loaded into discovery SSL contexts and SDK `client_cert` config. |
 | TLS key log file | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file paths are applied to SSL contexts when supported by the runtime. |
