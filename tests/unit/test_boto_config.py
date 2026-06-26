@@ -3,6 +3,7 @@
 import contextlib
 from pathlib import Path
 
+import pytest
 from botocore import UNSIGNED
 
 from alternator.client import _create_boto_config
@@ -43,8 +44,23 @@ class TestCreateBotoConfig:
         boto_config = _create_boto_config(config, auth_enabled=False)
 
         retries = boto_config._user_provided_options["retries"]
-        assert retries["max_attempts"] == 5
+        assert retries["total_max_attempts"] == 5
         assert retries["mode"] == "adaptive"
+
+    def test_retry_attempts_are_total_attempts_in_created_client(self) -> None:
+        """RetryConfig max_attempts maps to botocore total attempts."""
+        import boto3
+
+        config = self._make_config(retries=RetryConfig(max_attempts=3))
+        boto_config = _create_boto_config(config, auth_enabled=False)
+        client = boto3.client(
+            "dynamodb",
+            endpoint_url="http://localhost:1",
+            config=boto_config,
+            region_name="us-east-1",
+        )
+
+        assert client.meta.config.retries["total_max_attempts"] == 3
 
     def test_pool_connections_propagated(self) -> None:
         """max_pool_connections from Config flows into BotoConfig."""
@@ -126,6 +142,8 @@ class TestCreateAioConfig:
 
     def test_async_config_matches_sync_transport_settings(self) -> None:
         """AioConfig receives retry, timeout, pool, and signature settings."""
+        pytest.importorskip("aiobotocore")
+
         from alternator.async_client import _create_aio_config
 
         config = Config(
@@ -147,7 +165,7 @@ class TestCreateAioConfig:
         aio_config = _create_aio_config(config, auth_enabled=False)
 
         retries = aio_config._user_provided_options["retries"]
-        assert retries["max_attempts"] == 4
+        assert retries["total_max_attempts"] == 4
         assert retries["mode"] == "standard"
         assert aio_config.max_pool_connections == 17
         assert aio_config.connect_timeout == 3.0

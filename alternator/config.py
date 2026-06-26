@@ -284,9 +284,9 @@ class RetryConfig:
     mode: RetryMode = RetryMode.STANDARD
 
     def __post_init__(self) -> None:
-        if self.max_attempts < 0:
+        if self.max_attempts <= 0:
             raise ConfigurationError(
-                f"max_attempts must be >= 0, got {self.max_attempts}"
+                f"max_attempts must be > 0, got {self.max_attempts}"
             )
 
 
@@ -617,7 +617,7 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
     """Build SDK config kwargs shared by sync and async clients."""
     kwargs: dict[str, Any] = {
         "retries": {
-            "max_attempts": config.retries.max_attempts,
+            "total_max_attempts": config.retries.max_attempts,
             "mode": config.retries.mode.value,
         },
         "max_pool_connections": config.max_pool_connections,

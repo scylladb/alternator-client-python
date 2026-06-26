@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import logging
 import threading
@@ -187,7 +189,13 @@ def _extract_typed_value(attr_value: dict[str, Any]) -> tuple[str, Any] | None:
     """Extract type and value from DynamoDB AttributeValue."""
     for attr_type in ("S", "N", "B"):
         if attr_type in attr_value:
-            return (attr_type, attr_value[attr_type])
+            value = attr_value[attr_type]
+            if attr_type == "B" and isinstance(value, str):
+                try:
+                    value = base64.b64decode(value, validate=True)
+                except binascii.Error:
+                    return None
+            return (attr_type, value)
     return None
 
 
