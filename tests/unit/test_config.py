@@ -14,6 +14,7 @@ from alternator.config import (
     KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
     RequestCompressionConfig,
+    RetryConfig,
     TlsConfig,
     TlsSessionCacheConfig,
 )
@@ -429,3 +430,12 @@ class TestKeyRouteAffinityConfig:
         )
         assert config.mode == KeyRouteAffinityMode.RMW
         assert config.table_pk_attributes == {"users": "pk"}
+
+
+class TestRetryConfig:
+    """Tests for RetryConfig validation."""
+
+    def test_zero_max_attempts_raises(self) -> None:
+        """Retry attempts count is a total-attempts value and must be positive."""
+        with pytest.raises(ConfigurationError, match="max_attempts must be > 0"):
+            RetryConfig(max_attempts=0)
