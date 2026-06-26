@@ -121,7 +121,9 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
     def retry_without_sleep(attempts: int, **_: object) -> int | None:
         return 0 if attempts < 3 else None
 
-    client.meta.events.register_last("before-send.dynamodb.PutItem", capture_before_send)
+    client.meta.events.register_last(
+        "before-send.dynamodb.PutItem", capture_before_send
+    )
     client.meta.events.register_first(
         "needs-retry.dynamodb.PutItem",
         retry_without_sleep,
