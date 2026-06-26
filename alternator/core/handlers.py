@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
-from botocore.awsrequest import AWSPreparedRequest
+from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.hooks import BaseEventHooks
 
 from alternator.config import CompressionAlgorithm
@@ -92,7 +92,7 @@ def _register_alternator_handlers(
             yield f"{scheme}://{node}:{port}"
 
     # Register event handler to update endpoint per-request
-    def update_endpoint(request: AWSPreparedRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
+    def update_endpoint(request: AWSPreparedRequest | AWSRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
         """Update request URL based on routing strategy."""
         # Get or create query plan
         plan: Iterator[str] | None = getattr(request, _QUERY_PLAN_ATTR, None)
@@ -123,12 +123,27 @@ def _register_alternator_handlers(
         # Get next node from plan
         new_uri = next(plan)
 
-        parsed = urlparse(request.url)
-        request.url = f"{new_uri}{parsed.path}"
-        if parsed.query:
-            request.url += f"?{parsed.query}"
+        request_url = (
+            request.url.decode("utf-8")
+            if isinstance(request.url, bytes)
+            else request.url
+        )
+        parsed = urlparse(request_url)
+        path = (
+            parsed.path.decode("utf-8")
+            if isinstance(parsed.path, bytes)
+            else parsed.path
+        )
+        query = (
+            parsed.query.decode("utf-8")
+            if isinstance(parsed.query, bytes)
+            else parsed.query
+        )
+        request.url = f"{new_uri}{path}"
+        if query:
+            request.url += f"?{query}"
 
-    events.register("before-send.dynamodb.*", update_endpoint)
+    events.register("request-created.dynamodb.*", update_endpoint)
 
     # Register compression handler if enabled
     if config.request_compression.algorithm == CompressionAlgorithm.GZIP:
@@ -136,7 +151,7 @@ def _register_alternator_handlers(
             config.request_compression.min_size_bytes,
             gzip_level=config.request_compression.gzip_level,
         )
-        events.register("before-send.dynamodb.*", compress_handler)
+        events.register("request-created.dynamodb.*", compress_handler)
 
     # Register header filter if optimization enabled
     if config.header_optimization.enabled:
