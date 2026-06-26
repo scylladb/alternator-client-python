@@ -1,7 +1,7 @@
-"""Go-compatible PRNG (math/rand lagged Fibonacci generator).
+"""Deterministic PRNG for request-scoped node ordering.
 
-Produces identical sequences to Go's math/rand for the same seed,
-enabling cross-language deterministic node selection.
+The generator uses the project's stable lagged-Fibonacci sequence so clients
+can produce reproducible node plans from the same seed.
 """
 
 from __future__ import annotations
@@ -242,12 +242,8 @@ def _to_signed64(v: int) -> int:
     return v
 
 
-class GoRand:
-    """Go-compatible math/rand PRNG (lagged Fibonacci generator).
-
-    Produces identical sequences to Go's ``math/rand.New(math/rand.NewSource(seed))``
-    for the same seed value.
-    """
+class DeterministicRand:
+    """Stable lagged-Fibonacci PRNG used by deterministic query plans."""
 
     __slots__ = ("_tap", "_feed", "_vec")
 
@@ -258,7 +254,7 @@ class GoRand:
         self.seed(seed)
 
     def seed(self, s: int) -> None:
-        """Seed the generator, matching Go's Source.Seed()."""
+        """Seed the generator using the stable project sequence."""
         self._tap = 0
         self._feed = _RNG_LEN - _RNG_TAP  # 334
 
@@ -283,8 +279,8 @@ class GoRand:
     def int63(self) -> int:
         """Return a non-negative pseudo-random 63-bit integer.
 
-        Matches Go's rngSource.Uint64() masked to 63 bits.
-        Go decrements tap and feed *before* the addition.
+        Tap and feed are decremented before addition to preserve the project
+        sequence used by existing deterministic query-plan vectors.
         """
         self._tap -= 1
         if self._tap < 0:
@@ -296,12 +292,10 @@ class GoRand:
         x = _to_signed64((self._vec[self._feed] + self._vec[self._tap]) & _MASK64)
         self._vec[self._feed] = x
 
-        # Go: int64(rng.Uint64() & rngMask) where rngMask = 1<<63 - 1
-        # Uint64 returns uint64(x), so we need the unsigned interpretation
         return (x & _MASK64) & _INT63_MAX
 
     def intn(self, n: int) -> int:
-        """Return a non-negative pseudo-random int in [0, n), matching Go's Intn."""
+        """Return a non-negative pseudo-random int in [0, n)."""
         if n <= 0:
             raise ValueError(f"invalid argument to intn: {n}")
         if n <= _INT32_MAX:
@@ -309,7 +303,7 @@ class GoRand:
         return self._int63n(n)
 
     def _int31n(self, n: int) -> int:
-        """Rejection sampling for n <= 2^31-1, matching Go's Int31n."""
+        """Rejection sampling for n <= 2^31-1."""
         if n & (n - 1) == 0:  # power of two
             return self._int31() & (n - 1)
         max_val = _INT32_MAX - ((1 << 31) % n)
@@ -319,11 +313,11 @@ class GoRand:
         return v % n
 
     def _int31(self) -> int:
-        """Return a non-negative pseudo-random 31-bit integer, matching Go's Int31."""
+        """Return a non-negative pseudo-random 31-bit integer."""
         return self.int63() >> 32
 
     def _int63n(self, n: int) -> int:
-        """Rejection sampling for n > 2^31-1, matching Go's Int63n."""
+        """Rejection sampling for n > 2^31-1."""
         max_val = (1 << 63) - 1 - ((1 << 63) % n)
         v = self.int63()
         while v > max_val:

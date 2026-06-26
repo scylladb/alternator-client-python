@@ -1,5 +1,5 @@
 # Scylla configuration for integration tests
-# Mirrors Go client's tests/scylla/scylla.yaml
+# Local Scylla configuration for Alternator client integration tests
 
 cluster_name: 'alternator-python-test'
 num_tokens: 256
