@@ -10,8 +10,10 @@ from alternator.config import (
     AlternatorConfigBuilder,
     CompressionAlgorithm,
     Config,
+    HeaderWhitelistContext,
     KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
+    RequestCompressionConfig,
     TlsConfig,
     TlsSessionCacheConfig,
 )
@@ -81,8 +83,10 @@ class TestAlternatorConfig:
         assert config.scheme == "http"
         assert config.request_compression.algorithm == CompressionAlgorithm.NONE
         assert config.request_compression.min_size_bytes == 1024
+        assert config.request_compression.gzip_level == 9
         assert config.header_optimization.enabled is False
         assert config.header_optimization.whitelist is None
+        assert config.header_optimization.whitelist_callback is None
         assert config.node_list_polling.active_interval_ms == 1000
         assert config.node_list_polling.idle_interval_ms == 60000
         assert config.aws_region == "us-east-1"
@@ -195,6 +199,29 @@ class TestAlternatorConfigBuilder:
         )
         assert config.request_compression.algorithm == CompressionAlgorithm.GZIP
         assert config.request_compression.min_size_bytes == 2048
+        assert config.request_compression.gzip_level == 9
+
+    def test_build_with_compression_level(self) -> None:
+        """Test building config with a custom gzip compression level."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_compression(CompressionAlgorithm.GZIP, min_size=2048, gzip_level=1)
+            .build()
+        )
+        assert config.request_compression.algorithm == CompressionAlgorithm.GZIP
+        assert config.request_compression.min_size_bytes == 2048
+        assert config.request_compression.gzip_level == 1
+
+    @pytest.mark.parametrize("gzip_level", [-1, 10])
+    def test_invalid_compression_level_raises(self, gzip_level: int) -> None:
+        """Test invalid gzip compression levels raise."""
+        with pytest.raises(ConfigurationError, match="gzip_level must be 0-9"):
+            RequestCompressionConfig(
+                algorithm=CompressionAlgorithm.GZIP,
+                gzip_level=gzip_level,
+            )
 
     def test_build_with_header_optimization(self) -> None:
         """Test building config with header optimization."""
@@ -209,6 +236,25 @@ class TestAlternatorConfigBuilder:
         assert config.header_optimization.whitelist == frozenset(
             {"Host", "Content-Type"}
         )
+        assert config.header_optimization.whitelist_callback is None
+
+    def test_build_with_header_whitelist_callback(self) -> None:
+        """Test building config with a dynamic header whitelist callback."""
+
+        def whitelist_callback(context: HeaderWhitelistContext) -> set[str]:
+            assert context.config.port == 8000
+            return {"X-Dynamic-Header"}
+
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_header_optimization(whitelist_callback=whitelist_callback)
+            .build()
+        )
+        assert config.header_optimization.enabled is True
+        assert config.header_optimization.whitelist is None
+        assert config.header_optimization.whitelist_callback is whitelist_callback
 
     def test_build_with_key_affinity(self) -> None:
         """Test building config with key affinity."""

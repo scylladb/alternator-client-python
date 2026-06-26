@@ -112,16 +112,19 @@ def _register_alternator_handlers(
     # Register compression handler if enabled
     if config.request_compression.algorithm == CompressionAlgorithm.GZIP:
         compress_handler = create_compression_handler(
-            config.request_compression.min_size_bytes
+            config.request_compression.min_size_bytes,
+            gzip_level=config.request_compression.gzip_level,
         )
         events.register("before-send.dynamodb.*", compress_handler)
 
     # Register header filter if optimization enabled
     if config.header_optimization.enabled:
         whitelist = compute_header_whitelist(
+            config=config,
             auth_enabled=auth_enabled,
             compression_enabled=config.request_compression.enabled,
             custom_whitelist=config.header_optimization.whitelist,
+            whitelist_callback=config.header_optimization.whitelist_callback,
         )
         header_filter = create_header_filter_handler(whitelist)
         events.register("before-send.dynamodb.*", header_filter)

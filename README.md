@@ -184,8 +184,10 @@ config = (
 | `routing_scope` | `RoutingScope` | `ClusterScope()` | Topology-aware routing |
 | `compression` | `CompressionAlgorithm` | `NONE` | Request compression |
 | `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
+| `gzip_level` | `int` | `9` | gzip compression level, `0` through `9` |
 | `optimize_headers` | `bool` | `False` | Enable header filtering |
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
+| `header_whitelist_callback` | callable | `None` | Callback for dynamic header whitelist additions |
 | `tls` | `TLS` | system default | TLS trust, client certificates, and key logging |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
 | `retries` | `RetryConfig` | standard, 3 attempts | SDK retry behavior |
@@ -412,10 +414,47 @@ config = (
     .with_compression(
         CompressionAlgorithm.GZIP,
         min_size=1024,  # Only compress bodies >= 1KB
+        gzip_level=6,   # Python gzip level 0-9; default is 9
     )
     .build()
 )
 ```
+
+Compression uses Python's `gzip.compress` implementation. Levels `0` through
+`9` are accepted: lower levels spend less CPU and usually produce larger bodies;
+higher levels spend more CPU and usually produce smaller bodies. The client only
+sends compressed bodies when the compressed payload is smaller than the original
+payload.
+
+## Header Optimization
+
+Header optimization remains opt-in. Required protocol, compression, and auth
+headers are preserved automatically. Use `whitelist` for static additions and
+`whitelist_callback` when the allowed headers depend on configuration or auth
+state:
+
+```python
+from alternator import AlternatorConfigBuilder, HeaderWhitelistContext
+
+def extra_headers(context: HeaderWhitelistContext) -> set[str]:
+    if context.auth_enabled:
+        return {"X-Service-Trace"}
+    return {"X-Anonymous-Trace"}
+
+config = (
+    AlternatorConfigBuilder()
+    .with_seeds("node1")
+    .with_port(8000)
+    .with_header_optimization(
+        whitelist={"X-Static-Header"},
+        whitelist_callback=extra_headers,
+    )
+    .build()
+)
+```
+
+The callback returns additional headers to keep. It cannot remove the required
+headers exposed in `context.required_headers`.
 
 ## Error Handling
 
@@ -669,6 +708,7 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 ## Known Limitations
 
 - **Request Compression**: Gzip compression requires ScyllaDB 2026.1.0+. Response compression is not yet supported by Alternator.
+- **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.

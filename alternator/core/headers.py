@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from botocore.awsrequest import AWSPreparedRequest
+
+from alternator.config import HeaderWhitelistCallback, HeaderWhitelistContext
+
+if TYPE_CHECKING:
+    from alternator.config import Config
 
 # Base required headers that are always needed
 BASE_REQUIRED_HEADERS = frozenset(
@@ -37,17 +42,21 @@ COMPRESSION_HEADERS = frozenset(
 
 def compute_header_whitelist(
     *,
+    config: Config | None = None,
     auth_enabled: bool = False,
     compression_enabled: bool = False,
     custom_whitelist: frozenset[str] | set[str] | None = None,
+    whitelist_callback: HeaderWhitelistCallback | None = None,
 ) -> frozenset[str]:
     """
     Compute the complete header whitelist based on configuration.
 
     Args:
+        config: Client configuration, required when whitelist_callback is set
         auth_enabled: Whether authentication credentials were provided
         compression_enabled: Whether compression is enabled
         custom_whitelist: Additional headers to whitelist
+        whitelist_callback: Callback returning additional headers to whitelist
 
     Returns:
         Frozenset of headers to keep
@@ -59,8 +68,21 @@ def compute_header_whitelist(
     if compression_enabled:
         result.update(COMPRESSION_HEADERS)
 
+    required_headers = frozenset(result)
+
     if custom_whitelist:
         result.update(custom_whitelist)
+
+    if whitelist_callback is not None:
+        if config is None:
+            raise ValueError("config is required when whitelist_callback is set")
+        context = HeaderWhitelistContext(
+            config=config,
+            auth_enabled=auth_enabled,
+            compression_enabled=compression_enabled,
+            required_headers=required_headers,
+        )
+        result.update(whitelist_callback(context))
 
     return frozenset(result)
 
