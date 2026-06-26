@@ -8,7 +8,8 @@ import pytest
 from alternator.async_client import AsyncPartitionKeyCache
 from alternator.config import Config
 from alternator.core.live_nodes import AsyncLiveNodesManager, NoNodesAvailableError
-from alternator.core.routing_scope import ClusterScope, DatacenterScope
+from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
+from alternator.exceptions import ConfigurationError
 
 
 @pytest.fixture
@@ -189,6 +190,50 @@ class TestAsyncLiveNodesManager:
         # Second fetch fails but nodes remain
         await manager.refresh_nodes()
         assert manager.nodes.nodes == initial_nodes
+
+    @pytest.mark.asyncio
+    async def test_topology_validation_uses_scope_without_state_update(self) -> None:
+        """Validation queries one scoped endpoint without replacing live nodes."""
+        call_urls: list[str] = []
+
+        async def mock_fetch(url: str) -> list[str]:
+            call_urls.append(url)
+            if "dc=dc1" in url:
+                return ["node1"]
+            return []
+
+        config = Config(
+            seed_hosts=["seed1"],
+            port=8000,
+            routing_scope=DatacenterScope("dc1", fallback=None),
+        )
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.check_rack_and_datacenter_set_correctly() is True
+        assert await manager.check_rack_datacenter_feature_supported() is True
+        assert manager.nodes.nodes == ()
+        assert call_urls == [
+            "http://seed1:8000/localnodes?dc=dc1",
+            "http://seed1:8000/localnodes?dc=dc1",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_topology_validation_raises_for_missing_scope(self) -> None:
+        """Validation raises a clear error when no scoped nodes exist."""
+
+        async def mock_fetch(url: str) -> list[str]:
+            return []
+
+        config = Config(
+            seed_hosts=["seed1"],
+            port=8000,
+            routing_scope=RackScope("dc1", "missing", fallback=None),
+        )
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.check_rack_datacenter_feature_supported() is False
+        with pytest.raises(ConfigurationError, match="No nodes found"):
+            await manager.check_rack_and_datacenter_set_correctly()
 
 
 class TestAsyncPartitionKeyCache:

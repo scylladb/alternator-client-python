@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 import pytest
 
 import alternator
-from alternator import Auth, Config, Helper, close_client
+from alternator import Auth, Config, Helper, close_client, create_client
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR
 from alternator.async_client import AsyncHelper
 from alternator.config import KeyRouteAffinityConfig
@@ -17,6 +17,7 @@ from alternator.core.routing_scope import (
     RackScope,
     RoutingScope,
 )
+from alternator.exceptions import ConfigurationError, NoNodesAvailableError
 from tests.conftest import FakeAlternatorServer
 
 
@@ -101,6 +102,9 @@ def test_helper_update_returns_new_helper(
 
 def test_helper_topology_checks(fake_alternator_server: FakeAlternatorServer) -> None:
     """Helper exposes lightweight topology configuration checks."""
+    fake_alternator_server.set_localnodes(["node1"], query="dc=dc1")
+    fake_alternator_server.set_localnodes(["node1"], query="dc=dc1&rack=rack1")
+
     assert Helper(
         _config_for_server(fake_alternator_server, routing_scope=ClusterScope())
     ).check_rack_and_datacenter_set_correctly()
@@ -110,12 +114,17 @@ def test_helper_topology_checks(fake_alternator_server: FakeAlternatorServer) ->
             routing_scope=DatacenterScope(datacenter="dc1"),
         )
     ).check_rack_and_datacenter_set_correctly()
-    assert not Helper(
+
+    invalid_helper = Helper(
         _config_for_server(
             fake_alternator_server,
             routing_scope=RackScope(datacenter="dc1", rack=""),
         )
-    ).check_rack_and_datacenter_set_correctly()
+    )
+    assert not invalid_helper.check_rack_datacenter_feature_supported()
+    with pytest.raises(ConfigurationError, match="non-empty"):
+        invalid_helper.check_rack_and_datacenter_set_correctly()
+
     assert Helper(
         _config_for_server(
             fake_alternator_server,
@@ -137,6 +146,19 @@ def test_helper_partition_key_diagnostics_from_config(
 
     assert helper.get_partition_key_name("tbl") == "pk"
     assert helper.get_partition_key_name("missing") is None
+
+
+def test_no_fallback_scope_does_not_use_seed_hosts(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    """Explicit no-fallback scopes stay constrained when discovery is empty."""
+    config = _config_for_server(
+        fake_alternator_server,
+        routing_scope=DatacenterScope("missing", fallback=None),
+    )
+
+    with pytest.raises(NoNodesAvailableError):
+        create_client(config)
 
 
 @pytest.mark.asyncio

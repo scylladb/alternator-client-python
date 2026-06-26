@@ -259,14 +259,14 @@ config = Config(
     routing_scope=ClusterScope(),
 )
 
-# Route to nodes in a specific datacenter
+# Route to nodes in a specific datacenter, then fall back to cluster
 config = Config(
     seed_hosts=["node1"],
     port=8000,
     routing_scope=DatacenterScope(datacenter="us-east-1"),
 )
 
-# Route to nodes in a specific rack (with fallback)
+# Route to nodes in a specific rack, then fall back to datacenter and cluster
 config = Config(
     seed_hosts=["node1"],
     port=8000,
@@ -274,8 +274,32 @@ config = Config(
 )
 ```
 
-Scopes automatically fall back to broader scopes if no nodes are available:
-- `RackScope` → `DatacenterScope` → `ClusterScope`
+Default constructors keep compatibility fallback behavior:
+
+- `DatacenterScope("dc1")` uses `DatacenterScope` -> `ClusterScope`
+- `RackScope("dc1", "rack1")` uses `RackScope` -> `DatacenterScope` -> `ClusterScope`
+
+Use the named `fallback` argument for explicit routing constraints:
+
+```python
+from alternator import ClusterScope, DatacenterScope, RackScope
+
+cluster_only = ClusterScope()
+datacenter_only = DatacenterScope("dc1", fallback=None)
+datacenter_then_cluster = DatacenterScope("dc1", fallback=ClusterScope())
+rack_only = RackScope("dc1", "rack1", fallback=None)
+rack_then_datacenter = RackScope(
+    "dc1",
+    "rack1",
+    fallback=DatacenterScope("dc1", fallback=None),
+)
+rack_then_datacenter_then_cluster = RackScope.with_default_fallback("dc1", "rack1")
+```
+
+`Helper.check_rack_and_datacenter_set_correctly()` validates the configured
+scope by querying `/localnodes` with the configured datacenter and rack filters
+without replacing the helper's current live-node list.
+`AsyncHelper` exposes the same validation methods as awaitable methods.
 
 ## Key Affinity (LWT Optimization)
 

@@ -272,7 +272,11 @@ def _create_async_affinity_hash_computer(
     return compute_affinity_hash
 
 
-async def _create_async_manager(config: Config) -> AsyncLiveNodesManager:
+async def _create_async_manager(
+    config: Config,
+    *,
+    initial_refresh: bool = True,
+) -> AsyncLiveNodesManager:
     """Create and initialize an async live-node manager."""
     # Create SSL context if using HTTPS
     ssl_context = None
@@ -288,11 +292,15 @@ async def _create_async_manager(config: Config) -> AsyncLiveNodesManager:
     manager = AsyncLiveNodesManager(config, http_fetcher)
 
     # Perform initial node fetch
-    if not await manager.refresh_nodes():
-        logger.warning("Initial node discovery failed, using seed hosts")
-        from alternator.core.routing_scope import ClusterScope
+    if initial_refresh and not await manager.refresh_nodes():
+        from alternator.core.routing_scope import (
+            ClusterScope,
+            scope_chain_includes_cluster,
+        )
 
-        manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
+        if scope_chain_includes_cluster(config.routing_scope):
+            logger.warning("Initial node discovery failed, using seed hosts")
+            manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
 
     return manager
 
@@ -577,29 +585,29 @@ class AsyncHelper:
         """Return quarantined nodes; node quarantine is not implemented."""
         return []
 
-    def check_rack_and_datacenter_set_correctly(self) -> bool:
-        """Return whether the configured rack/datacenter scope is complete."""
-        from alternator.core.routing_scope import DatacenterScope, RackScope
+    async def check_rack_and_datacenter_set_correctly(self) -> bool:
+        """Validate configured rack/datacenter scope without changing state."""
+        manager = self._manager
+        if manager is not None:
+            return await manager.check_rack_and_datacenter_set_correctly()
 
-        scope = self._config.routing_scope
-        if isinstance(scope, RackScope):
-            return bool(scope.datacenter and scope.rack)
-        if isinstance(scope, DatacenterScope):
-            return bool(scope.datacenter)
-        return True
+        manager = await _create_async_manager(self._config, initial_refresh=False)
+        try:
+            return await manager.check_rack_and_datacenter_set_correctly()
+        finally:
+            await _close_async_manager(manager)
 
-    def check_rack_datacenter_feature_supported(self) -> bool:
-        """Return whether this client supports rack/datacenter scoped discovery."""
-        from alternator.core.routing_scope import (
-            ClusterScope,
-            DatacenterScope,
-            RackScope,
-        )
+    async def check_rack_datacenter_feature_supported(self) -> bool:
+        """Report whether scoped rack/datacenter discovery appears supported."""
+        manager = self._manager
+        if manager is not None:
+            return await manager.check_rack_datacenter_feature_supported()
 
-        return isinstance(
-            self._config.routing_scope,
-            ClusterScope | DatacenterScope | RackScope,
-        )
+        manager = await _create_async_manager(self._config, initial_refresh=False)
+        try:
+            return await manager.check_rack_datacenter_feature_supported()
+        finally:
+            await _close_async_manager(manager)
 
     async def get_partition_key_name(self, table_name: str) -> str | None:
         """Return a known partition key name for diagnostics."""

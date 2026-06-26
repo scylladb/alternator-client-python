@@ -6,6 +6,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from urllib.parse import quote
 
+_DEFAULT_FALLBACK = object()
+
 
 class RoutingScope(ABC):
     """Base class for topology-aware routing scopes."""
@@ -54,12 +56,41 @@ class ClusterScope(RoutingScope):
         return ""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class DatacenterScope(RoutingScope):
     """Route to nodes in a specific datacenter."""
 
     datacenter: str
     _fallback: RoutingScope | None = None
+
+    def __init__(
+        self,
+        datacenter: str,
+        _fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
+        *,
+        fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
+    ) -> None:
+        """Create a datacenter scope.
+
+        Omitting fallback preserves the historical datacenter-to-cluster
+        fallback. Passing ``fallback=None`` disables fallback explicitly.
+        """
+        object.__setattr__(self, "datacenter", datacenter)
+        object.__setattr__(
+            self,
+            "_fallback",
+            _resolve_datacenter_fallback(_fallback, fallback),
+        )
+
+    @classmethod
+    def with_default_fallback(cls, datacenter: str) -> DatacenterScope:
+        """Create a datacenter scope that falls back to cluster scope."""
+        return cls(datacenter, fallback=ClusterScope())
+
+    @classmethod
+    def without_fallback(cls, datacenter: str) -> DatacenterScope:
+        """Create a datacenter-only scope."""
+        return cls(datacenter, fallback=None)
 
     @property
     def name(self) -> str:
@@ -71,19 +102,54 @@ class DatacenterScope(RoutingScope):
 
     @property
     def fallback(self) -> RoutingScope | None:
-        return self._fallback if self._fallback is not None else ClusterScope()
+        return self._fallback
 
     def get_localnodes_query(self) -> str:
         return f"dc={quote(self.datacenter, safe='')}"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class RackScope(RoutingScope):
     """Route to nodes in a specific rack within a datacenter."""
 
     datacenter: str
     rack: str
     _fallback: RoutingScope | None = None
+
+    def __init__(
+        self,
+        datacenter: str,
+        rack: str,
+        _fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
+        *,
+        fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
+    ) -> None:
+        """Create a rack scope.
+
+        Omitting fallback preserves the historical rack-to-datacenter-to-cluster
+        fallback. Passing ``fallback=None`` disables fallback explicitly.
+        """
+        object.__setattr__(self, "datacenter", datacenter)
+        object.__setattr__(self, "rack", rack)
+        object.__setattr__(
+            self,
+            "_fallback",
+            _resolve_rack_fallback(datacenter, _fallback, fallback),
+        )
+
+    @classmethod
+    def with_default_fallback(cls, datacenter: str, rack: str) -> RackScope:
+        """Create a rack scope that falls back to datacenter and then cluster."""
+        return cls(
+            datacenter,
+            rack,
+            fallback=DatacenterScope.with_default_fallback(datacenter),
+        )
+
+    @classmethod
+    def without_fallback(cls, datacenter: str, rack: str) -> RackScope:
+        """Create a rack-only scope."""
+        return cls(datacenter, rack, fallback=None)
 
     @property
     def name(self) -> str:
@@ -95,9 +161,51 @@ class RackScope(RoutingScope):
 
     @property
     def fallback(self) -> RoutingScope | None:
-        if self._fallback is None:
-            return DatacenterScope(self.datacenter)
         return self._fallback
 
     def get_localnodes_query(self) -> str:
         return f"dc={quote(self.datacenter, safe='')}&rack={quote(self.rack, safe='')}"
+
+
+def _resolve_datacenter_fallback(
+    legacy_fallback: RoutingScope | None | object,
+    fallback: RoutingScope | None | object,
+) -> RoutingScope | None:
+    if fallback is not _DEFAULT_FALLBACK:
+        return _validate_fallback(fallback)
+    if legacy_fallback is not _DEFAULT_FALLBACK and legacy_fallback is not None:
+        return _validate_fallback(legacy_fallback)
+    return ClusterScope()
+
+
+def _resolve_rack_fallback(
+    datacenter: str,
+    legacy_fallback: RoutingScope | None | object,
+    fallback: RoutingScope | None | object,
+) -> RoutingScope | None:
+    if fallback is not _DEFAULT_FALLBACK:
+        return _validate_fallback(fallback)
+    if legacy_fallback is not _DEFAULT_FALLBACK and legacy_fallback is not None:
+        return _validate_fallback(legacy_fallback)
+    return DatacenterScope.with_default_fallback(datacenter)
+
+
+def _validate_fallback(fallback: RoutingScope | None | object) -> RoutingScope | None:
+    if fallback is None or isinstance(fallback, RoutingScope):
+        return fallback
+    raise TypeError(f"fallback must be a RoutingScope or None, got {type(fallback)!r}")
+
+
+def scope_chain_includes_cluster(scope: RoutingScope) -> bool:
+    """Return whether a scope chain can fall back to cluster scope."""
+    seen: set[int] = set()
+    current: RoutingScope | None = scope
+    while current is not None:
+        current_id = id(current)
+        if current_id in seen:
+            return False
+        seen.add(current_id)
+        if isinstance(current, ClusterScope):
+            return True
+        current = current.fallback
+    return False
