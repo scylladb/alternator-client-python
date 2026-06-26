@@ -19,14 +19,11 @@ from alternator._http import create_ssl_context, create_sync_http_fetcher
 from alternator.config import Config, KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
-from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     PartitionKeyCache,
-    extract_partition_key,
-    get_table_name,
-    should_use_affinity,
+    select_affinity_node,
 )
-from alternator.core.live_nodes import SyncLiveNodesManager
+from alternator.core.live_nodes import NodeList, SyncLiveNodesManager
 from alternator.exceptions import ConfigurationError
 from alternator.vector import enable_vector_support
 
@@ -167,19 +164,19 @@ def _create_boto_config(config: Config, *, auth_enabled: bool) -> BotoConfig:
     return BotoConfig(**kwargs)
 
 
-def _create_affinity_hash_computer(
+def _create_affinity_node_computer(
     config: Config,
     client: DynamoDBClient,
-) -> Callable[[str, dict[str, Any]], int | None] | None:
+) -> Callable[[str, dict[str, Any], NodeList], str | None] | None:
     """
-    Create a function that computes the partition key hash for affinity routing.
+    Create a function that selects the preferred key-affinity node.
 
     Args:
         config: Alternator configuration
         client: boto3 client for DescribeTable calls
 
     Returns:
-        Function that computes partition key hash, or None if affinity is disabled
+        Function that selects the affinity node, or None if affinity is disabled
     """
     affinity_mode = config.key_affinity.mode
 
@@ -197,47 +194,21 @@ def _create_affinity_hash_computer(
     # Store pk_cache on client for cleanup/access
     setattr(client, PK_CACHE_ATTR, pk_cache)
 
-    def compute_affinity_hash(
-        operation_name: str, params: dict[str, Any]
-    ) -> int | None:
-        """Compute partition key hash for affinity routing."""
-        # Check if this operation should use affinity
-        if not should_use_affinity(affinity_mode.name, operation_name, params):
-            return None
+    def compute_affinity_node(
+        operation_name: str,
+        params: dict[str, Any],
+        nodes: NodeList,
+    ) -> str | None:
+        """Select the preferred key-affinity node for this request."""
+        return select_affinity_node(
+            mode=affinity_mode.name,
+            operation_name=operation_name,
+            params=params,
+            nodes=nodes,
+            get_pk_name=pk_cache.get_pk_name,
+        )
 
-        # Get table name
-        table_name = get_table_name(params)
-        if not table_name:
-            return None
-
-        # Get partition key name (from config or auto-discover)
-        pk_name = pk_cache.get_pk_name(table_name)
-        if not pk_name:
-            logger.debug(
-                "Could not determine partition key for table %s",
-                table_name,
-            )
-            return None
-
-        # Extract partition key value
-        pk_info = extract_partition_key(params, pk_name)
-        if not pk_info:
-            logger.debug(
-                "Could not extract partition key %s from request",
-                pk_name,
-            )
-            return None
-
-        attr_type, value = pk_info
-
-        # Compute and return hash
-        try:
-            return hash_attribute_value(attr_type, value)
-        except (ValueError, TypeError, UnicodeEncodeError) as e:
-            logger.error("Error hashing partition key: %s", e)
-            return None
-
-    return compute_affinity_hash
+    return compute_affinity_node
 
 
 def _create_client_with_manager(
@@ -273,7 +244,7 @@ def _create_client_with_manager(
         client.meta.events,
         manager,
         config,
-        _create_affinity_hash_computer(config, client),
+        _create_affinity_node_computer(config, client),
         auth_enabled=auth_enabled,
     )
 
@@ -461,7 +432,7 @@ def _create_resource_with_manager(
         resource.meta.client.meta.events,
         manager,
         config,
-        _create_affinity_hash_computer(config, resource.meta.client),
+        _create_affinity_node_computer(config, resource.meta.client),
         auth_enabled=auth_enabled,
     )
 

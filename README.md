@@ -334,8 +334,20 @@ config = (
 | Mode | Description |
 |------|-------------|
 | `NONE` | Disabled (default round-robin) |
-| `RMW` | Only for operations with `ConditionExpression` or `ReturnValues` |
+| `RMW` | Only for write operations that require a read-before-write path |
 | `ANY_WRITE` | For all write operations (`PutItem`, `UpdateItem`, `DeleteItem`, `BatchWriteItem`) |
+
+`RMW` mode applies affinity to conditional `PutItem`/`DeleteItem`, `ALL_OLD`
+returns, and `UpdateItem` requests that need prior item state, including
+non-empty update or condition expressions, `Expected`, selected `ReturnValues`,
+`ADD`, and value-bearing `DELETE` attribute updates. `BatchWriteItem` does not
+use affinity in `RMW` mode.
+
+`ANY_WRITE` mode applies affinity to single-item writes using the request
+partition key. For `BatchWriteItem`, each valid put/delete votes for its
+preferred node. The request tries the unique winning node first and keeps the
+remaining nodes in the retry plan. Missing partition-key metadata, unsupported
+key values, no active nodes, no votes, or tied votes fall back to normal routing.
 
 ## TLS Configuration
 
