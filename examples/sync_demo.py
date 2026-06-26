@@ -9,6 +9,7 @@ This example shows how to:
 """
 
 import logging
+import os
 import sys
 
 from botocore.exceptions import ClientError
@@ -26,8 +27,8 @@ def main() -> None:
     """Run the sync demo."""
     # Configure the client
     config = Config(
-        seed_hosts=["localhost"],  # Replace with your Scylla nodes
-        port=8000,
+        seed_hosts=[os.environ.get("SCYLLA_HOST", "localhost")],
+        port=int(os.environ.get("SCYLLA_PORT", "8000")),
         scheme="http",  # Use "https" for TLS
     )
 
