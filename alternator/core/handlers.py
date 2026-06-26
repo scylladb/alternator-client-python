@@ -92,7 +92,10 @@ def _register_alternator_handlers(
             yield f"{scheme}://{node}:{port}"
 
     # Register event handler to update endpoint per-request
-    def update_endpoint(request: AWSPreparedRequest | AWSRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
+    def update_endpoint(
+        request: AWSPreparedRequest | AWSRequest,
+        **kwargs: Any,  # noqa: ANN401 -- botocore event handler signature
+    ) -> None:
         """Update request URL based on routing strategy."""
         # Get or create query plan
         plan: Iterator[str] | None = getattr(request, _QUERY_PLAN_ATTR, None)

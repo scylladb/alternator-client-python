@@ -27,7 +27,10 @@ def create_compression_handler(
         Event handler function for botocore
     """
 
-    def compress_request(request: AWSPreparedRequest | AWSRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
+    def compress_request(
+        request: AWSPreparedRequest | AWSRequest,
+        **kwargs: Any,  # noqa: ANN401 -- botocore event handler signature
+    ) -> None:
         """Compress request body if it exceeds threshold."""
         raw_body = request.body
         if raw_body is None:

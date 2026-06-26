@@ -61,7 +61,9 @@ def test_signed_request_url_and_compressed_body_are_final_before_signing() -> No
         raise RuntimeError("captured")
 
     client.meta.events.register("before-sign.dynamodb.PutItem", capture_before_sign)
-    client.meta.events.register_last("before-send.dynamodb.PutItem", capture_before_send)
+    client.meta.events.register_last(
+        "before-send.dynamodb.PutItem", capture_before_send
+    )
 
     with pytest.raises(RuntimeError, match="captured"):
         client.put_item(
