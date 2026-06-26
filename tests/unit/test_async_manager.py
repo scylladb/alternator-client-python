@@ -99,6 +99,57 @@ class TestAsyncLiveNodesManager:
         assert "dc=" not in call_urls[1]
 
     @pytest.mark.asyncio
+    async def test_cluster_scope_aggregates_all_seed_localnodes(self) -> None:
+        """Cluster scope unions local-DC node lists returned by each seed."""
+        call_urls: list[str] = []
+
+        async def mock_fetch(url: str) -> list[str]:
+            call_urls.append(url)
+            if "seed-dc1" in url:
+                return ["dc1-node1", "dc1-node2"]
+            if "seed-dc2" in url:
+                return ["dc2-node1", "dc2-node2"]
+            return []
+
+        config = Config(
+            seed_hosts=["seed-dc1", "seed-dc2"],
+            port=8000,
+            routing_scope=ClusterScope(),
+        )
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.refresh_nodes() is True
+        assert call_urls == [
+            "http://seed-dc1:8000/localnodes",
+            "http://seed-dc2:8000/localnodes",
+        ]
+        assert manager.nodes.nodes == (
+            "dc1-node1",
+            "dc1-node2",
+            "dc2-node1",
+            "dc2-node2",
+        )
+
+    @pytest.mark.asyncio
+    async def test_cluster_scope_aggregates_reachable_seed_localnodes(self) -> None:
+        """Cluster scope keeps usable seed results when another seed fails."""
+
+        async def mock_fetch(url: str) -> list[str]:
+            if "seed-dc1" in url:
+                raise OSError("seed unavailable")
+            return ["dc2-node1", "dc2-node2"]
+
+        config = Config(
+            seed_hosts=["seed-dc1", "seed-dc2"],
+            port=8000,
+            routing_scope=ClusterScope(),
+        )
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
+
+    @pytest.mark.asyncio
     async def test_url_construction(self, config: Config) -> None:
         """Test build_localnodes_url constructs correct URL."""
         manager = AsyncLiveNodesManager(config, lambda _: [])
