@@ -10,7 +10,7 @@ and intentionally deferred behavior.
 | Async DynamoDB client | Supported | Existing API | `create_async_client` and `AsyncAlternatorClient` use aioboto3. |
 | Host-only seeds with one shared port | Supported | Existing API | Seeds must not include ports; one port applies to all nodes. |
 | Node discovery | Supported | Existing API | `/localnodes` refresh updates the live node list. |
-| Routing scopes | Partial | [#35](https://github.com/scylladb/alternator-client-python/issues/35) | Cluster, datacenter, and rack scopes exist; explicit fallback control and validation are planned. |
+| Routing scopes | Supported | [#35](https://github.com/scylladb/alternator-client-python/issues/35) | Cluster, datacenter, and rack scopes support explicit fallback chains and scoped validation helpers. |
 | Request query plans | Supported | Existing API | Requests use stable seeded node ordering for retries. |
 | Auth | Supported | Existing API | Disabled by default; explicit static credentials enable signing. |
 | Request compression | Partial | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip exists; configurable levels and custom compressors are planned. |

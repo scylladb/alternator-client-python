@@ -99,7 +99,11 @@ def _cleanup_all_managers() -> None:
             manager.stop()
 
 
-def _create_manager(config: Config) -> SyncLiveNodesManager:
+def _create_manager(
+    config: Config,
+    *,
+    initial_refresh: bool = True,
+) -> SyncLiveNodesManager:
     """
     Create and initialize a SyncLiveNodesManager.
 
@@ -128,11 +132,15 @@ def _create_manager(config: Config) -> SyncLiveNodesManager:
     manager = SyncLiveNodesManager(config, http_fetcher)
 
     # Perform initial node fetch (blocking)
-    if not manager.refresh_nodes():
-        logger.warning("Initial node discovery failed, using seed hosts")
-        from alternator.core.routing_scope import ClusterScope
+    if initial_refresh and not manager.refresh_nodes():
+        from alternator.core.routing_scope import (
+            ClusterScope,
+            scope_chain_includes_cluster,
+        )
 
-        manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
+        if scope_chain_includes_cluster(config.routing_scope):
+            logger.warning("Initial node discovery failed, using seed hosts")
+            manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
 
     return manager
 
@@ -629,27 +637,27 @@ class Helper:
 
     def check_rack_and_datacenter_set_correctly(self) -> bool:
         """Return whether the configured rack/datacenter scope is complete."""
-        from alternator.core.routing_scope import DatacenterScope, RackScope
+        manager = self._manager
+        if manager is not None:
+            return manager.check_rack_and_datacenter_set_correctly()
 
-        scope = self._config.routing_scope
-        if isinstance(scope, RackScope):
-            return bool(scope.datacenter and scope.rack)
-        if isinstance(scope, DatacenterScope):
-            return bool(scope.datacenter)
-        return True
+        manager = _create_manager(self._config, initial_refresh=False)
+        try:
+            return manager.check_rack_and_datacenter_set_correctly()
+        finally:
+            manager.stop()
 
     def check_rack_datacenter_feature_supported(self) -> bool:
         """Return whether this client supports rack/datacenter scoped discovery."""
-        from alternator.core.routing_scope import (
-            ClusterScope,
-            DatacenterScope,
-            RackScope,
-        )
+        manager = self._manager
+        if manager is not None:
+            return manager.check_rack_datacenter_feature_supported()
 
-        return isinstance(
-            self._config.routing_scope,
-            ClusterScope | DatacenterScope | RackScope,
-        )
+        manager = _create_manager(self._config, initial_refresh=False)
+        try:
+            return manager.check_rack_datacenter_feature_supported()
+        finally:
+            manager.stop()
 
     def get_partition_key_name(self, table_name: str) -> str | None:
         """Return a known partition key name for diagnostics."""

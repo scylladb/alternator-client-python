@@ -24,7 +24,7 @@ Supported or close:
 - host-only seeds with one shared port
 - sync boto3 client, boto3 resource, async aioboto3 client
 - `/localnodes` node discovery
-- basic cluster/datacenter/rack routing scopes
+- explicit cluster/datacenter/rack routing scopes and fallback chains
 - request-scoped lazy query plans with stable seeded ordering
 - gzip request compression
 - header optimization
@@ -37,7 +37,6 @@ Supported or close:
 Tracked gaps:
 
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
-- explicit routing-scope fallback and topology validation: [#35](https://github.com/scylladb/alternator-client-python/issues/35)
 - transport and SDK configuration propagation: [#34](https://github.com/scylladb/alternator-client-python/issues/34)
 - TLS client certificate and key log file support: [#38](https://github.com/scylladb/alternator-client-python/issues/38)
 - configurable compression and header whitelist behavior: [#37](https://github.com/scylladb/alternator-client-python/issues/37)

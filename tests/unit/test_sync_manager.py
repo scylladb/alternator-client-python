@@ -7,7 +7,8 @@ import pytest
 
 from alternator.config import Config
 from alternator.core.live_nodes import NoNodesAvailableError, SyncLiveNodesManager
-from alternator.core.routing_scope import DatacenterScope
+from alternator.core.routing_scope import DatacenterScope, RackScope
+from alternator.exceptions import ConfigurationError
 
 
 class TestSyncLiveNodesManager:
@@ -202,3 +203,62 @@ class TestSyncLiveNodesManager:
 
         # Nodes should still be available
         assert manager.nodes.nodes == initial_nodes
+
+    def test_topology_validation_uses_scope_without_state_update(self) -> None:
+        """Validation queries one scoped endpoint without replacing live nodes."""
+        config = Config(
+            seed_hosts=["seed1"],
+            port=8000,
+            routing_scope=DatacenterScope("dc1", fallback=None),
+        )
+        calls: list[str] = []
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            calls.append(url)
+            if "dc=dc1" in url:
+                return ["node1"]
+            return []
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+
+        assert manager.check_rack_and_datacenter_set_correctly() is True
+        assert manager.check_rack_datacenter_feature_supported() is True
+        assert manager.nodes.nodes == ()
+        assert calls == [
+            "http://seed1:8000/localnodes?dc=dc1",
+            "http://seed1:8000/localnodes?dc=dc1",
+        ]
+
+    def test_topology_validation_raises_for_missing_scope(self) -> None:
+        """Validation raises a clear error when no scoped nodes exist."""
+        config = Config(
+            seed_hosts=["seed1"],
+            port=8000,
+            routing_scope=RackScope("dc1", "missing", fallback=None),
+        )
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            return []
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+
+        assert manager.check_rack_datacenter_feature_supported() is False
+        with pytest.raises(ConfigurationError, match="No nodes found"):
+            manager.check_rack_and_datacenter_set_correctly()
+
+    def test_topology_validation_rejects_empty_scope_values(self) -> None:
+        """Validation rejects incomplete rack/datacenter config."""
+        config = Config(
+            seed_hosts=["seed1"],
+            port=8000,
+            routing_scope=RackScope("dc1", "", fallback=None),
+        )
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            return ["node1"]
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+
+        assert manager.check_rack_datacenter_feature_supported() is False
+        with pytest.raises(ConfigurationError, match="non-empty"):
+            manager.check_rack_and_datacenter_set_correctly()

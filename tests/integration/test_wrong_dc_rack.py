@@ -12,9 +12,13 @@ import pytest
 from alternator import (
     AlternatorClient,
     AlternatorConfigBuilder,
+    Config,
     DatacenterScope,
+    Helper,
+    NoNodesAvailableError,
     RackScope,
 )
+from alternator.exceptions import ConfigurationError
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -62,6 +66,17 @@ class TestWrongDatacenter:
             for _ in range(5):
                 response = client.list_tables()
                 assert "TableNames" in response
+
+    def test_wrong_datacenter_without_fallback_fails(self) -> None:
+        """Explicit datacenter-only routing fails when that datacenter is absent."""
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope("bad_dc", fallback=None),
+        )
+
+        with pytest.raises(NoNodesAvailableError), AlternatorClient(config):
+            pass
 
 
 class TestWrongRack:
@@ -167,3 +182,24 @@ class TestRackDatacenterFeatureSupport:
         with AlternatorClient(config) as client:
             response = client.list_tables()
             assert "TableNames" in response
+
+    def test_helper_validates_correct_datacenter(self) -> None:
+        """Helper validation succeeds for a known datacenter."""
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope("datacenter1", fallback=None),
+        )
+
+        assert Helper(config).check_rack_and_datacenter_set_correctly()
+
+    def test_helper_validation_rejects_wrong_datacenter(self) -> None:
+        """Helper validation raises a clear error for an absent datacenter."""
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope("bad_dc", fallback=None),
+        )
+
+        with pytest.raises(ConfigurationError, match="No nodes found"):
+            Helper(config).check_rack_and_datacenter_set_correctly()

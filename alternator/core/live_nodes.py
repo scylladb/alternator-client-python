@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from alternator._http import AsyncHttpFetcher, SyncHttpFetcher
-from alternator.exceptions import NoNodesAvailableError
+from alternator.exceptions import ConfigurationError, NoNodesAvailableError
 
 if TYPE_CHECKING:
     from alternator.config import Config
@@ -207,6 +207,29 @@ class LiveNodesManagerCore:
         )
 
 
+def _uses_topology_filter(scope: RoutingScope) -> bool:
+    from alternator.core.routing_scope import DatacenterScope, RackScope
+
+    return isinstance(scope, DatacenterScope | RackScope)
+
+
+def _validate_topology_scope_values(scope: RoutingScope) -> None:
+    from alternator.core.routing_scope import DatacenterScope, RackScope
+
+    if isinstance(scope, RackScope):
+        if not scope.datacenter or not scope.rack:
+            raise ConfigurationError(
+                "Rack routing requires non-empty datacenter and rack names"
+            )
+        return
+    if isinstance(scope, DatacenterScope) and not scope.datacenter:
+        raise ConfigurationError("Datacenter routing requires a non-empty datacenter")
+
+
+def _no_nodes_for_scope_error(scope: RoutingScope) -> ConfigurationError:
+    return ConfigurationError(f"No nodes found for routing scope: {scope.description}")
+
+
 class SyncLiveNodesManager:
     """
     Synchronous LiveNodesManager with background refresh thread.
@@ -301,6 +324,27 @@ class SyncLiveNodesManager:
         """
         return self._refresh_nodes()
 
+    def check_rack_datacenter_feature_supported(self) -> bool:
+        """Report whether scoped rack/datacenter discovery appears supported."""
+        scope = self._config.routing_scope
+        if not _uses_topology_filter(scope):
+            return True
+        try:
+            _validate_topology_scope_values(scope)
+        except ConfigurationError:
+            return False
+        return bool(self._fetch_scope_nodes(scope))
+
+    def check_rack_and_datacenter_set_correctly(self) -> bool:
+        """Validate configured rack/datacenter scope without changing state."""
+        scope = self._config.routing_scope
+        if not _uses_topology_filter(scope):
+            return True
+        _validate_topology_scope_values(scope)
+        if self._fetch_scope_nodes(scope):
+            return True
+        raise _no_nodes_for_scope_error(scope)
+
     def _refresh_loop(self) -> None:
         """Background thread that refreshes node list."""
         while not self._stop_event.is_set():
@@ -334,6 +378,19 @@ class SyncLiveNodesManager:
 
         self._core.log_all_scopes_failed()
         return False
+
+    def _fetch_scope_nodes(self, scope: RoutingScope) -> list[str]:
+        """Fetch nodes for one scope without updating current routing state."""
+        for seed in self._config.seed_hosts:
+            url = self._core.build_localnodes_url(scope, seed)
+            try:
+                nodes = list(self._http_fetch(url))
+            except Exception as e:
+                self._core.log_fetch_error(scope, e)
+                continue
+            if nodes:
+                return nodes
+        return []
 
 
 class AsyncLiveNodesManager:
@@ -430,6 +487,27 @@ class AsyncLiveNodesManager:
         """
         return await self._refresh_nodes()
 
+    async def check_rack_datacenter_feature_supported(self) -> bool:
+        """Report whether scoped rack/datacenter discovery appears supported."""
+        scope = self._config.routing_scope
+        if not _uses_topology_filter(scope):
+            return True
+        try:
+            _validate_topology_scope_values(scope)
+        except ConfigurationError:
+            return False
+        return bool(await self._fetch_scope_nodes(scope))
+
+    async def check_rack_and_datacenter_set_correctly(self) -> bool:
+        """Validate configured rack/datacenter scope without changing state."""
+        scope = self._config.routing_scope
+        if not _uses_topology_filter(scope):
+            return True
+        _validate_topology_scope_values(scope)
+        if await self._fetch_scope_nodes(scope):
+            return True
+        raise _no_nodes_for_scope_error(scope)
+
     async def _refresh_loop(self) -> None:
         """Background task that refreshes node list."""
         while not self._stop_event.is_set():
@@ -467,3 +545,16 @@ class AsyncLiveNodesManager:
 
         self._core.log_all_scopes_failed()
         return False
+
+    async def _fetch_scope_nodes(self, scope: RoutingScope) -> list[str]:
+        """Fetch nodes for one scope without updating current routing state."""
+        for seed in self._config.seed_hosts:
+            url = self._core.build_localnodes_url(scope, seed)
+            try:
+                nodes = list(await self._http_fetch(url))
+            except Exception as e:
+                self._core.log_fetch_error(scope, e)
+                continue
+            if nodes:
+                return nodes
+        return []
