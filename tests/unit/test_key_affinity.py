@@ -333,7 +333,9 @@ class TestSelectAffinityNode:
             captured_params.update(extract_request_params(request))
             raise RuntimeError("captured")
 
-        client.meta.events.register_last("before-send.dynamodb.PutItem", capture_request)
+        client.meta.events.register_last(
+            "before-send.dynamodb.PutItem", capture_request
+        )
 
         with contextlib.suppress(RuntimeError):
             client.put_item(
