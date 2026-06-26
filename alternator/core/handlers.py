@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import random
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
 from urllib.parse import urlparse
 
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
@@ -98,33 +98,24 @@ def _register_alternator_handlers(
     ) -> None:
         """Update request URL based on routing strategy."""
         # Get or create query plan
-        plan: Iterator[str] | None = getattr(request, _QUERY_PLAN_ATTR, None)
-        if plan is None:
-            nodes = manager.nodes
-            if not nodes:
-                raise NoNodesAvailableError(
-                    "No nodes available",
-                    scope_name=scope_name,
-                )
+        context = getattr(request, "context", None)
+        plan: Iterator[str] | None
+        if isinstance(context, dict):
+            plan = context.get(_QUERY_PLAN_ATTR)
+        else:
+            plan = getattr(request, _QUERY_PLAN_ATTR, None)
 
-            # First attempt: create plan with optional affinity preferred node
-            preferred_node = None
-            if compute_affinity_node is not None:
-                # Check operation name first (cheap header read) before
-                # parsing the JSON body (expensive)
-                operation_name = extract_operation_name(request)
-                if operation_name in _affinity_operations:
-                    params = extract_request_params(request)
-                    preferred_node = compute_affinity_node(
-                        operation_name,
-                        params,
-                        nodes,
-                    )
-            plan = create_query_plan(nodes, preferred_node)
-            setattr(request, _QUERY_PLAN_ATTR, plan)
+        if plan is None:
+            plan = _create_request_query_plan(request)
+            _store_query_plan(request, plan)
 
         # Get next node from plan
-        new_uri = next(plan)
+        try:
+            new_uri = next(plan)
+        except StopIteration:
+            plan = _create_request_query_plan(request, preferred_node=None)
+            _store_query_plan(request, plan)
+            new_uri = next(plan)
 
         request_url = (
             request.url.decode("utf-8")
@@ -145,6 +136,45 @@ def _register_alternator_handlers(
         request.url = f"{new_uri}{path}"
         if query:
             request.url += f"?{query}"
+
+    def _create_request_query_plan(
+        request: AWSRequest | AWSPreparedRequest,
+        preferred_node: str | None | object = _PREFERRED_NODE_UNSET,
+    ) -> Iterator[str]:
+        nodes = manager.nodes
+        if not nodes:
+            raise NoNodesAvailableError(
+                "No nodes available",
+                scope_name=scope_name,
+            )
+
+        selected_preferred_node: str | None
+        if preferred_node is _PREFERRED_NODE_UNSET:
+            selected_preferred_node = None
+            if compute_affinity_node is not None:
+                # Check operation name first (cheap header read) before
+                # parsing the JSON body (expensive)
+                operation_name = extract_operation_name(request)
+                if operation_name in _affinity_operations:
+                    params = extract_request_params(request)
+                    selected_preferred_node = compute_affinity_node(
+                        operation_name,
+                        params,
+                        nodes,
+                    )
+        else:
+            selected_preferred_node = cast("str | None", preferred_node)
+        return create_query_plan(nodes, selected_preferred_node)
+
+    def _store_query_plan(
+        request: AWSRequest | AWSPreparedRequest,
+        plan: Iterator[str],
+    ) -> None:
+        context = getattr(request, "context", None)
+        if isinstance(context, dict):
+            context[_QUERY_PLAN_ATTR] = plan
+            return
+        setattr(request, _QUERY_PLAN_ATTR, plan)
 
     events.register("request-created.dynamodb.*", update_endpoint)
 
@@ -172,3 +202,6 @@ def _register_alternator_handlers(
 def _stable_seed(value: str) -> int:
     digest = hashlib.blake2b(value.encode("utf-8"), digest_size=8).digest()
     return int.from_bytes(digest, "big")
+
+
+_PREFERRED_NODE_UNSET = object()

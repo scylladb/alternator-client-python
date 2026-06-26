@@ -6,8 +6,10 @@ from typing import Any
 
 import boto3
 import pytest
+from botocore import UNSIGNED
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.config import Config as BotoConfig
+from botocore.exceptions import EndpointConnectionError
 
 from alternator.config import CompressionAlgorithm, Config, RequestCompressionConfig
 from alternator.core.handlers import _register_alternator_handlers
@@ -77,3 +79,59 @@ def test_signed_request_url_and_compressed_body_are_final_before_signing() -> No
     assert seen["before_sign_body"].startswith(b"\x1f\x8b")
     assert seen["before_sign_headers"]["Content-Encoding"] == "gzip"
     assert seen["authorization"] is not None
+
+
+def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Retries for one SDK call walk the node plan across fresh requests."""
+    config = Config(seed_hosts=["seed"], port=8000)
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url="http://seed:8000",
+        region_name="us-east-1",
+        config=BotoConfig(
+            signature_version=UNSIGNED,
+            retries={"max_attempts": 2, "mode": "standard"},
+        ),
+    )
+
+    def preferred_node(
+        operation_name: str,
+        params: dict[str, Any],
+        nodes: NodeList,
+    ) -> str | None:
+        assert operation_name == "PutItem"
+        assert nodes.nodes == ("node-a", "node-b", "node-c")
+        return "node-b"
+
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("node-a", "node-b", "node-c")),
+        config,
+        preferred_node,
+        auth_enabled=False,
+    )
+    urls: list[str] = []
+
+    def capture_before_send(request: AWSPreparedRequest, **_: object) -> None:
+        urls.append(request.url)
+
+    def fail_send(request: AWSPreparedRequest) -> None:
+        raise EndpointConnectionError(endpoint_url=request.url)
+
+    def retry_without_sleep(attempts: int, **_: object) -> int | None:
+        return 0 if attempts < 3 else None
+
+    client.meta.events.register_last(
+        "before-send.dynamodb.PutItem", capture_before_send
+    )
+    client.meta.events.register_first(
+        "needs-retry.dynamodb.PutItem",
+        retry_without_sleep,
+    )
+    monkeypatch.setattr(client._endpoint.http_session, "send", fail_send)
+
+    with pytest.raises(EndpointConnectionError):
+        client.put_item(TableName="tbl", Item={"pk": {"S": "k"}})
+
+    assert urls[0] == "http://node-b:8000/"
+    assert set(urls[1:]) == {"http://node-a:8000/", "http://node-c:8000/"}
