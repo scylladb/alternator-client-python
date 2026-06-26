@@ -114,6 +114,24 @@ class TestCreateSslContext:
         else:
             pytest.skip("No system CA file available for testing")
 
+    def test_no_system_ca_does_not_load_default_context(self) -> None:
+        """Disabling system CAs avoids ssl.create_default_context."""
+        cert_path = Path("/custom/ca.pem")
+
+        with (
+            patch("ssl.create_default_context") as mock_create_default_context,
+            patch("ssl.SSLContext.load_verify_locations") as mock_load_verify,
+        ):
+            tls_config = TLS(
+                custom_ca_cert_paths=[cert_path],
+                trust_system_ca_certs=False,
+            )
+            ctx = create_ssl_context(tls_config)
+
+        mock_create_default_context.assert_not_called()
+        mock_load_verify.assert_called_once_with(str(cert_path))
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+
     def test_client_cert_chain_is_loaded(self, tmp_path: Path) -> None:
         """Test TLS client certificate paths load into the SSL context."""
         cert_path = tmp_path / "client.crt"
