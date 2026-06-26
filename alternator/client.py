@@ -471,6 +471,19 @@ def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
     # Clear PK cache reference
     if hasattr(client, PK_CACHE_ATTR):
         setattr(client, PK_CACHE_ATTR, None)
+    meta = getattr(client, "meta", None)
+    service_client = getattr(meta, "client", None)
+    if service_client is not None and hasattr(service_client, PK_CACHE_ATTR):
+        setattr(service_client, PK_CACHE_ATTR, None)
+
+    sdk_close = getattr(client, "close", None)
+    if callable(sdk_close):
+        sdk_close()
+        return
+
+    service_client_close = getattr(service_client, "close", None)
+    if callable(service_client_close):
+        service_client_close()
 
 
 class Helper:

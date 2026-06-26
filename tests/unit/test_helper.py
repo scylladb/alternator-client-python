@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from unittest.mock import Mock
 from urllib.parse import urlsplit
 
 import pytest
@@ -177,6 +179,34 @@ def test_create_client_uses_configured_aws_region(
         assert client.meta.region_name == "us-west-2"
     finally:
         close_client(client)
+
+
+def test_close_client_closes_underlying_boto_client() -> None:
+    """close_client releases the botocore HTTP session for clients."""
+    manager = SimpleNamespace(stop=Mock())
+    client = SimpleNamespace(close=Mock())
+    setattr(client, MANAGER_ATTR, manager)
+    setattr(client, MANAGER_OWNS_ATTR, True)
+
+    close_client(client)  # type: ignore[arg-type] -- lightweight boto client stub
+    close_client(client)  # type: ignore[arg-type] -- idempotency check
+
+    assert manager.stop.call_count == 1
+    assert client.close.call_count == 2
+
+
+def test_close_resource_closes_underlying_boto_client() -> None:
+    """close_client releases the botocore HTTP session for resources."""
+    manager = SimpleNamespace(stop=Mock())
+    service_client = SimpleNamespace(close=Mock())
+    resource = SimpleNamespace(meta=SimpleNamespace(client=service_client))
+    setattr(resource, MANAGER_ATTR, manager)
+    setattr(resource, MANAGER_OWNS_ATTR, True)
+
+    close_client(resource)  # type: ignore[arg-type] -- lightweight resource stub
+
+    manager.stop.assert_called_once_with()
+    service_client.close.assert_called_once_with()
 
 
 @pytest.mark.asyncio
