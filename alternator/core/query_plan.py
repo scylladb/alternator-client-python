@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 
-from alternator.core.go_rand import GoRand
+from alternator.core.deterministic_rand import DeterministicRand
 
 
 class LazyQueryPlan(Iterator[str]):
@@ -30,7 +30,7 @@ class LazyQueryPlan(Iterator[str]):
         seed: int,
     ) -> None:
         self._nodes = list(nodes)
-        self._rng = GoRand(seed)
+        self._rng = DeterministicRand(seed)
         self._index = 0
 
     def __next__(self) -> str:

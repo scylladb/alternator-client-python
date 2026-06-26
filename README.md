@@ -13,6 +13,9 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 - **TLS Support**: Full TLS/SSL support with custom CA certificates
 - **Async Support**: Full async/await support via aioboto3
 
+See [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md) for the current
+capability matrix and planned follow-up work.
+
 ## Installation
 
 ```bash

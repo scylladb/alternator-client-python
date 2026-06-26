@@ -2,13 +2,158 @@
 
 from __future__ import annotations
 
+import contextlib
+import json
+import threading
 from collections.abc import Callable
+from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import pytest
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping, Sequence
+
     from tests.integration.scylla_version import ScyllaVersion
+
+
+@dataclass(frozen=True)
+class FakeAlternatorResponse:
+    """HTTP response configured on the fake Alternator server."""
+
+    status: int
+    body: bytes
+    headers: Mapping[str, str]
+
+
+class FakeAlternatorServer:
+    """Small deterministic HTTP server for unit tests."""
+
+    def __init__(self) -> None:
+        self.requests: list[str] = []
+        self._routes: dict[str, FakeAlternatorResponse] = {}
+        self._server: HTTPServer | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the server on a local ephemeral port."""
+        owner = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                owner.requests.append(self.path)
+                response = owner._routes.get(
+                    self.path,
+                    FakeAlternatorResponse(
+                        status=404,
+                        body=b"not found",
+                        headers={"Content-Type": "text/plain"},
+                    ),
+                )
+                self.send_response(response.status)
+                for key, value in response.headers.items():
+                    self.send_header(key, value)
+                self.end_headers()
+                self.wfile.write(response.body)
+
+            def log_message(self, fmt: str, *args: object) -> None:
+                return
+
+        self._server = HTTPServer(("127.0.0.1", 0), Handler)
+        self._thread = threading.Thread(
+            target=self._server.serve_forever,
+            daemon=True,
+            name="fake-alternator-server",
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the server."""
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+        if self._thread is not None:
+            self._thread.join(timeout=5.0)
+        self._server = None
+        self._thread = None
+
+    def url(self, path: str = "/") -> str:
+        """Build an absolute URL for a path on this server."""
+        if self._server is None:
+            raise RuntimeError("fake Alternator server is not started")
+        host, port = self._server.server_address
+        return f"http://{host}:{port}{path}"
+
+    def set_json(
+        self,
+        path: str,
+        body: object,
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        """Configure a JSON response."""
+        response_headers = {"Content-Type": "application/json"}
+        if headers is not None:
+            response_headers.update(headers)
+        self._routes[path] = FakeAlternatorResponse(
+            status=status,
+            body=json.dumps(body).encode("utf-8"),
+            headers=response_headers,
+        )
+
+    def set_text(
+        self,
+        path: str,
+        body: str,
+        *,
+        status: int = 200,
+        headers: Mapping[str, str] | None = None,
+    ) -> None:
+        """Configure a text response."""
+        response_headers = {"Content-Type": "text/plain"}
+        if headers is not None:
+            response_headers.update(headers)
+        self._routes[path] = FakeAlternatorResponse(
+            status=status,
+            body=body.encode("utf-8"),
+            headers=response_headers,
+        )
+
+    def set_localnodes(
+        self,
+        nodes: Sequence[str],
+        *,
+        query: str = "",
+        status: int = 200,
+    ) -> None:
+        """Configure a `/localnodes` JSON response."""
+        path = "/localnodes"
+        if query:
+            path = f"{path}?{query}"
+        self.set_json(path, list(nodes), status=status)
+
+    def requested_paths(self) -> list[str]:
+        """Return request paths captured by the server."""
+        return list(self.requests)
+
+    def requested_queries(self) -> list[str]:
+        """Return query strings captured by the server."""
+        return [urlsplit(path).query for path in self.requests]
+
+
+@pytest.fixture
+def fake_alternator_server() -> Iterator[FakeAlternatorServer]:
+    """Provide a deterministic local HTTP server for Alternator unit tests."""
+    server = FakeAlternatorServer()
+    server.start()
+    try:
+        yield server
+    finally:
+        with contextlib.suppress(Exception):
+            server.stop()
 
 
 def pytest_configure(config: pytest.Config) -> None:

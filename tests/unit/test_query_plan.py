@@ -137,12 +137,8 @@ def _node_short(full: str) -> str:
     return full.split(".")[0]
 
 
-class TestCrossLanguageVectors:
-    """Cross-language test vectors from the spec (issue #169).
-
-    These vectors ensure Python produces the same shuffle sequences as
-    Go and Java clients for the same seed and sorted node list.
-    """
+class TestDeterministicVectors:
+    """Stable test vectors from the request-routing specification."""
 
     @pytest.mark.parametrize(
         "seed, expected_first_6",
@@ -158,7 +154,7 @@ class TestCrossLanguageVectors:
         ids=["seed42", "seed123", "seed999", "seed0", "seed-1", "seed12345", "seedMAX"],
     )
     def test_spec_vector(self, seed: int, expected_first_6: list[str]) -> None:
-        """Verify shuffle matches the cross-language spec vectors."""
+        """Verify shuffle matches the deterministic spec vectors."""
         plan = LazyQueryPlan(nodes=_SPEC_NODES, seed=seed)
         actual = [_node_short(next(plan)) for _ in range(6)]
         assert actual == expected_first_6, (
