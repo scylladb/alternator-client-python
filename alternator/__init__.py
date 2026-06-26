@@ -79,6 +79,7 @@ from alternator._version import __version__
 from alternator.client import (
     AlternatorClient,
     AlternatorResource,
+    client,
     close_client,
     close_resource,
     create_client,
@@ -121,6 +122,7 @@ __all__ = [
     # Sync Client
     "AlternatorClient",
     "AlternatorResource",
+    "client",
     "close_client",
     "close_resource",
     "create_client",
