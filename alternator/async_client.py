@@ -20,6 +20,7 @@ from alternator._http import (
     create_ssl_context,
 )
 from alternator.config import KeyRouteAffinityMode
+from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
@@ -33,7 +34,7 @@ from alternator.vector import enable_vector_support
 if TYPE_CHECKING:
     from types_aiobotocore_dynamodb import DynamoDBClient as AsyncDynamoDBClient
 
-    from alternator.config import Config
+    from alternator.config import Auth, Config
 
 logger = logging.getLogger("alternator")
 
@@ -270,6 +271,8 @@ def _create_async_affinity_hash_computer(
 
 async def create_async_client(
     config: Config,
+    *,
+    auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> AsyncDynamoDBClient:
     """
@@ -279,14 +282,13 @@ async def create_async_client(
     transparently distributes requests across cluster nodes.
 
     Note:
-        When ``optimize_headers`` is enabled, authentication headers are
-        only preserved if credentials are passed explicitly via
-        ``aws_access_key_id`` in *boto_kwargs*. Unlike a regular boto3
-        DynamoDB client, credentials from environment variables or
-        ``~/.aws/credentials`` are not detected for this purpose.
+        Authentication is disabled by default. Alternator authentication
+        currently supports only static credentials; pass
+        ``auth=Auth.static_credentials(...)`` to enable request signing.
 
     Args:
         config: Alternator configuration
+        auth: Explicit Alternator auth settings. Defaults to disabled auth.
         **boto_kwargs: Additional arguments passed to aioboto3.client()
 
     Returns:
@@ -346,7 +348,7 @@ async def create_async_client(
     # Create boto config from Config settings
     from botocore import UNSIGNED
 
-    auth_enabled = "aws_access_key_id" in boto_kwargs
+    auth_enabled = apply_auth(auth, boto_kwargs)
     aio_kwargs: dict[str, Any] = {
         "retries": {
             "max_attempts": config.retries.max_attempts,
@@ -453,13 +455,22 @@ class AsyncAlternatorClient:
             await client.put_item(...)
     """
 
-    def __init__(self, config: Config, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
+    def __init__(
+        self,
+        config: Config,
+        *,
+        auth: Auth | None = None,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> None:
         self._config = config
+        self._auth = auth
         self._boto_kwargs = boto_kwargs
         self._client: AsyncDynamoDBClient | None = None
 
     async def __aenter__(self) -> AsyncDynamoDBClient:
-        self._client = await create_async_client(self._config, **self._boto_kwargs)
+        self._client = await create_async_client(
+            self._config, auth=self._auth, **self._boto_kwargs
+        )
         return self._client
 
     async def __aexit__(

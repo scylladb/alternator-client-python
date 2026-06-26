@@ -53,6 +53,7 @@ Key Classes
 - ``AlternatorClient``: Sync context manager for load-balanced connections
 - ``AsyncAlternatorClient``: Async context manager for load-balanced connections
 - ``Config``: Main configuration dataclass
+- ``Auth``: Explicit disabled/static-credentials auth settings
 - ``AlternatorConfigBuilder``: Fluent builder for configuration
 - ``TLS``: TLS/SSL configuration
 - ``ClusterScope``, ``DatacenterScope``, ``RackScope``: Routing scope controls
@@ -87,6 +88,7 @@ from alternator.config import (
     TLS,
     AlternatorConfig,
     AlternatorConfigBuilder,
+    Auth,
     CompressionAlgorithm,
     Config,
     HeaderOptimizationConfig,
@@ -128,6 +130,7 @@ __all__ = [
     "close_async_client",
     "create_async_client",
     # Config
+    "Auth",
     "Config",
     "TLS",
     "AlternatorConfig",

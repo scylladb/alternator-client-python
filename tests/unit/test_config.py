@@ -113,6 +113,7 @@ class TestDeprecatedConfigNames:
         """Test top-level package exports preferred names."""
         import alternator
 
+        assert alternator.Auth is not None
         assert alternator.Config is Config
         assert alternator.TLS is TLS
 

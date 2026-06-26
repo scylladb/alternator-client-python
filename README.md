@@ -127,12 +127,37 @@ config = (
 | `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
 | `optimize_headers` | `bool` | `False` | Enable header filtering |
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
-| `authentication_enabled` | `bool` | `True` | Include auth headers |
 | `tls` | `TLS` | system default | TLS configuration |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
 | `max_pool_connections` | `int` | `200` | Max connections per host |
 | `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
 | `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
+
+## Authentication
+
+Authentication is disabled by default. Alternator authentication in this client
+supports static credentials only; AWS SDK environment, profile, and provider-chain
+credentials are not used for Alternator auth.
+
+```python
+from alternator import Auth, AlternatorClient, Config
+
+config = Config(seed_hosts=["node1"], port=8000)
+
+# Default: unsigned requests
+with AlternatorClient(config, auth=Auth.disabled()) as client:
+    client.list_tables()
+
+# Signed requests with static Alternator credentials
+with AlternatorClient(
+    config,
+    auth=Auth.static_credentials("alternator", "secret"),
+) as client:
+    client.list_tables()
+```
+
+Passing raw boto credential kwargs such as `aws_access_key_id` still works for
+compatibility, but is deprecated. Prefer `auth=Auth.static_credentials(...)`.
 
 ## Routing Scopes
 
