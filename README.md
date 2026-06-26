@@ -93,6 +93,47 @@ async def main():
 asyncio.run(main())
 ```
 
+### Helper Facade
+
+Use `Helper` when you need explicit lifecycle control or diagnostics in addition
+to standard boto3 clients and resources.
+
+```python
+from alternator import Config, Helper
+
+config = Config(seed_hosts=["192.168.1.1", "192.168.1.2"], port=8000)
+
+with Helper(config) as helper:
+    client = helper.client()
+    resource = helper.resource()
+
+    helper.update_live_nodes()
+    print(helper.get_nodes())
+    print(helper.next_node())
+
+    client.list_tables()
+    resource.Table("my_table").get_item(Key={"pk": "user123"})
+```
+
+Async code can use `AsyncHelper`:
+
+```python
+from alternator import Config
+from alternator.async_client import AsyncHelper
+
+config = Config(seed_hosts=["192.168.1.1"], port=8000)
+
+async with AsyncHelper(config) as helper:
+    client = await helper.client()
+    await helper.update_live_nodes()
+    print(helper.get_nodes())
+    await client.list_tables()
+```
+
+`get_active_nodes()` currently returns the live-node list, and
+`get_quarantined_nodes()` returns an empty list because node health and
+quarantine behavior are intentionally deferred.
+
 ## Configuration
 
 ### Basic Configuration

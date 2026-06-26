@@ -51,6 +51,8 @@ for a fluent builder pattern::
 Key Classes
 -----------
 - ``AlternatorClient``: Sync context manager for load-balanced connections
+- ``Helper``: Sync lifecycle and diagnostics facade
+- ``AsyncHelper``: Async lifecycle and diagnostics facade
 - ``AsyncAlternatorClient``: Async context manager for load-balanced connections
 - ``Config``: Main configuration dataclass
 - ``Auth``: Explicit disabled/static-credentials auth settings
@@ -79,6 +81,7 @@ from alternator._version import __version__
 from alternator.client import (
     AlternatorClient,
     AlternatorResource,
+    Helper,
     client,
     close_client,
     close_resource,
@@ -122,12 +125,14 @@ __all__ = [
     # Sync Client
     "AlternatorClient",
     "AlternatorResource",
+    "Helper",
     "client",
     "close_client",
     "close_resource",
     "create_client",
     "create_resource",
     # Async Client (requires [async] extra)
+    "AsyncHelper",
     "AsyncAlternatorClient",
     "close_async_client",
     "create_async_client",
@@ -164,7 +169,12 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     """Lazy import async client components to avoid requiring async dependencies."""
-    if name in ("AsyncAlternatorClient", "close_async_client", "create_async_client"):
+    if name in (
+        "AsyncHelper",
+        "AsyncAlternatorClient",
+        "close_async_client",
+        "create_async_client",
+    ):
         from alternator import async_client
 
         return getattr(async_client, name)

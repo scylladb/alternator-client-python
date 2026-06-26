@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import logging
 from collections.abc import Callable
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 from alternator._constants import (
     MANAGER_ATTR,
+    MANAGER_OWNS_ATTR,
     PK_CACHE_ATTR,
     PK_DISCOVERY_TIMEOUT_SECONDS,
 )
@@ -37,6 +39,7 @@ if TYPE_CHECKING:
     from alternator.config import Auth, Config
 
 logger = logging.getLogger("alternator")
+_AUTH_UNSET = object()
 
 
 class AsyncPartitionKeyCache:
@@ -269,53 +272,8 @@ def _create_async_affinity_hash_computer(
     return compute_affinity_hash
 
 
-async def create_async_client(
-    config: Config,
-    *,
-    auth: Auth | None = None,
-    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
-) -> AsyncDynamoDBClient:
-    """
-    Create a load-balanced async DynamoDB client for Alternator.
-
-    The returned client is an aioboto3 DynamoDB client that
-    transparently distributes requests across cluster nodes.
-
-    Note:
-        Authentication is disabled by default. Alternator authentication
-        currently supports only static credentials; pass
-        ``auth=Auth.static_credentials(...)`` to enable request signing.
-
-    Args:
-        config: Alternator configuration
-        auth: Explicit Alternator auth settings. Defaults to disabled auth.
-        **boto_kwargs: Additional arguments passed to aioboto3.client()
-
-    Returns:
-        An async DynamoDB client with load balancing enabled
-
-    Example:
-        from alternator import Config
-        from alternator.async_client import create_async_client
-
-        config = Config(
-            seed_hosts=["node1.example.com"],
-            port=8000,
-        )
-        client = await create_async_client(config)
-
-        # Use like a normal aioboto3 client
-        response = await client.list_tables()
-    """
-    try:
-        import aioboto3
-        from aiobotocore.config import AioConfig
-    except ImportError as e:
-        raise ImportError(
-            "aioboto3 is required for async support. "
-            "Install with: pip install alternator[async]"
-        ) from e
-
+async def _create_async_manager(config: Config) -> AsyncLiveNodesManager:
+    """Create and initialize an async live-node manager."""
     # Create SSL context if using HTTPS
     ssl_context = None
     if config.scheme == "https":
@@ -326,7 +284,7 @@ async def create_async_client(
         ssl_context, timeout_seconds=config.timeouts.discovery_seconds
     )
 
-    # Create and start async live nodes manager
+    # Create async live nodes manager
     manager = AsyncLiveNodesManager(config, http_fetcher)
 
     # Perform initial node fetch
@@ -336,8 +294,41 @@ async def create_async_client(
 
         manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
 
-    # Start background refresh task
-    await manager.start()
+    return manager
+
+
+async def _close_async_manager(manager: AsyncLiveNodesManager) -> None:
+    """Stop an async manager and close its discovery fetcher."""
+    await manager.stop()
+    http_fetch = manager._http_fetch
+    if isinstance(http_fetch, AsyncNodeFetcher):
+        await http_fetch.close()
+        return
+
+    http_close = getattr(http_fetch, "close", None)
+    if http_close is not None:
+        result = http_close()
+        if inspect.isawaitable(result):
+            await result
+
+
+async def _create_async_client_with_manager(
+    config: Config,
+    manager: AsyncLiveNodesManager,
+    *,
+    auth: Auth | None = None,
+    owns_manager: bool,
+    **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+) -> AsyncDynamoDBClient:
+    """Create an aioboto3 client using an already initialized manager."""
+    try:
+        import aioboto3
+        from aiobotocore.config import AioConfig
+    except ImportError as e:
+        raise ImportError(
+            "aioboto3 is required for async support. "
+            "Install with: pip install alternator[async]"
+        ) from e
 
     # Get initial endpoint
     initial_endpoint = manager.next_node_uri()
@@ -393,24 +384,68 @@ async def create_async_client(
 
         # Attach manager for cleanup reference
         setattr(client, MANAGER_ATTR, manager)
+        setattr(client, MANAGER_OWNS_ATTR, owns_manager)
 
         # Enable Alternator vector search extensions
         enable_vector_support(client)
     except Exception:
-        # Clean up the HTTP fetcher session on failure
-        if isinstance(http_fetcher, AsyncNodeFetcher):
-            await http_fetcher.close()
-        else:
-            http_close = getattr(http_fetcher, "close", None)
-            if http_close is not None:
-                result = http_close()
-                if inspect.isawaitable(result):
-                    await result
-        await manager.stop()
         await client_ctx.__aexit__(None, None, None)
         raise
 
     return cast("AsyncDynamoDBClient", client)
+
+
+async def create_async_client(
+    config: Config,
+    *,
+    auth: Auth | None = None,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+) -> AsyncDynamoDBClient:
+    """
+    Create a load-balanced async DynamoDB client for Alternator.
+
+    The returned client is an aioboto3 DynamoDB client that
+    transparently distributes requests across cluster nodes.
+
+    Note:
+        Authentication is disabled by default. Alternator authentication
+        currently supports only static credentials; pass
+        ``auth=Auth.static_credentials(...)`` to enable request signing.
+
+    Args:
+        config: Alternator configuration
+        auth: Explicit Alternator auth settings. Defaults to disabled auth.
+        **boto_kwargs: Additional arguments passed to aioboto3.client()
+
+    Returns:
+        An async DynamoDB client with load balancing enabled
+
+    Example:
+        from alternator import Config
+        from alternator.async_client import create_async_client
+
+        config = Config(
+            seed_hosts=["node1.example.com"],
+            port=8000,
+        )
+        client = await create_async_client(config)
+
+        # Use like a normal aioboto3 client
+        response = await client.list_tables()
+    """
+    manager = await _create_async_manager(config)
+    await manager.start()
+    try:
+        return await _create_async_client_with_manager(
+            config,
+            manager,
+            auth=auth,
+            owns_manager=True,
+            **boto_kwargs,
+        )
+    except Exception:
+        await _close_async_manager(manager)
+        raise
 
 
 async def close_async_client(client: AsyncDynamoDBClient) -> None:
@@ -423,18 +458,11 @@ async def close_async_client(client: AsyncDynamoDBClient) -> None:
     try:
         manager = getattr(client, MANAGER_ATTR, None)
         if manager is not None:
-            await manager.stop()
-            # Close the HTTP fetcher session if it has a close method
-            http_fetch = manager._http_fetch
-            if isinstance(http_fetch, AsyncNodeFetcher):
-                await http_fetch.close()
-            else:
-                http_close = getattr(http_fetch, "close", None)
-                if http_close is not None:
-                    result = http_close()
-                    if inspect.isawaitable(result):
-                        await result
+            owns_manager = bool(getattr(client, MANAGER_OWNS_ATTR, True))
+            if owns_manager:
+                await _close_async_manager(manager)
             setattr(client, MANAGER_ATTR, None)
+            setattr(client, MANAGER_OWNS_ATTR, False)
 
         # Clear PK cache reference
         if hasattr(client, PK_CACHE_ATTR):
@@ -442,6 +470,160 @@ async def close_async_client(client: AsyncDynamoDBClient) -> None:
     finally:
         # Always close the underlying client
         await client.__aexit__(None, None, None)
+
+
+class AsyncHelper:
+    """
+    Async facade for Alternator client lifecycle and diagnostics.
+
+    The helper owns one async live-node manager and can create standard
+    aioboto3 DynamoDB clients that share that discovery state.
+    """
+
+    def __init__(
+        self,
+        config: Config,
+        *,
+        auth: Auth | None = None,
+        **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+    ) -> None:
+        self._config = config
+        self._auth = auth
+        self._boto_kwargs = dict(boto_kwargs)
+        self._manager: AsyncLiveNodesManager | None = None
+        self._clients: list[AsyncDynamoDBClient] = []
+
+    async def __aenter__(self) -> AsyncHelper:
+        await self.start()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        await self.stop()
+
+    @property
+    def config(self) -> Config:
+        """Return this helper's configuration."""
+        return self._config
+
+    def update(
+        self,
+        config: Config | None = None,
+        *,
+        auth: Auth | None | object = _AUTH_UNSET,
+        **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+    ) -> AsyncHelper:
+        """Return a new async helper with updated config, auth, or boto kwargs."""
+        next_auth = self._auth if auth is _AUTH_UNSET else cast("Auth | None", auth)
+        next_kwargs = {**self._boto_kwargs, **boto_kwargs}
+        return type(self)(config or self._config, auth=next_auth, **next_kwargs)
+
+    async def start(self) -> AsyncHelper:
+        """Start background node discovery."""
+        await (await self._ensure_manager()).start()
+        return self
+
+    async def stop(self) -> None:
+        """Stop background node discovery and close helper-created clients."""
+        for created_client in list(self._clients):
+            with contextlib.suppress(Exception):
+                await close_async_client(created_client)
+        self._clients.clear()
+
+        if self._manager is not None:
+            await _close_async_manager(self._manager)
+            self._manager = None
+
+    async def client(
+        self,
+        **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+    ) -> AsyncDynamoDBClient:
+        """Create a standard aioboto3 DynamoDB client using this helper."""
+        manager = await self._ensure_manager()
+        await manager.start()
+        client = await _create_async_client_with_manager(
+            self._config,
+            manager,
+            auth=self._auth,
+            owns_manager=False,
+            **{**self._boto_kwargs, **boto_kwargs},
+        )
+        self._clients.append(client)
+        return client
+
+    async def update_live_nodes(self) -> bool:
+        """Refresh the live-node list immediately."""
+        return await (await self._ensure_manager()).refresh_nodes()
+
+    async def next_node(self) -> str | None:
+        """Return the next live node selected for diagnostics."""
+        return (await self._ensure_manager()).next_node()
+
+    def get_nodes(self) -> list[str]:
+        """Return the current live-node hostnames."""
+        if self._manager is None:
+            return []
+        return list(self._manager.nodes.nodes)
+
+    def get_active_nodes(self) -> list[str]:
+        """Return active nodes; currently this is the live-node list."""
+        return self.get_nodes()
+
+    def get_quarantined_nodes(self) -> list[str]:
+        """Return quarantined nodes; node quarantine is not implemented."""
+        return []
+
+    def check_rack_and_datacenter_set_correctly(self) -> bool:
+        """Return whether the configured rack/datacenter scope is complete."""
+        from alternator.core.routing_scope import DatacenterScope, RackScope
+
+        scope = self._config.routing_scope
+        if isinstance(scope, RackScope):
+            return bool(scope.datacenter and scope.rack)
+        if isinstance(scope, DatacenterScope):
+            return bool(scope.datacenter)
+        return True
+
+    def check_rack_datacenter_feature_supported(self) -> bool:
+        """Return whether this client supports rack/datacenter scoped discovery."""
+        from alternator.core.routing_scope import (
+            ClusterScope,
+            DatacenterScope,
+            RackScope,
+        )
+
+        return isinstance(
+            self._config.routing_scope,
+            ClusterScope | DatacenterScope | RackScope,
+        )
+
+    async def get_partition_key_name(self, table_name: str) -> str | None:
+        """Return a known partition key name for diagnostics."""
+        configured = self._config.key_affinity.table_pk_attributes.get(table_name)
+        if configured is not None:
+            return configured
+
+        for created_client in self._clients:
+            pk_cache = getattr(created_client, PK_CACHE_ATTR, None)
+            if pk_cache is None:
+                continue
+            get_pk_name = getattr(pk_cache, "get_pk_name", None)
+            if not callable(get_pk_name):
+                continue
+            result = get_pk_name(table_name)
+            if inspect.isawaitable(result):
+                return cast("str | None", await result)
+            return cast("str | None", result)
+        return None
+
+    async def _ensure_manager(self) -> AsyncLiveNodesManager:
+        if self._manager is None:
+            self._manager = await _create_async_manager(self._config)
+        return self._manager
 
 
 class AsyncAlternatorClient:

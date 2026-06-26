@@ -31,12 +31,12 @@ Supported or close:
 - static Alternator auth, disabled by default
 - TLS server CA and insecure trust-all modes
 - key route affinity with partition-key cache
+- helper lifecycle facade and public inspection methods
 - vector search support
 
 Tracked gaps:
 
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
-- public helper facade and lifecycle inspection: [#33](https://github.com/scylladb/alternator-client-python/issues/33)
 - explicit routing-scope fallback and topology validation: [#35](https://github.com/scylladb/alternator-client-python/issues/35)
 - transport and SDK configuration propagation: [#34](https://github.com/scylladb/alternator-client-python/issues/34)
 - TLS client certificate and key log file support: [#38](https://github.com/scylladb/alternator-client-python/issues/38)
