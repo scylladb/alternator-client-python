@@ -19,7 +19,7 @@ and intentionally deferred behavior.
 | TLS client certificates | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS certificate/key paths are loaded into discovery SSL contexts and SDK `client_cert` config. |
 | TLS key log file | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file paths are applied to SSL contexts when supported by the runtime. |
 | Transport and SDK config knobs | Supported | [#34](https://github.com/scylladb/alternator-client-python/issues/34) | Retry, pool, connect/read timeout, region, and SDK config customizer settings are wired into sync and async SDK clients. |
-| Key route affinity | Partial | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | Partition-key cache exists; RMW rules and BatchWriteItem voting need alignment with the request-routing specification. |
+| Key route affinity | Supported | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | RMW detection, single-write affinity, and BatchWriteItem preferred-node voting are implemented with fallback on missing or ambiguous routing data. |
 | Helper lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Helper` and `AsyncHelper` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
 | Vector search extension | Supported | Existing API | Python client enables ScyllaDB Alternator vector extensions. |

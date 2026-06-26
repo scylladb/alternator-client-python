@@ -24,13 +24,10 @@ from alternator._http import (
 from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
-from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
-    extract_partition_key,
-    get_table_name,
-    should_use_affinity,
+    select_affinity_node,
 )
-from alternator.core.live_nodes import AsyncLiveNodesManager
+from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
 from alternator.vector import enable_vector_support
 
 if TYPE_CHECKING:
@@ -203,19 +200,19 @@ class AsyncPartitionKeyCache:
         self._cache.update(table_pk_map)
 
 
-def _create_async_affinity_hash_computer(
+def _create_async_affinity_node_computer(
     config: Config,
     pk_cache: AsyncPartitionKeyCache | None,
-) -> Callable[[str, dict[str, Any]], int | None] | None:
+) -> Callable[[str, dict[str, Any], NodeList], str | None] | None:
     """
-    Create a function that computes the partition key hash for affinity routing.
+    Create a function that selects the preferred key-affinity node.
 
     Args:
         config: Alternator configuration
         pk_cache: Partition key cache (if affinity enabled)
 
     Returns:
-        Function that computes partition key hash, or None if affinity is disabled
+        Function that selects the affinity node, or None if affinity is disabled
     """
     affinity_mode = config.key_affinity.mode
 
@@ -223,20 +220,7 @@ def _create_async_affinity_hash_computer(
     if affinity_mode == KeyRouteAffinityMode.NONE or pk_cache is None:
         return None
 
-    def compute_affinity_hash(
-        operation_name: str, params: dict[str, Any]
-    ) -> int | None:
-        """Compute partition key hash for affinity routing."""
-        # Check if this operation should use affinity
-        if not should_use_affinity(affinity_mode.name, operation_name, params):
-            return None
-
-        # Get table name
-        table_name = get_table_name(params)
-        if not table_name:
-            return None
-
-        # Get partition key name from cache (fast sync path)
+    def get_cached_pk_name(table_name: str) -> str | None:
         pk_name = pk_cache._cache.get(table_name)
         if not pk_name:
             # Schedule async discovery for future requests
@@ -250,26 +234,23 @@ def _create_async_affinity_hash_computer(
                 table_name,
             )
             return None
+        return pk_name
 
-        # Extract partition key value
-        pk_info = extract_partition_key(params, pk_name)
-        if not pk_info:
-            logger.debug(
-                "Could not extract partition key %s from request",
-                pk_name,
-            )
-            return None
+    def compute_affinity_node(
+        operation_name: str,
+        params: dict[str, Any],
+        nodes: NodeList,
+    ) -> str | None:
+        """Select the preferred key-affinity node for this request."""
+        return select_affinity_node(
+            mode=affinity_mode.name,
+            operation_name=operation_name,
+            params=params,
+            nodes=nodes,
+            get_pk_name=get_cached_pk_name,
+        )
 
-        attr_type, value = pk_info
-
-        # Compute and return hash
-        try:
-            return hash_attribute_value(attr_type, value)
-        except (ValueError, TypeError, UnicodeEncodeError) as e:
-            logger.debug("Error hashing partition key: %s", e)
-            return None
-
-    return compute_affinity_hash
+    return compute_affinity_node
 
 
 async def _create_async_manager(
@@ -392,7 +373,7 @@ async def _create_async_client_with_manager(
             client.meta.events,
             manager,
             config,
-            _create_async_affinity_hash_computer(config, pk_cache),
+            _create_async_affinity_node_computer(config, pk_cache),
             auth_enabled=auth_enabled,
         )
 

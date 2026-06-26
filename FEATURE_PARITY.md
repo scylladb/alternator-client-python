@@ -32,14 +32,13 @@ Supported or close:
 - transport timeout, retry, pool, region, and SDK customizer settings
 - TLS server CA and insecure trust-all modes
 - TLS client certificate and key log file support
-- key route affinity with partition-key cache
+- key route affinity with partition-key cache and batch-write voting
 - helper lifecycle facade and public inspection methods
 - vector search support
 
 Tracked gaps:
 
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
-- key-affinity RMW and BatchWriteItem routing semantics: [#23](https://github.com/scylladb/alternator-client-python/issues/23)
 - compatibility and release decisions: [#39](https://github.com/scylladb/alternator-client-python/issues/39)
 - documentation, examples, and release notes: [#40](https://github.com/scylladb/alternator-client-python/issues/40)
 

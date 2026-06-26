@@ -1,11 +1,14 @@
 """Tests for key route affinity module."""
 
+import copy
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock
 
+from alternator.config import Config
+from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     AffinitySelector,
@@ -14,6 +17,7 @@ from alternator.core.key_affinity import (
     get_table_name,
     is_rmw_operation,
     is_write_operation,
+    select_affinity_node,
     should_use_affinity,
 )
 from alternator.core.live_nodes import NodeList
@@ -31,6 +35,16 @@ def _batch_write_routing_target(
     return (table_name, pk, hash_attribute_value(attr_type, value))
 
 
+def _pk_value_for_node(nodes: NodeList, target_node: str, prefix: str) -> str:
+    selector = AffinitySelector()
+    for index in range(1000):
+        value = f"{prefix}-{index}"
+        hash_value = hash_attribute_value("S", value)
+        if selector.select(nodes, hash_value) == target_node:
+            return value
+    raise AssertionError(f"could not find value for node {target_node}")
+
+
 class TestIsRmwOperation:
     """Tests for is_rmw_operation function."""
 
@@ -44,10 +58,50 @@ class TestIsRmwOperation:
         params = {"ConditionExpression": "attribute_not_exists(pk)"}
         assert is_rmw_operation("PutItem", params) is True
 
+    def test_put_with_empty_condition_is_not_rmw(self) -> None:
+        """Test PutItem with empty ConditionExpression is not RMW."""
+        params = {"ConditionExpression": ""}
+        assert is_rmw_operation("PutItem", params) is False
+
+    def test_put_with_expected_is_rmw(self) -> None:
+        """Test PutItem with Expected is RMW."""
+        params = {"Expected": {}}
+        assert is_rmw_operation("PutItem", params) is True
+
+    def test_put_with_all_old_return_values_is_rmw(self) -> None:
+        """Test PutItem with ALL_OLD ReturnValues is RMW."""
+        params = {"ReturnValues": "ALL_OLD"}
+        assert is_rmw_operation("PutItem", params) is True
+
+    def test_put_with_none_return_values_is_not_rmw(self) -> None:
+        """Test PutItem with NONE ReturnValues is not RMW."""
+        params = {"ReturnValues": "NONE"}
+        assert is_rmw_operation("PutItem", params) is False
+
     def test_delete_with_condition_is_rmw(self) -> None:
         """Test DeleteItem with ConditionExpression is RMW."""
         params = {"ConditionExpression": "version = :v"}
         assert is_rmw_operation("DeleteItem", params) is True
+
+    def test_delete_with_empty_condition_is_not_rmw(self) -> None:
+        """Test DeleteItem with empty ConditionExpression is not RMW."""
+        params = {"ConditionExpression": ""}
+        assert is_rmw_operation("DeleteItem", params) is False
+
+    def test_delete_with_expected_is_rmw(self) -> None:
+        """Test DeleteItem with Expected is RMW."""
+        params = {"Expected": {}}
+        assert is_rmw_operation("DeleteItem", params) is True
+
+    def test_delete_with_all_old_return_values_is_rmw(self) -> None:
+        """Test DeleteItem with ALL_OLD ReturnValues is RMW."""
+        params = {"ReturnValues": "ALL_OLD"}
+        assert is_rmw_operation("DeleteItem", params) is True
+
+    def test_delete_with_updated_new_return_values_is_not_rmw(self) -> None:
+        """Test DeleteItem only treats ALL_OLD ReturnValues as RMW."""
+        params = {"ReturnValues": "UPDATED_NEW"}
+        assert is_rmw_operation("DeleteItem", params) is False
 
     def test_update_with_return_values_is_rmw(self) -> None:
         """Test UpdateItem with non-NONE ReturnValues is RMW."""
@@ -62,6 +116,55 @@ class TestIsRmwOperation:
     def test_update_without_condition_or_return_not_rmw(self) -> None:
         """Test UpdateItem without condition or return values is not RMW."""
         params = {"Key": {"pk": {"S": "123"}}}
+        assert is_rmw_operation("UpdateItem", params) is False
+
+    def test_update_with_update_expression_is_rmw(self) -> None:
+        """Test UpdateItem with UpdateExpression is RMW."""
+        params = {"UpdateExpression": "SET value = :v"}
+        assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_empty_update_expression_is_not_rmw(self) -> None:
+        """Test empty UpdateExpression alone is not RMW."""
+        params = {"UpdateExpression": ""}
+        assert is_rmw_operation("UpdateItem", params) is False
+
+    def test_update_with_expected_is_rmw(self) -> None:
+        """Test UpdateItem with Expected is RMW."""
+        params = {"Expected": {}}
+        assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_empty_return_values_is_not_rmw(self) -> None:
+        """Test UpdateItem with empty ReturnValues is not RMW."""
+        params = {"ReturnValues": ""}
+        assert is_rmw_operation("UpdateItem", params) is False
+
+    def test_update_with_updated_new_return_values_is_not_rmw(self) -> None:
+        """Test UpdateItem UPDATED_NEW ReturnValues is not RMW."""
+        params = {"ReturnValues": "UPDATED_NEW"}
+        assert is_rmw_operation("UpdateItem", params) is False
+
+    def test_update_with_all_new_return_values_is_rmw(self) -> None:
+        """Test UpdateItem ReturnValues other than allowed no-read values is RMW."""
+        params = {"ReturnValues": "ALL_NEW"}
+        assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_attribute_updates_add_is_rmw(self) -> None:
+        """Test AttributeUpdates ADD action is RMW."""
+        params = {"AttributeUpdates": {"count": {"Action": "ADD", "Value": {"N": "1"}}}}
+        assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_attribute_updates_delete_with_value_is_rmw(self) -> None:
+        """Test AttributeUpdates DELETE action with a value is RMW."""
+        params = {
+            "AttributeUpdates": {
+                "tags": {"Action": "DELETE", "Value": {"SS": ["old"]}},
+            }
+        }
+        assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_attribute_updates_delete_without_value_not_rmw(self) -> None:
+        """Test AttributeUpdates DELETE action without a value is not RMW."""
+        params = {"AttributeUpdates": {"tags": {"Action": "DELETE"}}}
         assert is_rmw_operation("UpdateItem", params) is False
 
     def test_get_item_is_not_rmw(self) -> None:
@@ -156,6 +259,351 @@ class TestShouldUseAffinity:
         params = {}
         assert should_use_affinity("ANY_WRITE", "GetItem", params) is False
         assert should_use_affinity("ANY_WRITE", "Query", params) is False
+
+
+class TestSelectAffinityNode:
+    """Tests for preferred node selection."""
+
+    def test_single_put_item_selects_node(self) -> None:
+        """Test single PutItem routes by the item partition key."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        value = _pk_value_for_node(nodes, "b", "put")
+        params = {
+            "TableName": "orders",
+            "Item": {"pk": {"S": value}},
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="PutItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == "b"
+        )
+
+    def test_single_delete_item_selects_node(self) -> None:
+        """Test single DeleteItem routes by the key partition key."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        value = _pk_value_for_node(nodes, "c", "delete")
+        params = {
+            "TableName": "orders",
+            "Key": {"pk": {"S": value}},
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="DeleteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == "c"
+        )
+
+    def test_batch_write_single_put_selects_node(self) -> None:
+        """Test BatchWriteItem with a single PutRequest selects its node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        value = _pk_value_for_node(nodes, "a", "batch-put")
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"pk": {"S": value}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == "a"
+        )
+
+    def test_batch_write_single_delete_selects_node(self) -> None:
+        """Test BatchWriteItem with a single DeleteRequest selects its node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        value = _pk_value_for_node(nodes, "c", "batch-delete")
+        params = {
+            "RequestItems": {
+                "orders": [{"DeleteRequest": {"Key": {"pk": {"S": value}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == "c"
+        )
+
+    def test_batch_write_mixed_put_delete_unique_winner(self) -> None:
+        """Test BatchWriteItem votes for the unique preferred node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        b1 = _pk_value_for_node(nodes, "b", "b1")
+        b2 = _pk_value_for_node(nodes, "b", "b2")
+        c1 = _pk_value_for_node(nodes, "c", "c1")
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"S": b1}}}},
+                    {"DeleteRequest": {"Key": {"pk": {"S": b2}}}},
+                    {"PutRequest": {"Item": {"pk": {"S": c1}}}},
+                ],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == "b"
+        )
+
+    def test_batch_write_multi_table_reversed_order_same_winner(self) -> None:
+        """Test batch voting is independent of table and request order."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        b1 = _pk_value_for_node(nodes, "b", "orders-b1")
+        b2 = _pk_value_for_node(nodes, "b", "sessions-b2")
+        a1 = _pk_value_for_node(nodes, "a", "orders-a1")
+        orders = [
+            {"PutRequest": {"Item": {"pk": {"S": b1}}}},
+            {"PutRequest": {"Item": {"pk": {"S": a1}}}},
+        ]
+        sessions = [{"DeleteRequest": {"Key": {"pk": {"S": b2}}}}]
+        params_a = {"RequestItems": {"orders": orders, "sessions": sessions}}
+        params_b = {
+            "RequestItems": {
+                "sessions": list(reversed(sessions)),
+                "orders": list(reversed(orders)),
+            }
+        }
+
+        for params in (params_a, params_b):
+            assert (
+                select_affinity_node(
+                    mode="ANY_WRITE",
+                    operation_name="BatchWriteItem",
+                    params=params,
+                    nodes=nodes,
+                    get_pk_name={"orders": "pk", "sessions": "pk"}.get,
+                )
+                == "b"
+            )
+
+    def test_batch_write_missing_pk_metadata_falls_back(self) -> None:
+        """Test missing partition-key metadata produces no preferred node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"pk": {"S": "value"}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={}.get,
+            )
+            is None
+        )
+
+    def test_batch_write_missing_pk_value_falls_back(self) -> None:
+        """Test missing partition-key value produces no preferred node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"other": {"S": "value"}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            is None
+        )
+
+    def test_batch_write_unsupported_pk_type_falls_back(self) -> None:
+        """Test unsupported partition-key type produces no preferred node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"pk": {"BOOL": True}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            is None
+        )
+
+    def test_batch_write_no_nodes_falls_back(self) -> None:
+        """Test no active nodes produces no preferred node."""
+        nodes = NodeList(nodes=(), scope_name="test")
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"pk": {"S": "value"}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            is None
+        )
+
+    def test_batch_write_tied_votes_fall_back(self) -> None:
+        """Test tied preferred-node votes produce no preferred node."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        a1 = _pk_value_for_node(nodes, "a", "tie-a")
+        b1 = _pk_value_for_node(nodes, "b", "tie-b")
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"S": a1}}}},
+                    {"PutRequest": {"Item": {"pk": {"S": b1}}}},
+                ],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            is None
+        )
+
+    def test_batch_write_binary_pk_selects_stable_node(self) -> None:
+        """Test binary partition-key values use stable hashing."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        binary_value = b"\x00\x01stable"
+        expected = AffinitySelector().select(
+            nodes,
+            hash_attribute_value("B", binary_value),
+        )
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"B": binary_value}}}},
+                ],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == expected
+        )
+
+    def test_batch_write_selection_does_not_mutate_params(self) -> None:
+        """Test BatchWriteItem affinity selection leaves request params unchanged."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        value = _pk_value_for_node(nodes, "b", "no-mutate")
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"pk": {"S": value}}}}],
+            }
+        }
+        original = copy.deepcopy(params)
+
+        select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        )
+
+        assert params == original
+
+
+class TestAffinityHandlerRouting:
+    """Tests for preferred-node routing through shared request handlers."""
+
+    def test_preferred_node_first_and_remaining_nodes_preserved(self) -> None:
+        """Test handler tries preferred node first without dropping retries."""
+        config = Config(seed_hosts=["seed"], port=8000)
+        manager = MagicMock()
+        manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
+        events = MagicMock()
+
+        def compute_affinity_node(
+            operation_name: str,
+            params: dict[str, Any],
+            nodes: NodeList,
+        ) -> str | None:
+            assert operation_name == "PutItem"
+            assert params == {"TableName": "orders"}
+            assert nodes.nodes == ("a", "b", "c")
+            return "b"
+
+        _register_alternator_handlers(
+            events,
+            manager,
+            config,
+            compute_affinity_node,
+        )
+        handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+
+        request = MagicMock()
+        request.url = "http://seed:8000/"
+        request.headers = {"X-Amz-Target": "DynamoDB_20120810.PutItem"}
+        request.body = b'{"TableName": "orders"}'
+        request._alternator_query_plan = None
+
+        update_endpoint = handlers["update_endpoint"]
+        update_endpoint(request)
+        first_url = request.url
+        update_endpoint(request)
+        second_url = request.url
+        update_endpoint(request)
+        third_url = request.url
+
+        assert first_url == "http://b:8000/"
+        assert {second_url, third_url} == {"http://a:8000/", "http://c:8000/"}
 
 
 class TestExtractPartitionKey:

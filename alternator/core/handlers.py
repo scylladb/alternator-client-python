@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import random
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -43,7 +44,8 @@ def _register_alternator_handlers(
     events: BaseEventHooks,
     manager: _HasNodes,
     config: Config,
-    compute_affinity_hash: Callable[[str, DynamoDBParams], int | None] | None = None,
+    compute_affinity_node: Callable[[str, DynamoDBParams, NodeList], str | None]
+    | None = None,
     *,
     auth_enabled: bool = False,
 ) -> None:
@@ -56,8 +58,7 @@ def _register_alternator_handlers(
         events: The boto3/aioboto3 events object to register handlers on
         manager: Object with a ``nodes`` property returning a ``NodeList``
         config: Alternator configuration
-        compute_affinity_hash: Optional function to compute partition key hash
-                              for deterministic node ordering
+        compute_affinity_node: Optional function to select a preferred affinity node
     """
     scheme = config.scheme
     port = config.port
@@ -68,16 +69,25 @@ def _register_alternator_handlers(
         {"PutItem", "UpdateItem", "DeleteItem", "BatchWriteItem", "GetItem"}
     )
 
-    def create_query_plan(affinity_hash: int | None) -> Iterator[str]:
+    def create_query_plan(
+        nodes: NodeList,
+        preferred_node: str | None,
+    ) -> Iterator[str]:
         """Create a URI iterator for a single request."""
-        nodes = manager.nodes
-        if not nodes:
-            raise NoNodesAvailableError(
-                "No nodes available",
-                scope_name=scope_name,
+        node_addresses = nodes.nodes
+        if preferred_node is not None and preferred_node in node_addresses:
+            yield f"{scheme}://{preferred_node}:{port}"
+            remaining_nodes = tuple(
+                node for node in node_addresses if node != preferred_node
             )
-        seed = affinity_hash if affinity_hash is not None else random.getrandbits(64)
-        plan = LazyQueryPlan(nodes=nodes.nodes, seed=seed)
+            seed = _stable_seed(preferred_node)
+            plan = LazyQueryPlan(nodes=remaining_nodes, seed=seed)
+            for node in plan:
+                yield f"{scheme}://{node}:{port}"
+            return
+
+        seed = random.getrandbits(64)
+        plan = LazyQueryPlan(nodes=node_addresses, seed=seed)
         for node in plan:
             yield f"{scheme}://{node}:{port}"
 
@@ -87,16 +97,27 @@ def _register_alternator_handlers(
         # Get or create query plan
         plan: Iterator[str] | None = getattr(request, _QUERY_PLAN_ATTR, None)
         if plan is None:
-            # First attempt: create plan with optional affinity hash
-            affinity_hash = None
-            if compute_affinity_hash is not None:
+            nodes = manager.nodes
+            if not nodes:
+                raise NoNodesAvailableError(
+                    "No nodes available",
+                    scope_name=scope_name,
+                )
+
+            # First attempt: create plan with optional affinity preferred node
+            preferred_node = None
+            if compute_affinity_node is not None:
                 # Check operation name first (cheap header read) before
                 # parsing the JSON body (expensive)
                 operation_name = extract_operation_name(request)
                 if operation_name in _affinity_operations:
                     params = extract_request_params(request)
-                    affinity_hash = compute_affinity_hash(operation_name, params)
-            plan = create_query_plan(affinity_hash)
+                    preferred_node = compute_affinity_node(
+                        operation_name,
+                        params,
+                        nodes,
+                    )
+            plan = create_query_plan(nodes, preferred_node)
             setattr(request, _QUERY_PLAN_ATTR, plan)
 
         # Get next node from plan
@@ -128,3 +149,8 @@ def _register_alternator_handlers(
         )
         header_filter = create_header_filter_handler(whitelist)
         events.register("before-send.dynamodb.*", header_filter)
+
+
+def _stable_seed(value: str) -> int:
+    digest = hashlib.blake2b(value.encode("utf-8"), digest_size=8).digest()
+    return int.from_bytes(digest, "big")

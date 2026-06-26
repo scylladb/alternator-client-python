@@ -5,9 +5,12 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections import Counter
+from collections.abc import Callable, Iterable
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
+from alternator.core.hashing import hash_attribute_value
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
@@ -23,6 +26,11 @@ class _BatchWriteRoutingTarget(NamedTuple):
     sort_key: tuple[str, str, str]
 
 
+class _BatchWriteCandidate(NamedTuple):
+    table_name: str
+    attributes: dict[str, Any]
+
+
 class AffinitySelector:
     """
     Hash-based node selector for key affinity routing.
@@ -35,21 +43,23 @@ class AffinitySelector:
         if not nodes:
             return None
 
+        sorted_nodes = tuple(sorted(nodes.nodes))
+
         # Use hash to deterministically select node
-        index = abs(hash_value) % len(nodes)
-        selected = nodes.nodes[index]
+        index = abs(hash_value) % len(sorted_nodes)
+        selected = sorted_nodes[index]
         logger.debug(
             "Affinity selection: hash=%d -> node_index=%d -> %s (of %d nodes)",
             hash_value,
             index,
             selected,
-            len(nodes),
+            len(sorted_nodes),
             extra={
                 "event": "affinity_selection",
                 "hash_value": hash_value,
                 "node_index": index,
                 "selected_node": selected,
-                "node_count": len(nodes),
+                "node_count": len(sorted_nodes),
             },
         )
         return selected
@@ -59,16 +69,32 @@ def is_rmw_operation(operation_name: str, params: dict[str, Any]) -> bool:
     """
     Check if operation is a read-modify-write operation.
 
-    RMW operations have ConditionExpression or non-NONE ReturnValues.
+    RMW operations require a read-before-write path.
     """
-    if operation_name not in ("UpdateItem", "PutItem", "DeleteItem"):
+    if operation_name not in {"UpdateItem", "PutItem", "DeleteItem"}:
         return False
 
-    if "ConditionExpression" in params:
+    if "Expected" in params:
         return True
 
-    return_values = params.get("ReturnValues", "NONE")
-    return bool(return_values != "NONE")
+    if _non_empty_string(params.get("ConditionExpression")):
+        return True
+
+    return_values = params.get("ReturnValues")
+
+    if operation_name in {"PutItem", "DeleteItem"}:
+        return return_values == "ALL_OLD"
+
+    if operation_name == "UpdateItem":
+        if _non_empty_string(params.get("UpdateExpression")):
+            return True
+
+        if return_values not in (None, "", "NONE", "UPDATED_NEW"):
+            return True
+
+        return _attribute_updates_need_read(params.get("AttributeUpdates"))
+
+    return False
 
 
 def is_write_operation(operation_name: str) -> bool:
@@ -85,6 +111,50 @@ def should_use_affinity(mode: str, operation_name: str, params: dict[str, Any]) 
     if mode == "ANY_WRITE":
         return is_write_operation(operation_name)
     return False
+
+
+def select_affinity_node(
+    *,
+    mode: str,
+    operation_name: str,
+    params: dict[str, Any],
+    nodes: NodeList,
+    get_pk_name: Callable[[str], str | None],
+) -> str | None:
+    """Select the preferred affinity node for a request, or None for fallback."""
+    if not should_use_affinity(mode, operation_name, params):
+        return None
+
+    if not nodes:
+        return None
+
+    if operation_name == "BatchWriteItem":
+        if mode != "ANY_WRITE":
+            return None
+        return _select_batch_write_affinity_node(params, nodes, get_pk_name)
+
+    table_name = get_table_name(params)
+    if not table_name:
+        return None
+
+    pk_name = get_pk_name(table_name)
+    if not pk_name:
+        logger.debug("Could not determine partition key for table %s", table_name)
+        return None
+
+    pk_info = extract_partition_key(params, pk_name)
+    if not pk_info:
+        logger.debug("Could not extract partition key %s from request", pk_name)
+        return None
+
+    attr_type, value = pk_info
+    try:
+        hash_value = hash_attribute_value(attr_type, value)
+    except (ValueError, TypeError, UnicodeEncodeError) as e:
+        logger.debug("Error hashing partition key: %s", e)
+        return None
+
+    return AffinitySelector().select(nodes, hash_value)
 
 
 def extract_partition_key(
@@ -119,6 +189,106 @@ def _extract_typed_value(attr_value: dict[str, Any]) -> tuple[str, Any] | None:
         if attr_type in attr_value:
             return (attr_type, attr_value[attr_type])
     return None
+
+
+def _select_batch_write_affinity_node(
+    params: dict[str, Any],
+    nodes: NodeList,
+    get_pk_name: Callable[[str], str | None],
+) -> str | None:
+    votes: Counter[str] = Counter()
+    selector = AffinitySelector()
+
+    for candidate in _iter_batch_write_candidates(params):
+        pk_name = get_pk_name(candidate.table_name)
+        if not pk_name:
+            continue
+
+        pk_value = candidate.attributes.get(pk_name)
+        if not isinstance(pk_value, dict):
+            continue
+
+        pk_info = _extract_typed_value(pk_value)
+        if pk_info is None:
+            continue
+
+        attr_type, value = pk_info
+        try:
+            hash_value = hash_attribute_value(attr_type, value)
+        except (ValueError, TypeError, UnicodeEncodeError):
+            continue
+
+        node = selector.select(nodes, hash_value)
+        if node is not None:
+            votes[node] += 1
+
+    if not votes:
+        return None
+
+    top_count = max(votes.values())
+    winners = [node for node, count in votes.items() if count == top_count]
+    if len(winners) != 1:
+        return None
+    return winners[0]
+
+
+def _iter_batch_write_candidates(
+    params: dict[str, Any],
+) -> Iterable[_BatchWriteCandidate]:
+    request_items = params.get("RequestItems")
+    if not isinstance(request_items, dict):
+        return ()
+
+    candidates: list[_BatchWriteCandidate] = []
+    for table_name, writes in sorted(
+        request_items.items(), key=lambda item: str(item[0])
+    ):
+        if not isinstance(table_name, str) or not isinstance(writes, list):
+            continue
+        for write in writes:
+            if not isinstance(write, dict):
+                continue
+
+            put_request = write.get("PutRequest")
+            if isinstance(put_request, dict):
+                item = put_request.get("Item")
+                if isinstance(item, dict):
+                    candidates.append(_BatchWriteCandidate(table_name, item))
+
+            delete_request = write.get("DeleteRequest")
+            if isinstance(delete_request, dict):
+                key = delete_request.get("Key")
+                if isinstance(key, dict):
+                    candidates.append(_BatchWriteCandidate(table_name, key))
+
+    return tuple(candidates)
+
+
+def _non_empty_string(value: object) -> bool:
+    return isinstance(value, str) and value != ""
+
+
+def _attribute_updates_need_read(attribute_updates: object) -> bool:
+    if not isinstance(attribute_updates, dict):
+        return False
+
+    for update in attribute_updates.values():
+        if not isinstance(update, dict):
+            continue
+        action = update.get("Action")
+        if action == "ADD":
+            return True
+        if action == "DELETE" and _attribute_update_value_is_non_empty(
+            update.get("Value")
+        ):
+            return True
+    return False
+
+
+def _attribute_update_value_is_non_empty(value: object) -> bool:
+    if not isinstance(value, dict):
+        return bool(value)
+    return any(bool(item) for item in value.values())
 
 
 def get_table_name(params: dict[str, Any]) -> str | None:
