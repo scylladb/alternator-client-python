@@ -16,8 +16,8 @@ and intentionally deferred behavior.
 | Request compression | Partial | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip exists; configurable levels and custom compressors are planned. |
 | Header optimization | Partial | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Basic whitelist exists; custom whitelist callback is planned. |
 | TLS server trust | Supported | Existing API | System CA, custom CA, hostname verification, and trust-all mode exist. |
-| TLS client certificates | Missing | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS config and SDK propagation are planned. |
-| TLS key log file | Missing | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file support is planned. |
+| TLS client certificates | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS certificate/key paths are loaded into discovery SSL contexts and SDK `client_cert` config. |
+| TLS key log file | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file paths are applied to SSL contexts when supported by the runtime. |
 | Transport and SDK config knobs | Supported | [#34](https://github.com/scylladb/alternator-client-python/issues/34) | Retry, pool, connect/read timeout, region, and SDK config customizer settings are wired into sync and async SDK clients. |
 | Key route affinity | Partial | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | Partition-key cache exists; RMW rules and BatchWriteItem voting need alignment with the request-routing specification. |
 | Helper lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Helper` and `AsyncHelper` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |

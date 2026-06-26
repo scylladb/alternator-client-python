@@ -17,6 +17,7 @@ from alternator.exceptions import ConfigurationError
 logger = logging.getLogger("alternator")
 
 SDKConfigCustomizer = Callable[[dict[str, Any]], None]
+SDKClientCert = str | tuple[str, str]
 
 
 class CompressionAlgorithm(Enum):
@@ -67,6 +68,27 @@ class TLS:
     # Session caching
     session_cache: TlsSessionCacheConfig = field(default_factory=TlsSessionCacheConfig)
 
+    # Client certificate authentication
+    client_cert_path: Path | None = None
+    client_key_path: Path | None = None
+
+    # TLS key logging for traffic debugging
+    key_log_file_path: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Validate TLS configuration values."""
+        if self.client_key_path is not None and self.client_cert_path is None:
+            raise ConfigurationError("client_key_path requires client_cert_path")
+
+    @property
+    def sdk_client_cert(self) -> SDKClientCert | None:
+        """Return the botocore client_cert value for this TLS config."""
+        if self.client_cert_path is None:
+            return None
+        if self.client_key_path is not None:
+            return (str(self.client_cert_path), str(self.client_key_path))
+        return str(self.client_cert_path)
+
     @classmethod
     def trust_all(cls) -> TLS:
         """
@@ -114,6 +136,7 @@ class TlsConfig(TLS):
     """Deprecated compatibility name for :class:`TLS`."""
 
     def __post_init__(self) -> None:
+        super().__post_init__()
         warnings.warn(
             "TlsConfig is deprecated; use TLS instead.",
             DeprecationWarning,
@@ -573,6 +596,8 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
         "connect_timeout": config.timeouts.connect_seconds,
         "read_timeout": config.timeouts.read_seconds,
     }
+    if config.scheme == "https" and config.tls.sdk_client_cert is not None:
+        kwargs["client_cert"] = config.tls.sdk_client_cert
     if config.sdk_config_customizer is not None:
         config.sdk_config_customizer(kwargs)
     return kwargs

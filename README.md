@@ -186,7 +186,7 @@ config = (
 | `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
 | `optimize_headers` | `bool` | `False` | Enable header filtering |
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
-| `tls` | `TLS` | system default | TLS configuration |
+| `tls` | `TLS` | system default | TLS trust, client certificates, and key logging |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
 | `retries` | `RetryConfig` | standard, 3 attempts | SDK retry behavior |
 | `max_pool_connections` | `int` | `200` | Max connections per host |
@@ -350,6 +350,25 @@ tls = TLS.with_custom_ca(Path("/path/to/ca.pem"))
 # Trust all certificates (INSECURE - dev only)
 tls = TLS.trust_all()
 
+# Mutual TLS with separate certificate and key files
+tls = TLS(
+    custom_ca_cert_paths=[Path("/path/to/ca.pem")],
+    client_cert_path=Path("/path/to/client.crt"),
+    client_key_path=Path("/path/to/client.key"),
+)
+
+# Mutual TLS with a combined certificate/key PEM file
+tls = TLS(
+    custom_ca_cert_paths=[Path("/path/to/ca.pem")],
+    client_cert_path=Path("/path/to/client-combined.pem"),
+)
+
+# Debug TLS traffic with a key log file
+tls = TLS(
+    custom_ca_cert_paths=[Path("/path/to/ca.pem")],
+    key_log_file_path=Path("/secure/tmp/alternator-tls.keys"),
+)
+
 # Full configuration
 tls = TLS(
     custom_ca_cert_paths=[Path("/path/to/ca.pem")],
@@ -360,8 +379,22 @@ tls = TLS(
         cache_size=1024,
         timeout_seconds=86400,
     ),
+    client_cert_path=Path("/path/to/client.crt"),
+    client_key_path=Path("/path/to/client.key"),
+    key_log_file_path=Path("/secure/tmp/alternator-tls.keys"),
 )
 ```
+
+Client certificate settings are loaded into the SSL context used for
+`/localnodes` discovery and passed to the SDK as `client_cert` for HTTPS
+DynamoDB API calls. If you configure custom server CA certificates, continue to
+pass the matching SDK `verify` argument or an equivalent SDK setting for API
+calls.
+
+TLS key logs contain traffic decryption material. Store them only in protected
+temporary locations, delete them after debugging, and never commit them. Key log
+support depends on Python/OpenSSL exposing `SSLContext.keylog_filename`; runtimes
+without that attribute ignore `key_log_file_path`.
 
 ## Request Compression
 
@@ -637,6 +670,8 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 
 - **Request Compression**: Gzip compression requires ScyllaDB 2026.1.0+. Response compression is not yet supported by Alternator.
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
+- **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
+- **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
 - **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
 - **Batch Operations**: `BatchWriteItem` key affinity is based on a deterministic `PutRequest` or `DeleteRequest` selected from the batch. Batches with items targeting different partition keys are not split by affinity target.
 
