@@ -9,6 +9,7 @@ so each issue has enough context on its own.
 - [#36: Add client capability matrix and deterministic behavior test harness](https://github.com/scylladb/alternator-client-python/issues/36)
 - [#33: Add Helper and AsyncHelper lifecycle facade](https://github.com/scylladb/alternator-client-python/issues/33)
 - [#32: Plan node health tracking and quarantine behavior](https://github.com/scylladb/alternator-client-python/issues/32)
+- [#3: Ensure decommission and dead-node scenarios are handled properly](https://github.com/scylladb/alternator-client-python/issues/3)
 - [#35: Add explicit routing-scope fallback and topology validation APIs](https://github.com/scylladb/alternator-client-python/issues/35)
 - [#34: Wire transport and configuration options into boto clients](https://github.com/scylladb/alternator-client-python/issues/34)
 - [#38: Add TLS client certificate and key log file support](https://github.com/scylladb/alternator-client-python/issues/38)
@@ -34,17 +35,21 @@ Supported or close:
 - TLS client certificate and key log file support
 - key route affinity with partition-key cache and batch-write voting
 - helper lifecycle facade and public inspection methods
+- compatibility and release decision record
 - vector search support
 
 Tracked gaps:
 
 - node health tracking and quarantine planning only: [#32](https://github.com/scylladb/alternator-client-python/issues/32)
-- compatibility and release decisions: [#39](https://github.com/scylladb/alternator-client-python/issues/39)
+- decommission and dead-node scenario tracking, covered by the deferred node
+  health plan: [#3](https://github.com/scylladb/alternator-client-python/issues/3)
 - documentation, examples, and release notes: [#40](https://github.com/scylladb/alternator-client-python/issues/40)
 
 ## Compatibility Decisions
 
-Tracked by [#39](https://github.com/scylladb/alternator-client-python/issues/39).
+Tracked by [#39](https://github.com/scylladb/alternator-client-python/issues/39)
+and recorded in
+[docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md).
 
 - Keep current auth behavior: unsigned by default, explicit static credentials
   for signed Alternator requests.
@@ -56,6 +61,10 @@ Tracked by [#39](https://github.com/scylladb/alternator-client-python/issues/39)
   capability changes land.
 - Treat routing fallback changes as compatibility-sensitive and document a
   migration path before changing constructor behavior.
+- Keep node health default behavior unchanged; any future node health behavior
+  should start opt-in, and default-enabled behavior requires a major release.
+- Use a minor release for additive compatible APIs, and reserve major releases
+  for changed defaults or removed compatibility APIs.
 
 ## Node Health Constraint
 
@@ -73,8 +82,10 @@ separate future request explicitly authorizes implementation.
    [#36](https://github.com/scylladb/alternator-client-python/issues/36).
 2. Add helper lifecycle facade and public inspection methods:
    [#33](https://github.com/scylladb/alternator-client-python/issues/33).
-3. Keep node health deferred; maintain planning issue only:
-   [#32](https://github.com/scylladb/alternator-client-python/issues/32).
+3. Keep node health, decommission handling, and dead-node handling deferred;
+   maintain planning issues only:
+   [#32](https://github.com/scylladb/alternator-client-python/issues/32),
+   [#3](https://github.com/scylladb/alternator-client-python/issues/3).
 4. Add explicit routing fallback and topology validation:
    [#35](https://github.com/scylladb/alternator-client-python/issues/35).
 5. Wire timeout, region, pool, and SDK customizer configuration:

@@ -150,6 +150,8 @@ config = Config(
 
 > **Compatibility:** `AlternatorConfig` and `TlsConfig` remain available for
 > existing callers, but are deprecated. Prefer `Config` and `TLS` for new code.
+> See [docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md)
+> for compatibility and versioning decisions.
 
 ### Using the Builder Pattern
 

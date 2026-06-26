@@ -10,6 +10,20 @@ This document describes how to release a new version of the Alternator Load Bala
 
 ## Creating a Release
 
+### Compatibility Decision Gate
+
+Before choosing the next version, review
+[docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md).
+
+Use a minor release for additive compatible APIs and opt-in capabilities. Use a
+major release for changed defaults, removed deprecated names, removed legacy
+credential kwargs, changed default routing fallback, changed default auth, or
+default-enabled node health/quarantine behavior.
+
+Release notes for capability work should call out auth defaults, routing
+fallback behavior, deprecated-name migration, key-affinity behavior, and whether
+node health remains planning-only.
+
 ### 1. Update Version
 
 Update the version in `alternator/_version.py`:
