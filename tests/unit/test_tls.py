@@ -2,11 +2,13 @@
 
 import ssl
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
 from alternator.config import TLS, TlsSessionCacheConfig
 from alternator.core.tls import create_ssl_context
+from alternator.exceptions import ConfigurationError
 
 
 class TestCreateSslContext:
@@ -112,6 +114,46 @@ class TestCreateSslContext:
         else:
             pytest.skip("No system CA file available for testing")
 
+    def test_client_cert_chain_is_loaded(self, tmp_path: Path) -> None:
+        """Test TLS client certificate paths load into the SSL context."""
+        cert_path = tmp_path / "client.crt"
+        key_path = tmp_path / "client.key"
+
+        with patch("ssl.SSLContext.load_cert_chain") as mock_load:
+            tls_config = TLS(
+                client_cert_path=cert_path,
+                client_key_path=key_path,
+            )
+            create_ssl_context(tls_config)
+
+        mock_load.assert_called_once_with(
+            certfile=str(cert_path),
+            keyfile=str(key_path),
+        )
+
+    def test_combined_client_cert_chain_is_loaded(self, tmp_path: Path) -> None:
+        """Test combined certificate/key PEM path loads without a key path."""
+        cert_path = tmp_path / "client-combined.pem"
+
+        with patch("ssl.SSLContext.load_cert_chain") as mock_load:
+            tls_config = TLS(client_cert_path=cert_path)
+            create_ssl_context(tls_config)
+
+        mock_load.assert_called_once_with(
+            certfile=str(cert_path),
+            keyfile=None,
+        )
+
+    def test_key_log_file_is_configured(self, tmp_path: Path) -> None:
+        """Test TLS key log path is assigned to the SSL context when available."""
+        key_log_path = tmp_path / "tls.keys"
+        tls_config = TLS(key_log_file_path=key_log_path)
+        ctx = create_ssl_context(tls_config)
+
+        if hasattr(ctx, "keylog_filename"):
+            assert ctx.keylog_filename == str(key_log_path)
+            assert key_log_path.parent == tmp_path
+
 
 class TestTlsConfig:
     """Tests for TLS class."""
@@ -125,6 +167,9 @@ class TestTlsConfig:
         assert config.trust_all_certificates is False
         assert config.verify_hostname is True
         assert config.session_cache.enabled is True
+        assert config.client_cert_path is None
+        assert config.client_key_path is None
+        assert config.key_log_file_path is None
 
     def test_trust_all_factory(self) -> None:
         """Test TLS.trust_all() factory method."""
@@ -148,6 +193,29 @@ class TestTlsConfig:
         config = TLS.with_custom_ca(path1, path2)
 
         assert config.custom_ca_cert_paths == (path1, path2)
+
+    def test_client_key_without_cert_raises(self) -> None:
+        """Test client private key path requires a client certificate path."""
+        with pytest.raises(ConfigurationError, match="client_key_path requires"):
+            TLS(client_key_path=Path("/path/to/client.key"))
+
+    def test_sdk_client_cert_with_cert_and_key(self) -> None:
+        """Test botocore client_cert value for separate cert and key files."""
+        config = TLS(
+            client_cert_path=Path("/path/to/client.crt"),
+            client_key_path=Path("/path/to/client.key"),
+        )
+
+        assert config.sdk_client_cert == (
+            "/path/to/client.crt",
+            "/path/to/client.key",
+        )
+
+    def test_sdk_client_cert_with_combined_cert(self) -> None:
+        """Test botocore client_cert value for a combined cert/key file."""
+        config = TLS(client_cert_path=Path("/path/to/client-combined.pem"))
+
+        assert config.sdk_client_cert == "/path/to/client-combined.pem"
 
 
 class TestTlsSessionCacheConfig:

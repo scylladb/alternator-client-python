@@ -1,11 +1,12 @@
 """Tests for internal BotoConfig creation."""
 
 import contextlib
+from pathlib import Path
 
 from botocore import UNSIGNED
 
 from alternator.client import _create_boto_config
-from alternator.config import Config, RetryConfig, RetryMode, TimeoutConfig
+from alternator.config import TLS, Config, RetryConfig, RetryMode, TimeoutConfig
 
 
 class TestCreateBotoConfig:
@@ -93,6 +94,32 @@ class TestCreateBotoConfig:
         assert unsigned_config.signature_version is UNSIGNED
         assert "signature_version" not in signed_config._user_provided_options
 
+    def test_client_cert_propagated_for_https(self) -> None:
+        """TLS client certificate settings flow into BotoConfig."""
+        config = self._make_config(
+            scheme="https",
+            tls=TLS(
+                client_cert_path=Path("/path/to/client.crt"),
+                client_key_path=Path("/path/to/client.key"),
+            ),
+        )
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.client_cert == (
+            "/path/to/client.crt",
+            "/path/to/client.key",
+        )
+
+    def test_combined_client_cert_propagated_for_https(self) -> None:
+        """A combined client certificate/key file flows into BotoConfig."""
+        config = self._make_config(
+            scheme="https",
+            tls=TLS(client_cert_path=Path("/path/to/client-combined.pem")),
+        )
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.client_cert == "/path/to/client-combined.pem"
+
 
 class TestCreateAioConfig:
     """Tests for async SDK config creation."""
@@ -104,6 +131,11 @@ class TestCreateAioConfig:
         config = Config(
             seed_hosts=["localhost"],
             port=9998,
+            scheme="https",
+            tls=TLS(
+                client_cert_path=Path("/path/to/client.crt"),
+                client_key_path=Path("/path/to/client.key"),
+            ),
             retries=RetryConfig(max_attempts=4, mode=RetryMode.STANDARD),
             max_pool_connections=17,
             timeouts=TimeoutConfig(
@@ -121,6 +153,10 @@ class TestCreateAioConfig:
         assert aio_config.connect_timeout == 3.0
         assert aio_config.read_timeout == 11.0
         assert aio_config.signature_version is UNSIGNED
+        assert aio_config.client_cert == (
+            "/path/to/client.crt",
+            "/path/to/client.key",
+        )
 
 
 class TestUnsignedRequestNoAuthHeader:

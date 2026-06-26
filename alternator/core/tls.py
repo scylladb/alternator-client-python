@@ -19,27 +19,39 @@ def create_ssl_context(tls_config: TLS) -> ssl.SSLContext:
     Returns:
         Configured SSL context
     """
+    context = ssl.create_default_context()
     if tls_config.trust_all_certificates:
         # INSECURE - for development only
-        context = ssl.create_default_context()
         context.check_hostname = False
         context.verify_mode = ssl.CERT_NONE
-        return context
+    else:
+        # Configure hostname verification
+        context.check_hostname = tls_config.verify_hostname
 
-    # Create context with verification
-    context = ssl.create_default_context()
-
-    # Configure hostname verification
-    context.check_hostname = tls_config.verify_hostname
-
-    # Load custom CA certificates
-    if tls_config.custom_ca_cert_paths:
+    if not tls_config.trust_all_certificates and tls_config.custom_ca_cert_paths:
         for cert_path in tls_config.custom_ca_cert_paths:
             context.load_verify_locations(str(cert_path))
 
     # If not using system CA and custom certs provided, don't load system certs
-    if not tls_config.trust_system_ca_certs and tls_config.custom_ca_cert_paths:
+    if (
+        not tls_config.trust_all_certificates
+        and not tls_config.trust_system_ca_certs
+        and tls_config.custom_ca_cert_paths
+    ):
         context.verify_mode = ssl.CERT_REQUIRED
+
+    if tls_config.client_cert_path is not None:
+        context.load_cert_chain(
+            certfile=str(tls_config.client_cert_path),
+            keyfile=(
+                str(tls_config.client_key_path)
+                if tls_config.client_key_path is not None
+                else None
+            ),
+        )
+
+    if tls_config.key_log_file_path is not None and hasattr(context, "keylog_filename"):
+        context.keylog_filename = str(tls_config.key_log_file_path)
 
     # Configure session caching
     # Note: Python's ssl module only exposes session ticket control (OP_NO_TICKET).
