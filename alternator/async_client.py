@@ -21,7 +21,7 @@ from alternator._http import (
     create_async_http_fetcher,
     create_ssl_context,
 )
-from alternator.config import KeyRouteAffinityMode
+from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
@@ -320,6 +320,25 @@ async def _close_async_manager(manager: AsyncLiveNodesManager) -> None:
             await result
 
 
+def _create_aio_config(config: Config, *, auth_enabled: bool) -> object:
+    """Create aiobotocore AioConfig from Config settings."""
+    try:
+        from aiobotocore.config import AioConfig
+    except ImportError as e:
+        raise ImportError(
+            "aiobotocore is required for async support. "
+            "Install with: pip install alternator[async]"
+        ) from e
+
+    from botocore import UNSIGNED
+
+    kwargs = build_sdk_config_kwargs(config)
+    kwargs.pop("signature_version", None)
+    if not auth_enabled:
+        kwargs["signature_version"] = UNSIGNED
+    return AioConfig(**kwargs)
+
+
 async def _create_async_client_with_manager(
     config: Config,
     manager: AsyncLiveNodesManager,
@@ -331,7 +350,6 @@ async def _create_async_client_with_manager(
     """Create an aioboto3 client using an already initialized manager."""
     try:
         import aioboto3
-        from aiobotocore.config import AioConfig
     except ImportError as e:
         raise ImportError(
             "aioboto3 is required for async support. "
@@ -344,25 +362,13 @@ async def _create_async_client_with_manager(
     # BotoConfig is managed internally — don't let callers override it
     boto_kwargs.pop("config", None)
 
-    # Create boto config from Config settings
-    from botocore import UNSIGNED
-
     auth_enabled = apply_auth(auth, boto_kwargs)
-    aio_kwargs: dict[str, Any] = {
-        "retries": {
-            "max_attempts": config.retries.max_attempts,
-            "mode": config.retries.mode.value,
-        },
-        "max_pool_connections": config.max_pool_connections,
-    }
-    if not auth_enabled:
-        aio_kwargs["signature_version"] = UNSIGNED
-    boto_config = AioConfig(**aio_kwargs)
+    boto_config = _create_aio_config(config, auth_enabled=auth_enabled)
 
     # Create aioboto3 session and client
     # Alternator doesn't use AWS regions, but boto3 requires one;
     # default to "us-east-1" unless the caller overrides it.
-    boto_kwargs.setdefault("region_name", "us-east-1")
+    boto_kwargs.setdefault("region_name", config.aws_region)
     session = aioboto3.Session()
     client_ctx = session.client(
         "dynamodb",

@@ -5,7 +5,7 @@ import contextlib
 from botocore import UNSIGNED
 
 from alternator.client import _create_boto_config
-from alternator.config import Config, RetryConfig, RetryMode
+from alternator.config import Config, RetryConfig, RetryMode, TimeoutConfig
 
 
 class TestCreateBotoConfig:
@@ -51,6 +51,76 @@ class TestCreateBotoConfig:
         boto_config = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.max_pool_connections == 42
+
+    def test_timeouts_propagated(self) -> None:
+        """Connect/read timeout settings flow into BotoConfig."""
+        config = self._make_config(
+            timeouts=TimeoutConfig(
+                discovery_seconds=1.0,
+                connect_seconds=2.5,
+                read_seconds=7.5,
+            ),
+        )
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.connect_timeout == 2.5
+        assert boto_config.read_timeout == 7.5
+
+    def test_sdk_config_customizer_can_adjust_safe_fields(self) -> None:
+        """SDK config customizer can adjust generated config kwargs."""
+
+        def customize(kwargs: dict[str, object]) -> None:
+            kwargs["connect_timeout"] = 9.0
+            kwargs["user_agent_extra"] = "alternator-test"
+
+        config = self._make_config(sdk_config_customizer=customize)
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.connect_timeout == 9.0
+        assert boto_config.user_agent_extra == "alternator-test"
+
+    def test_sdk_config_customizer_cannot_override_signature(self) -> None:
+        """Auth-managed signature settings override customizer changes."""
+
+        def customize(kwargs: dict[str, object]) -> None:
+            kwargs["signature_version"] = "v4"
+
+        config = self._make_config(sdk_config_customizer=customize)
+
+        unsigned_config = _create_boto_config(config, auth_enabled=False)
+        signed_config = _create_boto_config(config, auth_enabled=True)
+
+        assert unsigned_config.signature_version is UNSIGNED
+        assert "signature_version" not in signed_config._user_provided_options
+
+
+class TestCreateAioConfig:
+    """Tests for async SDK config creation."""
+
+    def test_async_config_matches_sync_transport_settings(self) -> None:
+        """AioConfig receives retry, timeout, pool, and signature settings."""
+        from alternator.async_client import _create_aio_config
+
+        config = Config(
+            seed_hosts=["localhost"],
+            port=9998,
+            retries=RetryConfig(max_attempts=4, mode=RetryMode.STANDARD),
+            max_pool_connections=17,
+            timeouts=TimeoutConfig(
+                discovery_seconds=1.0,
+                connect_seconds=3.0,
+                read_seconds=11.0,
+            ),
+        )
+        aio_config = _create_aio_config(config, auth_enabled=False)
+
+        retries = aio_config._user_provided_options["retries"]
+        assert retries["max_attempts"] == 4
+        assert retries["mode"] == "standard"
+        assert aio_config.max_pool_connections == 17
+        assert aio_config.connect_timeout == 3.0
+        assert aio_config.read_timeout == 11.0
+        assert aio_config.signature_version is UNSIGNED
 
 
 class TestUnsignedRequestNoAuthHeader:

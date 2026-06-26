@@ -18,7 +18,7 @@ and intentionally deferred behavior.
 | TLS server trust | Supported | Existing API | System CA, custom CA, hostname verification, and trust-all mode exist. |
 | TLS client certificates | Missing | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS config and SDK propagation are planned. |
 | TLS key log file | Missing | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file support is planned. |
-| Transport and SDK config knobs | Partial | [#34](https://github.com/scylladb/alternator-client-python/issues/34) | Retry and pool config exist; connect/read timeout and customizer wiring are planned. |
+| Transport and SDK config knobs | Supported | [#34](https://github.com/scylladb/alternator-client-python/issues/34) | Retry, pool, connect/read timeout, region, and SDK config customizer settings are wired into sync and async SDK clients. |
 | Key route affinity | Partial | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | Partition-key cache exists; RMW rules and BatchWriteItem voting need alignment with the request-routing specification. |
 | Helper lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Helper` and `AsyncHelper` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
