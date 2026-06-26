@@ -6,10 +6,10 @@ import ssl
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from alternator.config import TlsConfig
+    from alternator.config import TLS
 
 
-def create_ssl_context(tls_config: TlsConfig) -> ssl.SSLContext:
+def create_ssl_context(tls_config: TLS) -> ssl.SSLContext:
     """
     Create an SSL context from TLS configuration.
 

@@ -16,9 +16,9 @@ from pathlib import Path
 import pytest
 
 from alternator import (
+    TLS,
     AlternatorClient,
     AlternatorConfigBuilder,
-    TlsConfig,
 )
 from alternator.config import TlsSessionCacheConfig
 from tests.integration import SCYLLA_HOST, SCYLLA_HTTPS_PORT, SKIP_INTEGRATION
@@ -54,7 +54,7 @@ class TestTlsSessionCacheAln:
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
             .with_https(
-                TlsConfig(
+                TLS(
                     custom_ca_cert_paths=(ca_path,),
                     session_cache=TlsSessionCacheConfig(enabled=True),
                 )
@@ -75,7 +75,7 @@ class TestTlsSessionCacheAln:
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
             .with_https(
-                TlsConfig(
+                TLS(
                     custom_ca_cert_paths=(ca_path,),
                     session_cache=TlsSessionCacheConfig(enabled=False),
                 )
@@ -101,7 +101,7 @@ class TestTlsSessionCacheDynamoDbApi:
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
             .with_https(
-                TlsConfig(
+                TLS(
                     custom_ca_cert_paths=(ca_path,),
                     session_cache=TlsSessionCacheConfig(enabled=True),
                 )
@@ -145,7 +145,7 @@ class TestTlsSessionCacheDynamoDbApi:
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
             .with_https(
-                TlsConfig(
+                TLS(
                     custom_ca_cert_paths=(ca_path,),
                     session_cache=TlsSessionCacheConfig(enabled=False),
                 )
@@ -204,7 +204,7 @@ class TestSslKeyLogFile:
                     AlternatorConfigBuilder()
                     .with_seeds(SCYLLA_HOST)
                     .with_port(SCYLLA_HTTPS_PORT)
-                    .with_https(TlsConfig.with_custom_ca(ca_path))
+                    .with_https(TLS.with_custom_ca(ca_path))
                     .build()
                 )
 
@@ -243,7 +243,7 @@ class TestSslKeyLogFile:
                     AlternatorConfigBuilder()
                     .with_seeds(SCYLLA_HOST)
                     .with_port(SCYLLA_HTTPS_PORT)
-                    .with_https(TlsConfig.with_custom_ca(ca_path))
+                    .with_https(TLS.with_custom_ca(ca_path))
                     .build()
                 )
 
@@ -271,7 +271,7 @@ class TestTlsSessionCacheConfig:
         from alternator.core.tls import create_ssl_context
 
         # Enabled
-        tls_enabled = TlsConfig(
+        tls_enabled = TLS(
             custom_ca_cert_paths=(ca_path,),
             session_cache=TlsSessionCacheConfig(enabled=True),
         )
@@ -279,7 +279,7 @@ class TestTlsSessionCacheConfig:
         assert not (ctx_enabled.options & ssl.OP_NO_TICKET)
 
         # Disabled
-        tls_disabled = TlsConfig(
+        tls_disabled = TLS(
             custom_ca_cert_paths=(ca_path,),
             session_cache=TlsSessionCacheConfig(enabled=False),
         )

@@ -2,7 +2,7 @@
 
 from unittest.mock import MagicMock
 
-from alternator.config import AlternatorConfig
+from alternator.config import Config
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.headers import (
     AUTH_HEADERS,
@@ -196,11 +196,11 @@ class TestCompressionHeaders:
         assert "Content-Encoding" in COMPRESSION_HEADERS
 
 
-def _make_config(*, optimize_headers: bool = True) -> AlternatorConfig:
+def _make_config(*, optimize_headers: bool = True) -> Config:
     """Create a minimal config for handler registration tests."""
     from alternator.config import HeaderOptimizationConfig
 
-    return AlternatorConfig(
+    return Config(
         seed_hosts=("localhost",),
         port=8000,
         header_optimization=HeaderOptimizationConfig(enabled=optimize_headers),

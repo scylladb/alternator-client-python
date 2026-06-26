@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from alternator._http import create_ssl_context, create_sync_http_fetcher
-from alternator.config import TlsConfig, TlsSessionCacheConfig
+from alternator.config import TLS, TlsSessionCacheConfig
 
 
 class MockHTTPHandler(BaseHTTPRequestHandler):
@@ -162,7 +162,7 @@ class TestCreateSslContext:
 
     def test_trust_all_disables_verification(self) -> None:
         """Test trust_all mode disables certificate verification."""
-        tls_config = TlsConfig.trust_all()
+        tls_config = TLS.trust_all()
         context = create_ssl_context(tls_config)
 
         assert context.verify_mode == ssl.CERT_NONE
@@ -170,7 +170,7 @@ class TestCreateSslContext:
 
     def test_system_default_enables_verification(self) -> None:
         """Test system_default enables certificate verification."""
-        tls_config = TlsConfig.system_default()
+        tls_config = TLS.system_default()
         context = create_ssl_context(tls_config)
 
         assert context.verify_mode == ssl.CERT_REQUIRED
@@ -186,13 +186,13 @@ class TestCreateSslContext:
         # This is a valid PEM structure but not a real CA
         # We'll test the path is called correctly using mock
         with patch("ssl.SSLContext.load_verify_locations") as mock_load:
-            tls_config = TlsConfig.with_custom_ca(cert_file)
+            tls_config = TLS.with_custom_ca(cert_file)
             create_ssl_context(tls_config)
             mock_load.assert_called_once_with(str(cert_file))
 
     def test_verify_hostname_can_be_disabled(self) -> None:
         """Test hostname verification can be disabled."""
-        tls_config = TlsConfig(
+        tls_config = TLS(
             trust_system_ca_certs=True,
             verify_hostname=False,
         )
@@ -202,7 +202,7 @@ class TestCreateSslContext:
 
     def test_session_cache_enabled_by_default(self) -> None:
         """Test session caching is enabled by default."""
-        tls_config = TlsConfig.system_default()
+        tls_config = TLS.system_default()
         context = create_ssl_context(tls_config)
 
         # OP_NO_TICKET should NOT be set when session cache is enabled
@@ -215,7 +215,7 @@ class TestCreateSslContext:
             cache_size=512,
             timeout_seconds=3600,
         )
-        tls_config = TlsConfig(session_cache=cache_config)
+        tls_config = TLS(session_cache=cache_config)
         context = create_ssl_context(tls_config)
 
         # Should not raise and should have reasonable settings
@@ -224,7 +224,7 @@ class TestCreateSslContext:
     def test_session_cache_disabled(self) -> None:
         """Test session caching can be disabled."""
         cache_config = TlsSessionCacheConfig(enabled=False)
-        tls_config = TlsConfig(session_cache=cache_config)
+        tls_config = TLS(session_cache=cache_config)
         context = create_ssl_context(tls_config)
 
         # OP_NO_TICKET should be set when session cache is disabled

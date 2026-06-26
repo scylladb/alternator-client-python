@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     import aiohttp
 
-    from alternator.config import TlsConfig
+    from alternator.config import TLS
 
 logger = logging.getLogger("alternator")
 
@@ -93,7 +93,7 @@ def create_sync_http_fetcher(
     return fetch_nodes
 
 
-def create_ssl_context(tls_config: TlsConfig) -> ssl.SSLContext:
+def create_ssl_context(tls_config: TLS) -> ssl.SSLContext:
     """
     Create an SSL context from TLS configuration.
 

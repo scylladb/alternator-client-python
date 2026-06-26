@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 
 from alternator.config import (
+    TLS,
     AlternatorConfig,
     AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
     KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
     TlsConfig,
@@ -18,11 +20,11 @@ from alternator.exceptions import ConfigurationError
 
 
 class TestAlternatorConfig:
-    """Tests for AlternatorConfig validation."""
+    """Tests for Config validation."""
 
     def test_valid_config(self) -> None:
         """Test creating a valid configuration."""
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["192.168.1.1", "192.168.1.2"],
             port=8000,
         )
@@ -35,19 +37,19 @@ class TestAlternatorConfig:
         with pytest.raises(
             ConfigurationError, match="At least one seed host is required"
         ):
-            AlternatorConfig(seed_hosts=[], port=8000)
+            Config(seed_hosts=[], port=8000)
 
     def test_missing_seeds_also_raises_value_error(self) -> None:
         """Test backward compat: ConfigurationError is also a ValueError."""
         with pytest.raises(ValueError, match="At least one seed host is required"):
-            AlternatorConfig(seed_hosts=[], port=8000)
+            Config(seed_hosts=[], port=8000)
 
     def test_invalid_scheme_raises(self) -> None:
         """Test that invalid scheme raises ConfigurationError."""
         with pytest.raises(
             ConfigurationError, match="scheme must be 'http' or 'https'"
         ):
-            AlternatorConfig(
+            Config(
                 seed_hosts=["localhost"],
                 port=8000,
                 scheme="ftp",
@@ -56,21 +58,21 @@ class TestAlternatorConfig:
     def test_invalid_port_zero_raises(self) -> None:
         """Test that port 0 raises ConfigurationError."""
         with pytest.raises(ConfigurationError, match="port must be 1-65535"):
-            AlternatorConfig(seed_hosts=["localhost"], port=0)
+            Config(seed_hosts=["localhost"], port=0)
 
     def test_invalid_port_negative_raises(self) -> None:
         """Test that negative port raises ConfigurationError."""
         with pytest.raises(ConfigurationError, match="port must be 1-65535"):
-            AlternatorConfig(seed_hosts=["localhost"], port=-1)
+            Config(seed_hosts=["localhost"], port=-1)
 
     def test_invalid_port_too_large_raises(self) -> None:
         """Test that port > 65535 raises ConfigurationError."""
         with pytest.raises(ConfigurationError, match="port must be 1-65535"):
-            AlternatorConfig(seed_hosts=["localhost"], port=65536)
+            Config(seed_hosts=["localhost"], port=65536)
 
     def test_default_values(self) -> None:
         """Test default configuration values."""
-        config = AlternatorConfig(seed_hosts=["localhost"], port=8000)
+        config = Config(seed_hosts=["localhost"], port=8000)
         assert config.scheme == "http"
         assert config.request_compression.algorithm == CompressionAlgorithm.NONE
         assert config.request_compression.min_size_bytes == 1024
@@ -79,6 +81,40 @@ class TestAlternatorConfig:
         assert config.node_list_polling.active_interval_ms == 1000
         assert config.node_list_polling.idle_interval_ms == 60000
         assert isinstance(config.routing_scope, ClusterScope)
+
+
+class TestDeprecatedConfigNames:
+    """Tests for deprecated compatibility names."""
+
+    def test_alternator_config_warns_and_builds_config(self) -> None:
+        """Test deprecated AlternatorConfig compatibility name."""
+        with pytest.warns(DeprecationWarning, match="AlternatorConfig"):
+            config = AlternatorConfig(seed_hosts=["localhost"], port=8000)
+
+        assert isinstance(config, Config)
+        assert config.seed_hosts == ["localhost"]
+
+    def test_tls_config_warns_and_builds_tls(self) -> None:
+        """Test deprecated TlsConfig compatibility name."""
+        with pytest.warns(DeprecationWarning, match="TlsConfig"):
+            tls = TlsConfig()
+
+        assert isinstance(tls, TLS)
+        assert tls.trust_system_ca_certs is True
+
+    def test_deprecated_tls_factory_warns(self) -> None:
+        """Test deprecated TlsConfig factory methods remain usable."""
+        with pytest.warns(DeprecationWarning, match="TlsConfig"):
+            tls = TlsConfig.system_default()
+
+        assert isinstance(tls, TLS)
+
+    def test_top_level_preferred_exports(self) -> None:
+        """Test top-level package exports preferred names."""
+        import alternator
+
+        assert alternator.Config is Config
+        assert alternator.TLS is TLS
 
 
 class TestAlternatorConfigBuilder:
@@ -117,7 +153,7 @@ class TestAlternatorConfigBuilder:
 
     def test_build_with_https_and_tls_config(self) -> None:
         """Test building config with HTTPS and custom TLS."""
-        tls = TlsConfig.trust_all()
+        tls = TLS.trust_all()
         config = (
             AlternatorConfigBuilder()
             .with_seeds("localhost")
@@ -243,24 +279,24 @@ class TestAlternatorConfigBuilder:
 
 
 class TestTlsConfig:
-    """Tests for TlsConfig factory methods."""
+    """Tests for TLS factory methods."""
 
     def test_trust_all(self) -> None:
-        """Test TlsConfig.trust_all() factory."""
-        tls = TlsConfig.trust_all()
+        """Test TLS.trust_all() factory."""
+        tls = TLS.trust_all()
         assert tls.trust_all_certificates is True
         assert tls.verify_hostname is False
 
     def test_system_default(self) -> None:
-        """Test TlsConfig.system_default() factory."""
-        tls = TlsConfig.system_default()
+        """Test TLS.system_default() factory."""
+        tls = TLS.system_default()
         assert tls.trust_system_ca_certs is True
         assert tls.trust_all_certificates is False
         assert tls.verify_hostname is True
 
     def test_with_custom_ca(self) -> None:
-        """Test TlsConfig.with_custom_ca() factory."""
-        tls = TlsConfig.with_custom_ca(
+        """Test TLS.with_custom_ca() factory."""
+        tls = TLS.with_custom_ca(
             Path("/etc/ssl/ca1.pem"),
             Path("/etc/ssl/ca2.pem"),
         )
@@ -269,7 +305,7 @@ class TestTlsConfig:
 
     def test_default_session_cache(self) -> None:
         """Test default session cache configuration."""
-        tls = TlsConfig()
+        tls = TLS()
         assert tls.session_cache.enabled is True
         assert tls.session_cache.cache_size == 1024
         assert tls.session_cache.timeout_seconds == 86400

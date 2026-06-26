@@ -33,7 +33,7 @@ from alternator.vector import enable_vector_support
 if TYPE_CHECKING:
     from types_aiobotocore_dynamodb import DynamoDBClient as AsyncDynamoDBClient
 
-    from alternator.config import AlternatorConfig
+    from alternator.config import Config
 
 logger = logging.getLogger("alternator")
 
@@ -200,7 +200,7 @@ class AsyncPartitionKeyCache:
 
 
 def _create_async_affinity_hash_computer(
-    config: AlternatorConfig,
+    config: Config,
     pk_cache: AsyncPartitionKeyCache | None,
 ) -> Callable[[str, dict[str, Any]], int | None] | None:
     """
@@ -269,7 +269,7 @@ def _create_async_affinity_hash_computer(
 
 
 async def create_async_client(
-    config: AlternatorConfig,
+    config: Config,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> AsyncDynamoDBClient:
     """
@@ -293,10 +293,10 @@ async def create_async_client(
         An async DynamoDB client with load balancing enabled
 
     Example:
-        from alternator import AlternatorConfig
+        from alternator import Config
         from alternator.async_client import create_async_client
 
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["node1.example.com"],
             port=8000,
         )
@@ -343,7 +343,7 @@ async def create_async_client(
     # BotoConfig is managed internally — don't let callers override it
     boto_kwargs.pop("config", None)
 
-    # Create boto config from AlternatorConfig settings
+    # Create boto config from Config settings
     from botocore import UNSIGNED
 
     auth_enabled = "aws_access_key_id" in boto_kwargs
@@ -453,7 +453,7 @@ class AsyncAlternatorClient:
             await client.put_item(...)
     """
 
-    def __init__(self, config: AlternatorConfig, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
+    def __init__(self, config: Config, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
         self._config = config
         self._boto_kwargs = boto_kwargs
         self._client: AsyncDynamoDBClient | None = None

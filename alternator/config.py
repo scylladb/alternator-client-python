@@ -51,7 +51,7 @@ class TlsSessionCacheConfig:
 
 
 @dataclass(frozen=True)
-class TlsConfig:
+class TLS:
     """TLS/SSL configuration for HTTPS connections."""
 
     # Certificate trust settings
@@ -66,7 +66,7 @@ class TlsConfig:
     session_cache: TlsSessionCacheConfig = field(default_factory=TlsSessionCacheConfig)
 
     @classmethod
-    def trust_all(cls) -> TlsConfig:
+    def trust_all(cls) -> TLS:
         """
         Create insecure config that trusts all certificates.
 
@@ -83,7 +83,7 @@ class TlsConfig:
             ``ALTERNATOR_ALLOW_INSECURE_TLS=1``.
         """
         msg = (
-            "TlsConfig.trust_all() disables TLS certificate verification. "
+            "TLS.trust_all() disables TLS certificate verification. "
             "This is INSECURE and should only be used for development. "
             "Set ALTERNATOR_ALLOW_INSECURE_TLS=1 to suppress this warning."
         )
@@ -97,14 +97,26 @@ class TlsConfig:
         )
 
     @classmethod
-    def system_default(cls) -> TlsConfig:
+    def system_default(cls) -> TLS:
         """Create config using system CA certificates."""
         return cls(trust_system_ca_certs=True)
 
     @classmethod
-    def with_custom_ca(cls, *cert_paths: Path) -> TlsConfig:
+    def with_custom_ca(cls, *cert_paths: Path) -> TLS:
         """Create config with custom CA certificates."""
         return cls(custom_ca_cert_paths=tuple(cert_paths))
+
+
+@dataclass(frozen=True)
+class TlsConfig(TLS):
+    """Deprecated compatibility name for :class:`TLS`."""
+
+    def __post_init__(self) -> None:
+        warnings.warn(
+            "TlsConfig is deprecated; use TLS instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
 
 @dataclass(frozen=True)
@@ -211,12 +223,12 @@ class KeyRouteAffinityConfig:
 
 
 @dataclass(frozen=True)
-class AlternatorConfig:
+class Config:
     """
     Main configuration for Alternator load balancing client.
 
     Example:
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["192.168.1.1", "192.168.1.2"],
             port=8000,
         )
@@ -243,7 +255,7 @@ class AlternatorConfig:
     )
 
     # TLS configuration (used when scheme="https")
-    tls: TlsConfig = field(default_factory=TlsConfig.system_default)
+    tls: TLS = field(default_factory=TLS.system_default)
 
     # Key route affinity for LWT optimization
     key_affinity: KeyRouteAffinityConfig = field(default_factory=KeyRouteAffinityConfig)
@@ -278,9 +290,22 @@ class AlternatorConfig:
             )
 
 
+@dataclass(frozen=True)
+class AlternatorConfig(Config):
+    """Deprecated compatibility name for :class:`Config`."""
+
+    def __post_init__(self) -> None:
+        warnings.warn(
+            "AlternatorConfig is deprecated; use Config instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        super().__post_init__()
+
+
 class AlternatorConfigBuilder:
     """
-    Fluent builder for AlternatorConfig.
+    Fluent builder for Config.
 
     Example:
         config = (
@@ -301,7 +326,7 @@ class AlternatorConfigBuilder:
         self._routing_scope: RoutingScope | None = None
         self._request_compression = RequestCompressionConfig()
         self._header_optimization = HeaderOptimizationConfig()
-        self._tls = TlsConfig.system_default()
+        self._tls = TLS.system_default()
         self._key_affinity = KeyRouteAffinityConfig()
         self._retries = RetryConfig()
         self._max_pool_connections = 200
@@ -323,9 +348,7 @@ class AlternatorConfigBuilder:
         self._scheme = "http"
         return self
 
-    def with_https(
-        self, tls_config: TlsConfig | None = None
-    ) -> AlternatorConfigBuilder:
+    def with_https(self, tls_config: TLS | None = None) -> AlternatorConfigBuilder:
         """Use HTTPS scheme with optional TLS configuration."""
         self._scheme = "https"
         if tls_config:
@@ -431,11 +454,11 @@ class AlternatorConfigBuilder:
         )
         return self
 
-    def build(self) -> AlternatorConfig:
+    def build(self) -> Config:
         """Build the configuration object."""
         from alternator.core.routing_scope import ClusterScope
 
-        return AlternatorConfig(
+        return Config(
             seed_hosts=tuple(self._seed_hosts),
             port=self._port,
             scheme=self._scheme,

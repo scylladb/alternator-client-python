@@ -15,8 +15,8 @@ import pytest
 
 from alternator import (
     AlternatorClient,
-    AlternatorConfig,
     AlternatorResource,
+    Config,
 )
 from alternator.vector import Vector
 from tests.integration import (
@@ -31,7 +31,7 @@ pytestmark = [
 ]
 
 
-config = AlternatorConfig(seed_hosts=[SCYLLA_HOST], port=SCYLLA_PORT, scheme="http")
+config = Config(seed_hosts=[SCYLLA_HOST], port=SCYLLA_PORT, scheme="http")
 
 
 def table_name() -> str:

@@ -21,7 +21,7 @@ from alternator.core.request import extract_operation_name, extract_request_para
 from alternator.exceptions import NoNodesAvailableError
 
 if TYPE_CHECKING:
-    from alternator.config import AlternatorConfig
+    from alternator.config import Config
     from alternator.core.live_nodes import NodeList
 
 # Type alias for DynamoDB request parameters (inherently flexible key-value structure)
@@ -42,7 +42,7 @@ class _HasNodes(Protocol):
 def _register_alternator_handlers(
     events: BaseEventHooks,
     manager: _HasNodes,
-    config: AlternatorConfig,
+    config: Config,
     compute_affinity_hash: Callable[[str, DynamoDBParams], int | None] | None = None,
     *,
     auth_enabled: bool = False,

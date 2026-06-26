@@ -7,7 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from alternator.config import AlternatorConfig, NodeListPollingConfig
+from alternator.config import Config, NodeListPollingConfig
 from alternator.core.live_nodes import (
     LiveNodesManagerCore,
     NodeList,
@@ -117,9 +117,9 @@ class TestLiveNodesManagerCore:
     """Tests for LiveNodesManagerCore."""
 
     @pytest.fixture
-    def config(self) -> AlternatorConfig:
+    def config(self) -> Config:
         """Create test configuration."""
-        return AlternatorConfig(
+        return Config(
             seed_hosts=["localhost"],
             port=8000,
             node_list_polling=NodeListPollingConfig(
@@ -127,13 +127,13 @@ class TestLiveNodesManagerCore:
             ),
         )
 
-    def test_initial_state_empty(self, config: AlternatorConfig) -> None:
+    def test_initial_state_empty(self, config: Config) -> None:
         """Test initial state has empty node list."""
         manager = LiveNodesManagerCore(config)
         assert len(manager.nodes) == 0
         assert manager.nodes.scope_name == ""
 
-    def test_update_nodes(self, config: AlternatorConfig) -> None:
+    def test_update_nodes(self, config: Config) -> None:
         """Test updating node list."""
         manager = LiveNodesManagerCore(config)
         scope = ClusterScope()
@@ -145,7 +145,7 @@ class TestLiveNodesManagerCore:
         assert "host1" in manager.nodes.nodes
         assert "host2" in manager.nodes.nodes
 
-    def test_next_node_round_robin(self, config: AlternatorConfig) -> None:
+    def test_next_node_round_robin(self, config: Config) -> None:
         """Test next_node uses round-robin selection."""
         manager = LiveNodesManagerCore(config)
         manager.update_nodes(["a", "b", "c"], ClusterScope())
@@ -153,12 +153,12 @@ class TestLiveNodesManagerCore:
         selections = [manager.next_node() for _ in range(6)]
         assert selections == ["a", "b", "c", "a", "b", "c"]
 
-    def test_next_node_returns_none_when_empty(self, config: AlternatorConfig) -> None:
+    def test_next_node_returns_none_when_empty(self, config: Config) -> None:
         """Test next_node returns None when no nodes available."""
         manager = LiveNodesManagerCore(config)
         assert manager.next_node() is None
 
-    def test_active_refresh_interval(self, config: AlternatorConfig) -> None:
+    def test_active_refresh_interval(self, config: Config) -> None:
         """Test active refresh interval when recently active."""
         manager = LiveNodesManagerCore(config)
         manager.update_nodes(["host1"], ClusterScope())
@@ -170,9 +170,9 @@ class TestLiveNodesManagerCore:
         interval = manager.get_refresh_interval_seconds()
         assert interval == 0.1  # 100ms
 
-    def test_idle_refresh_interval(self, config: AlternatorConfig) -> None:
+    def test_idle_refresh_interval(self, config: Config) -> None:
         """Test idle refresh interval after inactivity."""
-        config_short = AlternatorConfig(
+        config_short = Config(
             seed_hosts=["localhost"],
             port=8000,
             node_list_polling=NodeListPollingConfig(
@@ -188,7 +188,7 @@ class TestLiveNodesManagerCore:
         interval = manager.get_refresh_interval_seconds()
         assert interval == 0.2  # 200ms (idle)
 
-    def test_nodes_property_thread_safe(self, config: AlternatorConfig) -> None:
+    def test_nodes_property_thread_safe(self, config: Config) -> None:
         """Test nodes property is thread-safe."""
         manager = LiveNodesManagerCore(config)
         results: list[NodeList] = []
@@ -247,7 +247,7 @@ class TestRoundRobinConcurrency:
 
     def test_concurrent_update_and_select(self) -> None:
         """Test concurrent node updates and selections."""
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["localhost"],
             port=8000,
         )

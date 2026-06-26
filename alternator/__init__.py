@@ -8,9 +8,9 @@ Quick Start
 -----------
 Synchronous usage::
 
-    from alternator import AlternatorConfig, AlternatorClient
+    from alternator import Config, AlternatorClient
 
-    config = AlternatorConfig(
+    config = Config(
         seed_hosts=["192.168.1.1", "192.168.1.2"],
         port=8000,
     )
@@ -24,17 +24,17 @@ Synchronous usage::
 
 Asynchronous usage::
 
-    from alternator import AlternatorConfig
+    from alternator import Config
     from alternator.async_client import AsyncAlternatorClient
 
-    config = AlternatorConfig(seed_hosts=["192.168.1.1"], port=8000)
+    config = Config(seed_hosts=["192.168.1.1"], port=8000)
 
     async with AsyncAlternatorClient(config) as client:
         response = await client.list_tables()
 
 Configuration
 -------------
-Use ``AlternatorConfig`` for direct configuration or ``AlternatorConfigBuilder``
+Use ``Config`` for direct configuration or ``AlternatorConfigBuilder``
 for a fluent builder pattern::
 
     from alternator import AlternatorConfigBuilder, CompressionAlgorithm
@@ -52,9 +52,9 @@ Key Classes
 -----------
 - ``AlternatorClient``: Sync context manager for load-balanced connections
 - ``AsyncAlternatorClient``: Async context manager for load-balanced connections
-- ``AlternatorConfig``: Main configuration dataclass
+- ``Config``: Main configuration dataclass
 - ``AlternatorConfigBuilder``: Fluent builder for configuration
-- ``TlsConfig``: TLS/SSL configuration
+- ``TLS``: TLS/SSL configuration
 - ``ClusterScope``, ``DatacenterScope``, ``RackScope``: Routing scope controls
 
 Exceptions
@@ -84,9 +84,11 @@ from alternator.client import (
     create_resource,
 )
 from alternator.config import (
+    TLS,
     AlternatorConfig,
     AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
     HeaderOptimizationConfig,
     KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
@@ -126,6 +128,8 @@ __all__ = [
     "close_async_client",
     "create_async_client",
     # Config
+    "Config",
+    "TLS",
     "AlternatorConfig",
     "AlternatorConfigBuilder",
     "CompressionAlgorithm",

@@ -13,8 +13,8 @@ import pytest
 
 from alternator import (
     AlternatorClient,
-    AlternatorConfig,
     AlternatorConfigBuilder,
+    Config,
     KeyRouteAffinityMode,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
@@ -43,7 +43,7 @@ def _create_table(client: AlternatorClient, table_name: str) -> None:
     waiter.wait(TableName=table_name)
 
 
-def _make_rmw_config(table_name: str) -> AlternatorConfig:
+def _make_rmw_config(table_name: str) -> Config:
     """Create config with RMW affinity mode."""
     return (
         AlternatorConfigBuilder()
@@ -57,7 +57,7 @@ def _make_rmw_config(table_name: str) -> AlternatorConfig:
     )
 
 
-def _make_any_write_config(table_name: str) -> AlternatorConfig:
+def _make_any_write_config(table_name: str) -> Config:
     """Create config with ANY_WRITE affinity mode."""
     return (
         AlternatorConfigBuilder()

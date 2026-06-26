@@ -15,10 +15,10 @@ from pathlib import Path
 import pytest
 
 from alternator import (
+    TLS,
     AlternatorClient,
-    AlternatorConfig,
     AlternatorConfigBuilder,
-    TlsConfig,
+    Config,
 )
 from tests.integration import (
     SCYLLA_HOST,
@@ -34,9 +34,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def http_config() -> AlternatorConfig:
+def http_config() -> Config:
     """Create HTTP test configuration."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
         scheme="http",
@@ -44,7 +44,7 @@ def http_config() -> AlternatorConfig:
 
 
 @pytest.fixture
-def https_config() -> AlternatorConfig | None:
+def https_config() -> Config | None:
     """Create HTTPS test configuration with trust-all for self-signed certs."""
     ca_path = Path(__file__).resolve().parents[1] / "scylla" / "db.crt"
     if not ca_path.exists():
@@ -53,7 +53,7 @@ def https_config() -> AlternatorConfig | None:
         AlternatorConfigBuilder()
         .with_seeds(SCYLLA_HOST)
         .with_port(SCYLLA_HTTPS_PORT)
-        .with_https(TlsConfig.with_custom_ca(ca_path))
+        .with_https(TLS.with_custom_ca(ca_path))
         .build()
     )
 
@@ -70,14 +70,14 @@ def ca_path() -> Path:
 class TestHttpConnectionReuseSerial:
     """Test HTTP connection reuse with serial requests."""
 
-    def test_serial_requests_succeed(self, http_config: AlternatorConfig) -> None:
+    def test_serial_requests_succeed(self, http_config: Config) -> None:
         """Test that multiple serial requests over HTTP succeed without errors."""
         with AlternatorClient(http_config) as client:
             for _ in range(20):
                 response = client.list_tables()
                 assert "TableNames" in response
 
-    def test_serial_crud_operations(self, http_config: AlternatorConfig) -> None:
+    def test_serial_crud_operations(self, http_config: Config) -> None:
         """Test serial CRUD operations reuse connections."""
         table_name = f"test_conn_{uuid.uuid4().hex[:8]}"
         with AlternatorClient(http_config) as client:
@@ -109,18 +109,14 @@ class TestHttpConnectionReuseSerial:
 class TestHttpsConnectionReuseSerial:
     """Test HTTPS connection reuse with serial requests."""
 
-    def test_serial_requests_succeed(
-        self, https_config: AlternatorConfig, ca_path: Path
-    ) -> None:
+    def test_serial_requests_succeed(self, https_config: Config, ca_path: Path) -> None:
         """Test that multiple serial HTTPS requests succeed."""
         with AlternatorClient(https_config, verify=str(ca_path)) as client:
             for _ in range(20):
                 response = client.list_tables()
                 assert "TableNames" in response
 
-    def test_serial_crud_over_https(
-        self, https_config: AlternatorConfig, ca_path: Path
-    ) -> None:
+    def test_serial_crud_over_https(self, https_config: Config, ca_path: Path) -> None:
         """Test serial CRUD over HTTPS reuses connections."""
         table_name = f"test_https_{uuid.uuid4().hex[:8]}"
         with AlternatorClient(https_config, verify=str(ca_path)) as client:
@@ -151,7 +147,7 @@ class TestHttpsConnectionReuseSerial:
 class TestHttpConnectionReuseParallel:
     """Test HTTP connection reuse with parallel requests."""
 
-    def test_parallel_list_tables(self, http_config: AlternatorConfig) -> None:
+    def test_parallel_list_tables(self, http_config: Config) -> None:
         """Test parallel requests over HTTP all succeed."""
         with AlternatorClient(http_config) as client:
             errors: list[Exception] = []
@@ -176,7 +172,7 @@ class TestHttpConnectionReuseParallel:
             assert len(results) == 50
             assert all("TableNames" in r for r in results)
 
-    def test_parallel_writes(self, http_config: AlternatorConfig) -> None:
+    def test_parallel_writes(self, http_config: Config) -> None:
         """Test parallel write operations over HTTP."""
         table_name = f"test_par_{uuid.uuid4().hex[:8]}"
         with AlternatorClient(http_config) as client:
@@ -228,7 +224,7 @@ class TestHttpsConnectionReuseParallel:
     """Test HTTPS connection reuse with parallel requests."""
 
     def test_parallel_list_tables_https(
-        self, https_config: AlternatorConfig, ca_path: Path
+        self, https_config: Config, ca_path: Path
     ) -> None:
         """Test parallel HTTPS requests all succeed."""
         with AlternatorClient(https_config, verify=str(ca_path)) as client:
@@ -253,9 +249,7 @@ class TestHttpsConnectionReuseParallel:
             assert len(errors) == 0, f"Parallel HTTPS requests had errors: {errors}"
             assert len(results) == 50
 
-    def test_parallel_writes_https(
-        self, https_config: AlternatorConfig, ca_path: Path
-    ) -> None:
+    def test_parallel_writes_https(self, https_config: Config, ca_path: Path) -> None:
         """Test parallel write operations over HTTPS."""
         table_name = f"test_https_par_{uuid.uuid4().hex[:8]}"
         with AlternatorClient(https_config, verify=str(ca_path)) as client:
@@ -299,7 +293,7 @@ class TestConnectionPoolingValidation:
     """Test connection pooling behavior."""
 
     def test_many_serial_requests_dont_exhaust_resources(
-        self, http_config: AlternatorConfig
+        self, http_config: Config
     ) -> None:
         """Test that many serial requests don't exhaust file descriptors or connections."""
         with AlternatorClient(http_config) as client:
@@ -308,9 +302,7 @@ class TestConnectionPoolingValidation:
                 response = client.list_tables()
                 assert "TableNames" in response
 
-    def test_high_concurrency_doesnt_exhaust_pool(
-        self, http_config: AlternatorConfig
-    ) -> None:
+    def test_high_concurrency_doesnt_exhaust_pool(self, http_config: Config) -> None:
         """Test high concurrency doesn't exhaust the connection pool."""
         with AlternatorClient(http_config) as client:
             errors: list[Exception] = []
@@ -332,7 +324,7 @@ class TestConnectionPoolingValidation:
 
             assert len(errors) == 0, f"Connection pool exhaustion: {errors}"
 
-    def test_connection_reuse_rate(self, http_config: AlternatorConfig) -> None:
+    def test_connection_reuse_rate(self, http_config: Config) -> None:
         """Test that connections are being reused by verifying consistent throughput.
 
         If connections were not being reused, we'd see degraded performance

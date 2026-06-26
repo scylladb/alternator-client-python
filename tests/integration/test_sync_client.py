@@ -12,9 +12,9 @@ import pytest
 
 from alternator import (
     AlternatorClient,
-    AlternatorConfig,
     AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
     KeyRouteAffinityMode,
     close_client,
     create_client,
@@ -33,9 +33,9 @@ pytestmark = [
 
 
 @pytest.fixture
-def config() -> AlternatorConfig:
+def config() -> Config:
     """Create test configuration."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
         scheme="http",
@@ -51,16 +51,14 @@ def table_name() -> str:
 class TestBasicOperations:
     """Test basic DynamoDB operations through the load-balanced client."""
 
-    def test_list_tables(self, config: AlternatorConfig) -> None:
+    def test_list_tables(self, config: Config) -> None:
         """Test listing tables."""
         with AlternatorClient(config) as client:
             response = client.list_tables()
             assert "TableNames" in response
             assert isinstance(response["TableNames"], list)
 
-    def test_create_and_delete_table(
-        self, config: AlternatorConfig, table_name: str
-    ) -> None:
+    def test_create_and_delete_table(self, config: Config, table_name: str) -> None:
         """Test creating and deleting a table."""
         with AlternatorClient(config) as client:
             # Create table
@@ -86,7 +84,7 @@ class TestBasicOperations:
             waiter = client.get_waiter("table_not_exists")
             waiter.wait(TableName=table_name)
 
-    def test_put_and_get_item(self, config: AlternatorConfig, table_name: str) -> None:
+    def test_put_and_get_item(self, config: Config, table_name: str) -> None:
         """Test putting and getting an item."""
         with AlternatorClient(config) as client:
             # Create table
@@ -126,7 +124,7 @@ class TestBasicOperations:
 class TestLoadBalancing:
     """Test load balancing functionality."""
 
-    def test_requests_distributed(self, config: AlternatorConfig) -> None:
+    def test_requests_distributed(self, config: Config) -> None:
         """Test that requests are distributed across nodes."""
         with AlternatorClient(config) as client:
             # Make multiple requests
@@ -248,7 +246,7 @@ class TestKeyAffinity:
 class TestManualResourceManagement:
     """Test manual client lifecycle management."""
 
-    def test_create_and_close(self, config: AlternatorConfig) -> None:
+    def test_create_and_close(self, config: Config) -> None:
         """Test manual create/close without context manager."""
         client = create_client(config)
         try:
@@ -257,7 +255,7 @@ class TestManualResourceManagement:
         finally:
             close_client(client)
 
-    def test_double_close_safe(self, config: AlternatorConfig) -> None:
+    def test_double_close_safe(self, config: Config) -> None:
         """Test that closing twice is safe."""
         client = create_client(config)
         close_client(client)
@@ -267,7 +265,7 @@ class TestManualResourceManagement:
 class TestErrorHandling:
     """Test error handling scenarios."""
 
-    def test_invalid_table_raises(self, config: AlternatorConfig) -> None:
+    def test_invalid_table_raises(self, config: Config) -> None:
         """Test that accessing invalid table raises appropriate error."""
         with (
             AlternatorClient(config) as client,
@@ -547,13 +545,13 @@ class TestTLSConfiguration:
     def test_tls_custom_ca(self) -> None:
         """Test TLS with custom CA certificate (self-signed cert acts as CA).
 
-        Note: TlsConfig affects node discovery (/localnodes). For boto3
+        Note: TLS affects node discovery (/localnodes). For boto3
         connections, we also pass ``verify=<ca_path>`` so botocore uses
         the same CA bundle.
         """
         from pathlib import Path
 
-        from alternator import TlsConfig
+        from alternator import TLS
 
         ca_path = Path(__file__).resolve().parents[1] / "scylla" / "db.crt"
         if not ca_path.exists():
@@ -563,7 +561,7 @@ class TestTLSConfiguration:
             AlternatorConfigBuilder()
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(TlsConfig.with_custom_ca(ca_path))
+            .with_https(TLS.with_custom_ca(ca_path))
             .build()
         )
 
@@ -574,17 +572,17 @@ class TestTLSConfiguration:
     def test_tls_trust_all(self) -> None:
         """Test TLS with trust-all mode (insecure, for testing only).
 
-        Note: TlsConfig.trust_all() affects node discovery. For boto3
+        Note: TLS.trust_all() affects node discovery. For boto3
         connections, we also pass ``verify=False`` so botocore skips
         certificate verification.
         """
-        from alternator import TlsConfig
+        from alternator import TLS
 
         config = (
             AlternatorConfigBuilder()
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(TlsConfig.trust_all())
+            .with_https(TLS.trust_all())
             .build()
         )
 
@@ -599,13 +597,13 @@ class TestTLSConfiguration:
         """
         from botocore.exceptions import SSLError
 
-        from alternator import TlsConfig
+        from alternator import TLS
 
         config = (
             AlternatorConfigBuilder()
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(TlsConfig.system_default())
+            .with_https(TLS.system_default())
             .build()
         )
 

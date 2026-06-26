@@ -6,15 +6,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from alternator.async_client import AsyncPartitionKeyCache
-from alternator.config import AlternatorConfig
+from alternator.config import Config
 from alternator.core.live_nodes import AsyncLiveNodesManager, NoNodesAvailableError
 from alternator.core.routing_scope import ClusterScope, DatacenterScope
 
 
 @pytest.fixture
-def config() -> AlternatorConfig:
+def config() -> Config:
     """Create test config."""
-    return AlternatorConfig(
+    return Config(
         seed_hosts=["192.168.1.1"],
         port=8000,
         scheme="http",
@@ -25,7 +25,7 @@ class TestAsyncLiveNodesManager:
     """Tests for AsyncLiveNodesManager."""
 
     @pytest.mark.asyncio
-    async def test_start_stop_lifecycle(self, config: AlternatorConfig) -> None:
+    async def test_start_stop_lifecycle(self, config: Config) -> None:
         """Test manager start/stop lifecycle."""
 
         async def mock_fetch(url: str) -> list[str]:
@@ -45,7 +45,7 @@ class TestAsyncLiveNodesManager:
         assert manager._refresh_task is None
 
     @pytest.mark.asyncio
-    async def test_next_node_uri_format(self, config: AlternatorConfig) -> None:
+    async def test_next_node_uri_format(self, config: Config) -> None:
         """Test next_node_uri returns correctly formatted URI."""
 
         async def mock_fetch(url: str) -> list[str]:
@@ -59,9 +59,7 @@ class TestAsyncLiveNodesManager:
         assert ":8000" in uri
 
     @pytest.mark.asyncio
-    async def test_next_node_uri_raises_when_empty(
-        self, config: AlternatorConfig
-    ) -> None:
+    async def test_next_node_uri_raises_when_empty(self, config: Config) -> None:
         """Test next_node_uri raises when no nodes available."""
 
         async def mock_fetch(url: str) -> list[str]:
@@ -84,7 +82,7 @@ class TestAsyncLiveNodesManager:
                 return []
             return ["192.168.1.1"]
 
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=["192.168.1.1"],
             port=8000,
             routing_scope=DatacenterScope(datacenter="dc1"),
@@ -100,7 +98,7 @@ class TestAsyncLiveNodesManager:
         assert "dc=" not in call_urls[1]
 
     @pytest.mark.asyncio
-    async def test_url_construction(self, config: AlternatorConfig) -> None:
+    async def test_url_construction(self, config: Config) -> None:
         """Test build_localnodes_url constructs correct URL."""
         manager = AsyncLiveNodesManager(config, lambda _: [])
 
@@ -108,9 +106,7 @@ class TestAsyncLiveNodesManager:
         assert url == "http://192.168.1.1:8000/localnodes"
 
     @pytest.mark.asyncio
-    async def test_url_construction_with_dc_scope(
-        self, config: AlternatorConfig
-    ) -> None:
+    async def test_url_construction_with_dc_scope(self, config: Config) -> None:
         """Test URL construction with datacenter scope."""
         manager = AsyncLiveNodesManager(config, lambda _: [])
 
@@ -120,7 +116,7 @@ class TestAsyncLiveNodesManager:
         assert url == "http://192.168.1.1:8000/localnodes?dc=dc1"
 
     @pytest.mark.asyncio
-    async def test_round_robin_selection(self, config: AlternatorConfig) -> None:
+    async def test_round_robin_selection(self, config: Config) -> None:
         """Test round-robin selection works."""
 
         async def mock_fetch(url: str) -> list[str]:
@@ -134,9 +130,7 @@ class TestAsyncLiveNodesManager:
         assert nodes == ["a", "b", "c", "a", "b", "c"]
 
     @pytest.mark.asyncio
-    async def test_background_refresh_updates_nodes(
-        self, config: AlternatorConfig
-    ) -> None:
+    async def test_background_refresh_updates_nodes(self, config: Config) -> None:
         """Test that background refresh updates node list."""
         call_count = 0
 
@@ -148,7 +142,7 @@ class TestAsyncLiveNodesManager:
         # Config with fast refresh
         from alternator.config import NodeListPollingConfig
 
-        fast_config = AlternatorConfig(
+        fast_config = Config(
             seed_hosts=["192.168.1.1"],
             port=8000,
             node_list_polling=NodeListPollingConfig(active_interval_ms=50),
@@ -174,9 +168,7 @@ class TestAsyncLiveNodesManager:
         assert manager.nodes.nodes != initial_nodes
 
     @pytest.mark.asyncio
-    async def test_refresh_failure_keeps_existing_nodes(
-        self, config: AlternatorConfig
-    ) -> None:
+    async def test_refresh_failure_keeps_existing_nodes(self, config: Config) -> None:
         """Test that refresh failure preserves existing node list."""
         first_call = True
 

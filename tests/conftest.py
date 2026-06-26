@@ -63,10 +63,10 @@ def scylla_version() -> ScyllaVersion | None:
         return None
 
     try:
-        from alternator import AlternatorConfig, close_client, create_client
+        from alternator import Config, close_client, create_client
         from tests.integration.scylla_version import detect_version_from_cluster
 
-        config = AlternatorConfig(
+        config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
             scheme="http",
