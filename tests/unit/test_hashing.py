@@ -103,6 +103,16 @@ class TestHashAttributeValueBinaryVectors:
 class TestTypeCollisionPrevention:
     """Tests that same content with different types produce different hashes."""
 
+    def test_string_number_binary_12345_vectors_are_distinct(self) -> None:
+        string_hash = hash_attribute_value("S", "12345")
+        number_hash = hash_attribute_value("N", "12345")
+        binary_hash = hash_attribute_value("B", b"12345")
+
+        assert string_hash == -6122888897254035317
+        assert number_hash == -3190731486301745196
+        assert binary_hash == -3752463870508600385
+        assert len({string_hash, number_hash, binary_hash}) == 3
+
     def test_string_vs_number_42(self) -> None:
         string_hash = hash_attribute_value("S", "42")
         number_hash = hash_attribute_value("N", "42")

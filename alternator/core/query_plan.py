@@ -16,8 +16,8 @@ class LazyQueryPlan(Iterator[str]):
     ordering across all clients.
 
     Truly lazy: each call to ``__next__`` picks a random node from the
-    remaining pool via incremental Fisher-Yates (seeded for determinism)
-    and swaps it into place.  No upfront shuffle is performed.
+    remaining pool, removes it by replacing it with the last remaining node,
+    and then truncates the pool. No upfront shuffle is performed.
 
     Yields raw node addresses (e.g. ``"192.168.1.1"``).
 
@@ -31,21 +31,17 @@ class LazyQueryPlan(Iterator[str]):
     ) -> None:
         self._nodes = list(nodes)
         self._rng = DeterministicRand(seed)
-        self._index = 0
 
     def __next__(self) -> str:
-        if self._index >= len(self._nodes):
+        if not self._nodes:
             raise StopIteration
 
-        # Incremental Fisher-Yates: pick a random node from the remaining
-        # pool [_index, len) and swap it to the current position.
-        remaining = len(self._nodes) - self._index
-        pick = self._index + self._rng.intn(remaining)
-        self._nodes[self._index], self._nodes[pick] = (
-            self._nodes[pick],
-            self._nodes[self._index],
-        )
+        # Go/Java-compatible pick-and-remove: pick from the current pool,
+        # return that node, then fill its slot with the last remaining node.
+        pick = self._rng.intn(len(self._nodes))
+        node = self._nodes[pick]
+        last = self._nodes.pop()
+        if pick < len(self._nodes):
+            self._nodes[pick] = last
 
-        node = self._nodes[self._index]
-        self._index += 1
         return node

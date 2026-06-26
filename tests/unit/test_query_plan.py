@@ -125,9 +125,13 @@ class TestLazyQueryPlanDistribution:
         assert set(plan) == {"a", "b", "c"}
 
 
-# Sorted node list matching the spec: node1..node10 sorted lexicographically
-_SPEC_NODES = [f"node{i}.example.com:8043" for i in range(1, 11)]
-_SPEC_NODES.sort()
+# Raw spec fixture order from the cross-language LazyQueryPlan vectors.
+_RAW_SPEC_NODES = [f"node{i}.example.com:8043" for i in range(1, 11)]
+
+# Production nodes are sorted lexicographically before LazyQueryPlan sees them.
+_SORTED_SPEC_NODES = sorted(_RAW_SPEC_NODES)
+
+_SIX_ACTIVE_NODES = [f"node{i}.example.com:8043" for i in range(1, 7)]
 
 MAX_INT64 = (1 << 63) - 1
 
@@ -143,20 +147,49 @@ class TestDeterministicVectors:
     @pytest.mark.parametrize(
         "seed, expected_first_6",
         [
-            (42, ["node5", "node9", "node6", "node4", "node1", "node3"]),
-            (123, ["node5", "node10", "node1", "node2", "node9", "node4"]),
-            (999, ["node4", "node5", "node10", "node3", "node2", "node7"]),
-            (0, ["node4", "node10", "node3", "node7", "node9", "node6"]),
-            (-1, ["node10", "node5", "node2", "node1", "node9", "node6"]),
-            (12345, ["node3", "node5", "node2", "node9", "node1", "node10"]),
-            (MAX_INT64, ["node10", "node7", "node9", "node3", "node5", "node8"]),
+            (42, ["node6", "node9", "node5", "node2", "node7", "node1"]),
+            (123, ["node6", "node1", "node4", "node3", "node10", "node5"]),
+            (999, ["node5", "node10", "node4", "node1", "node2", "node3"]),
+            (0, ["node5", "node1", "node2", "node10", "node6", "node8"]),
+            (-1, ["node2", "node5", "node1", "node3", "node6", "node10"]),
+            (12345, ["node4", "node5", "node1", "node7", "node6", "node8"]),
+            (MAX_INT64, ["node2", "node7", "node8", "node1", "node10", "node4"]),
         ],
         ids=["seed42", "seed123", "seed999", "seed0", "seed-1", "seed12345", "seedMAX"],
     )
-    def test_spec_vector(self, seed: int, expected_first_6: list[str]) -> None:
-        """Verify shuffle matches the deterministic spec vectors."""
-        plan = LazyQueryPlan(nodes=_SPEC_NODES, seed=seed)
+    def test_raw_spec_vector(self, seed: int, expected_first_6: list[str]) -> None:
+        """Verify raw pick-and-remove vectors from the cross-language spec."""
+        plan = LazyQueryPlan(nodes=_RAW_SPEC_NODES, seed=seed)
         actual = [_node_short(next(plan)) for _ in range(6)]
         assert actual == expected_first_6, (
             f"seed={seed}: expected {expected_first_6}, got {actual}"
         )
+
+    @pytest.mark.parametrize(
+        "seed, expected_first_6",
+        [
+            (42, ["node5", "node8", "node4", "node10", "node6", "node1"]),
+            (123, ["node5", "node1", "node3", "node2", "node9", "node4"]),
+            (999, ["node4", "node9", "node3", "node1", "node10", "node2"]),
+            (0, ["node4", "node1", "node10", "node9", "node5", "node7"]),
+            (-1, ["node10", "node4", "node1", "node2", "node5", "node9"]),
+            (12345, ["node3", "node4", "node1", "node6", "node5", "node7"]),
+            (MAX_INT64, ["node10", "node6", "node7", "node1", "node9", "node3"]),
+        ],
+        ids=["seed42", "seed123", "seed999", "seed0", "seed-1", "seed12345", "seedMAX"],
+    )
+    def test_sorted_affinity_vector(
+        self, seed: int, expected_first_6: list[str]
+    ) -> None:
+        """Verify vectors for production's lexicographically sorted node order."""
+        plan = LazyQueryPlan(nodes=_SORTED_SPEC_NODES, seed=seed)
+        actual = [_node_short(next(plan)) for _ in range(6)]
+        assert actual == expected_first_6, (
+            f"seed={seed}: expected {expected_first_6}, got {actual}"
+        )
+
+    def test_six_active_nodes_vector(self) -> None:
+        """Verify the 6-active-node vector where natural and lexicographic order match."""
+        plan = LazyQueryPlan(nodes=_SIX_ACTIVE_NODES, seed=42)
+        actual = [_node_short(next(plan)) for _ in range(6)]
+        assert actual == ["node6", "node3", "node1", "node4", "node2", "node5"]
