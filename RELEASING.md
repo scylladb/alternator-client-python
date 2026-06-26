@@ -22,7 +22,8 @@ default-enabled node health/quarantine behavior.
 
 Release notes for capability work should call out auth defaults, routing
 fallback behavior, deprecated-name migration, key-affinity behavior, and whether
-node health remains planning-only.
+node health remains planning-only. Use
+[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) as the release-note source.
 
 ### 1. Update Version
 
