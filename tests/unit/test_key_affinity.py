@@ -1,11 +1,14 @@
 """Tests for key route affinity module."""
 
+import contextlib
 import copy
 import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock
+
+from botocore.awsrequest import AWSPreparedRequest
 
 from alternator.config import Config
 from alternator.core.handlers import _register_alternator_handlers
@@ -21,6 +24,7 @@ from alternator.core.key_affinity import (
     should_use_affinity,
 )
 from alternator.core.live_nodes import NodeList
+from alternator.core.request import extract_request_params
 
 
 def _batch_write_routing_target(
@@ -302,6 +306,53 @@ class TestSelectAffinityNode:
                 get_pk_name={"orders": "pk"}.get,
             )
             == "c"
+        )
+
+    def test_single_put_item_binary_pk_decodes_prepared_json(self) -> None:
+        """Real botocore JSON base64 binary values are decoded before hashing."""
+        import boto3
+        from botocore import UNSIGNED
+        from botocore.config import Config as BotoConfig
+
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        binary_value = b"\x00\x01stable"
+        expected = AffinitySelector().select(
+            nodes,
+            hash_attribute_value("B", binary_value),
+        )
+        captured_params: dict[str, Any] = {}
+
+        client = boto3.client(
+            "dynamodb",
+            endpoint_url="http://localhost:1",
+            region_name="us-east-1",
+            config=BotoConfig(signature_version=UNSIGNED),
+        )
+
+        def capture_request(request: AWSPreparedRequest, **_: object) -> None:
+            captured_params.update(extract_request_params(request))
+            raise RuntimeError("captured")
+
+        client.meta.events.register_last(
+            "before-send.dynamodb.PutItem", capture_request
+        )
+
+        with contextlib.suppress(RuntimeError):
+            client.put_item(
+                TableName="orders",
+                Item={"pk": {"B": binary_value}},
+            )
+
+        assert captured_params["Item"]["pk"]["B"] == "AAFzdGFibGU="
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="PutItem",
+                params=captured_params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == expected
         )
 
     def test_batch_write_single_put_selects_node(self) -> None:
