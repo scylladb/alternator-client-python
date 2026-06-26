@@ -17,6 +17,7 @@ from botocore.config import Config as BotoConfig
 from alternator._constants import MANAGER_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
 from alternator.config import KeyRouteAffinityMode
+from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
@@ -32,7 +33,7 @@ if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
     from mypy_boto3_dynamodb.service_resource import DynamoDBServiceResource
 
-    from alternator.config import Config
+    from alternator.config import Auth, Config
 
 logger = logging.getLogger("alternator")
 
@@ -221,6 +222,8 @@ def _create_affinity_hash_computer(
 
 def create_client(
     config: Config,
+    *,
+    auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBClient:
     """
@@ -230,14 +233,13 @@ def create_client(
     transparently distributes requests across cluster nodes.
 
     Note:
-        When ``optimize_headers`` is enabled, authentication headers are
-        only preserved if credentials are passed explicitly via
-        ``aws_access_key_id`` in *boto_kwargs*. Unlike a regular boto3
-        DynamoDB client, credentials from environment variables or
-        ``~/.aws/credentials`` are not detected for this purpose.
+        Authentication is disabled by default. Alternator authentication
+        currently supports only static credentials; pass
+        ``auth=Auth.static_credentials(...)`` to enable request signing.
 
     Args:
         config: Alternator configuration
+        auth: Explicit Alternator auth settings. Defaults to disabled auth.
         **boto_kwargs: Additional arguments passed to boto3.client()
             (excluding ``config`` — BotoConfig is managed internally)
 
@@ -264,7 +266,7 @@ def create_client(
 
     # Get initial endpoint and merged boto config
     initial_endpoint = manager.next_node_uri()
-    auth_enabled = "aws_access_key_id" in boto_kwargs
+    auth_enabled = apply_auth(auth, boto_kwargs)
     boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
 
     # Create boto3 client
@@ -305,17 +307,17 @@ def create_client(
 
 def create_resource(
     config: Config,
+    *,
+    auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBServiceResource:
     """
     Create a load-balanced DynamoDB resource for Alternator.
 
     Note:
-        When ``optimize_headers`` is enabled, authentication headers are
-        only preserved if credentials are passed explicitly via
-        ``aws_access_key_id`` in *boto_kwargs*. Unlike a regular boto3
-        DynamoDB client, credentials from environment variables or
-        ``~/.aws/credentials`` are not detected for this purpose.
+        Authentication is disabled by default. Alternator authentication
+        currently supports only static credentials; pass
+        ``auth=Auth.static_credentials(...)`` to enable request signing.
 
     Example:
         resource = create_resource(config)
@@ -330,7 +332,7 @@ def create_resource(
 
     # Get initial endpoint and merged boto config
     initial_endpoint = manager.next_node_uri()
-    auth_enabled = "aws_access_key_id" in boto_kwargs
+    auth_enabled = apply_auth(auth, boto_kwargs)
     boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
 
     # Create boto3 resource
@@ -405,13 +407,20 @@ class AlternatorClient:
             client.put_item(...)
     """
 
-    def __init__(self, config: Config, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
+    def __init__(
+        self,
+        config: Config,
+        *,
+        auth: Auth | None = None,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> None:
         self._config = config
+        self._auth = auth
         self._boto_kwargs = boto_kwargs
         self._client: DynamoDBClient | None = None
 
     def __enter__(self) -> DynamoDBClient:
-        self._client = create_client(self._config, **self._boto_kwargs)
+        self._client = create_client(self._config, auth=self._auth, **self._boto_kwargs)
         return self._client
 
     def __exit__(
@@ -448,13 +457,22 @@ class AlternatorResource:
             table.put_item(Item={"pk": "123", "data": "hello"})
     """
 
-    def __init__(self, config: Config, **boto_kwargs: Any) -> None:  # noqa: ANN401 -- boto3 kwargs are untyped
+    def __init__(
+        self,
+        config: Config,
+        *,
+        auth: Auth | None = None,
+        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    ) -> None:
         self._config = config
+        self._auth = auth
         self._boto_kwargs = boto_kwargs
         self._resource: DynamoDBServiceResource | None = None
 
     def __enter__(self) -> DynamoDBServiceResource:
-        self._resource = create_resource(self._config, **self._boto_kwargs)
+        self._resource = create_resource(
+            self._config, auth=self._auth, **self._boto_kwargs
+        )
         return self._resource
 
     def __exit__(

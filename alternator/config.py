@@ -144,16 +144,83 @@ class HeaderOptimizationConfig:
 
     When enabled, non-essential HTTP headers are stripped from requests
     to reduce bandwidth. Authentication headers (Authorization,
-    X-Amz-Date, X-Amz-Security-Token) are only preserved when
-    credentials are passed explicitly to create_client /
-    create_async_client via ``aws_access_key_id``. Unlike a regular
-    boto3 DynamoDB client, credentials from environment variables
-    or ~/.aws/credentials are not detected for this purpose — pass
-    them explicitly when using header optimization.
+    X-Amz-Date, X-Amz-Security-Token) are preserved when explicit
+    static credentials are passed with ``auth=Auth.static_credentials(...)``.
     """
 
     enabled: bool = False
     whitelist: frozenset[str] | None = None
+
+
+@dataclass(frozen=True)
+class Auth:
+    """
+    Explicit Alternator authentication settings.
+
+    Alternator client authentication currently supports only static
+    credentials. Environment, profile, and provider-chain credentials are not
+    supported by this API.
+    """
+
+    access_key_id: str | None = None
+    secret_access_key: str | None = None
+    session_token: str | None = None
+
+    def __post_init__(self) -> None:
+        has_key = self.access_key_id is not None
+        has_secret = self.secret_access_key is not None
+        if has_key != has_secret:
+            raise ConfigurationError(
+                "Static auth requires both access_key_id and secret_access_key"
+            )
+        if self.session_token is not None and not has_key:
+            raise ConfigurationError(
+                "session_token requires static access_key_id and secret_access_key"
+            )
+        if self.access_key_id == "" or self.secret_access_key == "":
+            raise ConfigurationError("Static auth credentials must not be empty")
+
+    @classmethod
+    def disabled(cls) -> Auth:
+        """Create auth settings with request signing disabled."""
+        return cls()
+
+    @classmethod
+    def static_credentials(
+        cls,
+        access_key_id: str,
+        secret_access_key: str,
+        session_token: str | None = None,
+    ) -> Auth:
+        """Create auth settings using static Alternator credentials."""
+        return cls(
+            access_key_id=access_key_id,
+            secret_access_key=secret_access_key,
+            session_token=session_token,
+        )
+
+    @property
+    def enabled(self) -> bool:
+        """Whether request signing is enabled."""
+        return self.access_key_id is not None
+
+    def as_boto_kwargs(self) -> dict[str, str]:
+        """Return boto credential kwargs for static auth."""
+        if not self.enabled:
+            return {}
+
+        if self.access_key_id is None or self.secret_access_key is None:
+            raise ConfigurationError(
+                "Static auth requires both access_key_id and secret_access_key"
+            )
+
+        kwargs = {
+            "aws_access_key_id": self.access_key_id,
+            "aws_secret_access_key": self.secret_access_key,
+        }
+        if self.session_token is not None:
+            kwargs["aws_session_token"] = self.session_token
+        return kwargs
 
 
 class RetryMode(Enum):
@@ -392,12 +459,8 @@ class AlternatorConfigBuilder:
 
         When enabled, non-essential HTTP headers are stripped from requests
         to reduce bandwidth. Authentication headers (Authorization,
-        X-Amz-Date, X-Amz-Security-Token) are only preserved when
-        credentials are passed explicitly to create_client /
-        create_async_client via ``aws_access_key_id``. Unlike a regular
-        boto3 DynamoDB client, credentials from environment variables
-        or ~/.aws/credentials are not detected for this purpose — pass
-        them explicitly when using header optimization.
+        X-Amz-Date, X-Amz-Security-Token) are preserved when explicit
+        static credentials are passed with ``auth=Auth.static_credentials(...)``.
         """
         self._header_optimization = HeaderOptimizationConfig(
             enabled=True,

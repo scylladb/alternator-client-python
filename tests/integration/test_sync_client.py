@@ -13,6 +13,7 @@ import pytest
 from alternator import (
     AlternatorClient,
     AlternatorConfigBuilder,
+    Auth,
     CompressionAlgorithm,
     Config,
     KeyRouteAffinityMode,
@@ -475,8 +476,7 @@ class TestHeaderOptimization:
 
         with AlternatorClient(
             config,
-            aws_access_key_id="alternator",
-            aws_secret_access_key="secret",
+            auth=Auth.static_credentials("alternator", "secret"),
             region_name="us-east-1",
         ) as client:
             response = client.list_tables()
