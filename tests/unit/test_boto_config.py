@@ -142,61 +142,6 @@ class TestCreateBotoConfig:
         with pytest.raises(ValueError, match="user_agent"):
             _create_boto_config(config, auth_enabled=False)
 
-    def test_sdk_config_customizer_can_adjust_safe_fields(self) -> None:
-        """SDK config customizer can adjust generated config kwargs."""
-
-        def customize(kwargs: dict[str, object]) -> None:
-            kwargs["connect_timeout"] = 9.0
-
-        config = self._make_config(sdk_config_customizer=customize)
-        boto_config = _create_boto_config(config, auth_enabled=False)
-
-        assert boto_config.connect_timeout == 9.0
-        assert boto_config.user_agent == DEFAULT_USER_AGENT
-
-    def test_user_agent_none_overrides_sdk_config_customizer(self) -> None:
-        """The typed user-agent API removes generic customizer user-agent output."""
-
-        def customize(kwargs: dict[str, object]) -> None:
-            kwargs["user_agent"] = "legacy-customizer/1.0"
-
-        config = self._make_config(
-            sdk_config_customizer=customize,
-            user_agent=None,
-        )
-        boto_config = _create_boto_config(config, auth_enabled=False)
-
-        assert boto_config.user_agent is None
-        assert "user_agent" not in boto_config._user_provided_options
-
-    def test_user_agent_callback_overrides_sdk_config_customizer(self) -> None:
-        """The typed user-agent API wins over the generic SDK customizer."""
-
-        def customize(kwargs: dict[str, object]) -> None:
-            kwargs["user_agent"] = "legacy-customizer/1.0"
-
-        config = self._make_config(
-            sdk_config_customizer=customize,
-            user_agent=lambda default: f"orders-service {default}",
-        )
-        boto_config = _create_boto_config(config, auth_enabled=False)
-
-        assert boto_config.user_agent == f"orders-service {DEFAULT_USER_AGENT}"
-
-    def test_sdk_config_customizer_cannot_override_signature(self) -> None:
-        """Auth-managed signature settings override customizer changes."""
-
-        def customize(kwargs: dict[str, object]) -> None:
-            kwargs["signature_version"] = "v4"
-
-        config = self._make_config(sdk_config_customizer=customize)
-
-        unsigned_config = _create_boto_config(config, auth_enabled=False)
-        signed_config = _create_boto_config(config, auth_enabled=True)
-
-        assert unsigned_config.signature_version is UNSIGNED
-        assert "signature_version" not in signed_config._user_provided_options
-
     def test_client_cert_propagated_for_https(self) -> None:
         """TLS client certificate settings flow into BotoConfig."""
         config = self._make_config(

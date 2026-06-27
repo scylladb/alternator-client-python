@@ -94,7 +94,6 @@ class TestAlternatorConfig:
         assert config.node_list_polling.idle_interval_ms == 60000
         assert config.aws_region == "us-east-1"
         assert config.user_agent.startswith("alternator-client-python/")
-        assert config.sdk_config_customizer is None
         assert isinstance(config.routing_scope, ClusterScope)
 
 
@@ -436,21 +435,6 @@ class TestAlternatorConfigBuilder:
             .build()
         )
         assert config.user_agent is None
-
-    def test_build_with_sdk_config_customizer(self) -> None:
-        """Test building config with SDK config customizer."""
-
-        def customize(kwargs: dict[str, object]) -> None:
-            kwargs["user_agent"] = "test"
-
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_sdk_config_customizer(customize)
-            .build()
-        )
-        assert config.sdk_config_customizer is customize
 
 
 class TestTlsConfig:
