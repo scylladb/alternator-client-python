@@ -5,14 +5,14 @@ Use this file as the release-note source for the capability roadmap tracked in
 [docs/COMPATIBILITY_AND_RELEASE.md](COMPATIBILITY_AND_RELEASE.md) as the
 authority for compatibility decisions.
 
-## Next Minor Release
+## Next Major Release
 
 ### Additive APIs
 
 - Added `Helper` and `AsyncHelper` lifecycle facades for callers that need one
   owner for clients/resources plus topology diagnostics.
-- Added explicit routing fallback controls with `fallback=...`,
-  `with_default_fallback(...)`, and `without_fallback(...)`.
+- Added explicit routing fallback controls with `fallback=...` and
+  `without_fallback(...)`.
 - Added topology validation helpers for configured datacenter/rack scopes.
 - Added transport configuration for SDK retries, connect/read timeouts,
   connection pool size, region placeholder, and SDK config customization.
@@ -31,13 +31,12 @@ authority for compatibility decisions.
   deprecation warnings.
 - The convenience default port remains `8000`; pass `port=...` explicitly if
   your deployment uses a different port.
-- Existing datacenter and rack constructors keep their compatibility fallback
-  behavior. Use explicit fallback arguments when the routing boundary matters.
+- Datacenter and rack constructors now stay constrained by default. Use
+  `fallback=...` when broader routing is desired.
 - Deprecated names such as `AlternatorConfig` and `TlsConfig` remain available
   and continue to warn. Prefer `Config` and `TLS` in new code.
 - Node health, quarantine behavior, decommission handling, and dead-node
-  handling remain planning-only. No default routing behavior changes are part of
-  this release.
+  handling remain planning-only.
 
 ### Behavior Notes
 
@@ -58,8 +57,8 @@ authority for compatibility decisions.
   updated code.
 - Replace raw SDK credential kwargs with
   `auth=Auth.static_credentials(access_key_id, secret_access_key)`.
-- Replace implicit topology assumptions with explicit routing fallback when a
-  request must stay inside a cluster, datacenter, or rack boundary.
+- Replace implicit topology fallback assumptions with explicit `fallback=...`
+  when requests may broaden from rack to datacenter or cluster scope.
 - Preload partition-key metadata with `table_pk_map` when key affinity should be
   active on the first request for a table.
 - Review timeout configuration as per-attempt SDK settings, not whole-operation

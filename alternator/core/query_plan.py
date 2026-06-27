@@ -36,7 +36,7 @@ class LazyQueryPlan(Iterator[str]):
         if not self._nodes:
             raise StopIteration
 
-        # Go/Java-compatible pick-and-remove: pick from the current pool,
+        # Cross-client-compatible pick-and-remove: pick from the current pool,
         # return that node, then fill its slot with the last remaining node.
         pick = self._rng.intn(len(self._nodes))
         node = self._nodes[pick]

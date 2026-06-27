@@ -51,16 +51,15 @@ class TestDatacenterScope:
         scope = DatacenterScope(datacenter="us-east-1")
         assert scope.get_localnodes_query() == "dc=us-east-1"
 
-    def test_default_fallback_to_cluster(self) -> None:
-        """Test default fallback is ClusterScope."""
+    def test_default_has_no_fallback(self) -> None:
+        """Default datacenter routing stays constrained."""
         scope = DatacenterScope(datacenter="us-east-1")
-        fallback = scope.fallback
-        assert isinstance(fallback, ClusterScope)
+        assert scope.fallback is None
 
     def test_custom_fallback(self) -> None:
         """Test custom fallback scope."""
         custom_fallback = ClusterScope()
-        scope = DatacenterScope(datacenter="us-east-1", _fallback=custom_fallback)
+        scope = DatacenterScope(datacenter="us-east-1", fallback=custom_fallback)
         assert scope.fallback is custom_fallback
 
     def test_explicit_no_fallback(self) -> None:
@@ -68,18 +67,13 @@ class TestDatacenterScope:
         scope = DatacenterScope(datacenter="us-east-1", fallback=None)
         assert scope.fallback is None
 
-    def test_legacy_none_fallback_keeps_default(self) -> None:
-        """The legacy positional fallback=None keeps default fallback behavior."""
-        scope = DatacenterScope("us-east-1", None)
-        assert isinstance(scope.fallback, ClusterScope)
-
-    def test_with_default_fallback(self) -> None:
-        """Compatibility constructor creates datacenter-to-cluster fallback."""
-        scope = DatacenterScope.with_default_fallback("us-east-1")
+    def test_explicit_cluster_fallback(self) -> None:
+        """Explicit fallback creates datacenter-to-cluster fallback."""
+        scope = DatacenterScope("us-east-1", fallback=ClusterScope())
         assert isinstance(scope.fallback, ClusterScope)
 
     def test_without_fallback(self) -> None:
-        """Named constructor creates datacenter-only fallback."""
+        """Named constructor creates datacenter-only routing."""
         scope = DatacenterScope.without_fallback("us-east-1")
         assert scope.fallback is None
 
@@ -102,17 +96,15 @@ class TestRackScope:
         scope = RackScope(datacenter="us-east-1", rack="rack1")
         assert scope.get_localnodes_query() == "dc=us-east-1&rack=rack1"
 
-    def test_default_fallback_to_datacenter(self) -> None:
-        """Test default fallback is DatacenterScope."""
+    def test_default_has_no_fallback(self) -> None:
+        """Default rack routing stays constrained."""
         scope = RackScope(datacenter="us-east-1", rack="rack1")
-        fallback = scope.fallback
-        assert isinstance(fallback, DatacenterScope)
-        assert fallback.datacenter == "us-east-1"
+        assert scope.fallback is None
 
     def test_custom_fallback(self) -> None:
         """Test custom fallback scope."""
         custom_fallback = ClusterScope()
-        scope = RackScope(datacenter="dc1", rack="r1", _fallback=custom_fallback)
+        scope = RackScope(datacenter="dc1", rack="r1", fallback=custom_fallback)
         assert scope.fallback is custom_fallback
 
     def test_explicit_no_fallback(self) -> None:
@@ -120,20 +112,19 @@ class TestRackScope:
         scope = RackScope(datacenter="dc1", rack="r1", fallback=None)
         assert scope.fallback is None
 
-    def test_legacy_none_fallback_keeps_default(self) -> None:
-        """The legacy positional fallback=None keeps default fallback behavior."""
-        scope = RackScope("dc1", "r1", None)
-        assert isinstance(scope.fallback, DatacenterScope)
-
-    def test_with_default_fallback(self) -> None:
-        """Compatibility constructor creates rack-to-datacenter-to-cluster fallback."""
-        scope = RackScope.with_default_fallback("dc1", "r1")
+    def test_explicit_datacenter_cluster_fallback(self) -> None:
+        """Explicit fallback creates rack-to-datacenter-to-cluster fallback."""
+        scope = RackScope(
+            "dc1",
+            "r1",
+            fallback=DatacenterScope("dc1", fallback=ClusterScope()),
+        )
         fallback = scope.fallback
         assert isinstance(fallback, DatacenterScope)
         assert isinstance(fallback.fallback, ClusterScope)
 
     def test_without_fallback(self) -> None:
-        """Named constructor creates rack-only fallback."""
+        """Named constructor creates rack-only routing."""
         scope = RackScope.without_fallback("dc1", "r1")
         assert scope.fallback is None
 
@@ -142,8 +133,12 @@ class TestFallbackChain:
     """Tests for routing scope fallback chains."""
 
     def test_rack_fallback_chain(self) -> None:
-        """Test full fallback chain: Rack -> Datacenter -> Cluster."""
-        rack_scope = RackScope(datacenter="us-east-1", rack="rack1")
+        """Test explicit full fallback chain: Rack -> Datacenter -> Cluster."""
+        rack_scope = RackScope(
+            "us-east-1",
+            "rack1",
+            fallback=DatacenterScope("us-east-1", fallback=ClusterScope()),
+        )
 
         # Rack -> Datacenter
         dc_scope = rack_scope.fallback
@@ -158,8 +153,8 @@ class TestFallbackChain:
         assert cluster_scope.fallback is None
 
     def test_datacenter_fallback_chain(self) -> None:
-        """Test fallback chain: Datacenter -> Cluster."""
-        dc_scope = DatacenterScope(datacenter="eu-west-1")
+        """Test explicit fallback chain: Datacenter -> Cluster."""
+        dc_scope = DatacenterScope("eu-west-1", fallback=ClusterScope())
 
         # Datacenter -> Cluster
         cluster_scope = dc_scope.fallback
@@ -177,10 +172,18 @@ class TestFallbackChain:
     def test_scope_chain_includes_cluster(self) -> None:
         """Detect whether a scope chain can fall back to cluster scope."""
         assert scope_chain_includes_cluster(ClusterScope())
-        assert scope_chain_includes_cluster(DatacenterScope("dc1"))
-        assert scope_chain_includes_cluster(RackScope("dc1", "r1"))
-        assert not scope_chain_includes_cluster(DatacenterScope("dc1", fallback=None))
-        assert not scope_chain_includes_cluster(RackScope("dc1", "r1", fallback=None))
+        assert scope_chain_includes_cluster(
+            DatacenterScope("dc1", fallback=ClusterScope())
+        )
+        assert scope_chain_includes_cluster(
+            RackScope(
+                "dc1",
+                "r1",
+                fallback=DatacenterScope("dc1", fallback=ClusterScope()),
+            )
+        )
+        assert not scope_chain_includes_cluster(DatacenterScope("dc1"))
+        assert not scope_chain_includes_cluster(RackScope("dc1", "r1"))
 
     def test_all_supported_fallback_shapes(self) -> None:
         """Represent every supported explicit fallback shape."""

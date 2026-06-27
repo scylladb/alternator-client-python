@@ -6,8 +6,6 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from urllib.parse import quote
 
-_DEFAULT_FALLBACK = object()
-
 
 class RoutingScope(ABC):
     """Base class for topology-aware routing scopes."""
@@ -66,26 +64,20 @@ class DatacenterScope(RoutingScope):
     def __init__(
         self,
         datacenter: str,
-        _fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
         *,
-        fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
+        fallback: RoutingScope | None = None,
     ) -> None:
         """Create a datacenter scope.
 
-        Omitting fallback preserves the historical datacenter-to-cluster
-        fallback. Passing ``fallback=None`` disables fallback explicitly.
+        Omitting fallback keeps routing constrained to the datacenter. Use
+        ``fallback=...`` to broaden routing when this scope returns no nodes.
         """
         object.__setattr__(self, "datacenter", datacenter)
         object.__setattr__(
             self,
             "_fallback",
-            _resolve_datacenter_fallback(_fallback, fallback),
+            _validate_fallback(fallback),
         )
-
-    @classmethod
-    def with_default_fallback(cls, datacenter: str) -> DatacenterScope:
-        """Create a datacenter scope that falls back to cluster scope."""
-        return cls(datacenter, fallback=ClusterScope())
 
     @classmethod
     def without_fallback(cls, datacenter: str) -> DatacenterScope:
@@ -120,30 +112,20 @@ class RackScope(RoutingScope):
         self,
         datacenter: str,
         rack: str,
-        _fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
         *,
-        fallback: RoutingScope | None | object = _DEFAULT_FALLBACK,
+        fallback: RoutingScope | None = None,
     ) -> None:
         """Create a rack scope.
 
-        Omitting fallback preserves the historical rack-to-datacenter-to-cluster
-        fallback. Passing ``fallback=None`` disables fallback explicitly.
+        Omitting fallback keeps routing constrained to the rack. Use
+        ``fallback=...`` to broaden routing when this scope returns no nodes.
         """
         object.__setattr__(self, "datacenter", datacenter)
         object.__setattr__(self, "rack", rack)
         object.__setattr__(
             self,
             "_fallback",
-            _resolve_rack_fallback(datacenter, _fallback, fallback),
-        )
-
-    @classmethod
-    def with_default_fallback(cls, datacenter: str, rack: str) -> RackScope:
-        """Create a rack scope that falls back to datacenter and then cluster."""
-        return cls(
-            datacenter,
-            rack,
-            fallback=DatacenterScope.with_default_fallback(datacenter),
+            _validate_fallback(fallback),
         )
 
     @classmethod
@@ -165,29 +147,6 @@ class RackScope(RoutingScope):
 
     def get_localnodes_query(self) -> str:
         return f"dc={quote(self.datacenter, safe='')}&rack={quote(self.rack, safe='')}"
-
-
-def _resolve_datacenter_fallback(
-    legacy_fallback: RoutingScope | None | object,
-    fallback: RoutingScope | None | object,
-) -> RoutingScope | None:
-    if fallback is not _DEFAULT_FALLBACK:
-        return _validate_fallback(fallback)
-    if legacy_fallback is not _DEFAULT_FALLBACK and legacy_fallback is not None:
-        return _validate_fallback(legacy_fallback)
-    return ClusterScope()
-
-
-def _resolve_rack_fallback(
-    datacenter: str,
-    legacy_fallback: RoutingScope | None | object,
-    fallback: RoutingScope | None | object,
-) -> RoutingScope | None:
-    if fallback is not _DEFAULT_FALLBACK:
-        return _validate_fallback(fallback)
-    if legacy_fallback is not _DEFAULT_FALLBACK and legacy_fallback is not None:
-        return _validate_fallback(legacy_fallback)
-    return DatacenterScope.with_default_fallback(datacenter)
 
 
 def _validate_fallback(fallback: RoutingScope | None | object) -> RoutingScope | None:

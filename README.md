@@ -280,14 +280,14 @@ config = Config(
     routing_scope=ClusterScope(),
 )
 
-# Route to nodes in a specific datacenter, then fall back to cluster
+# Route only to nodes in a specific datacenter
 config = Config(
     seed_hosts=["node1"],
     port=8000,
     routing_scope=DatacenterScope(datacenter="us-east-1"),
 )
 
-# Route to nodes in a specific rack, then fall back to datacenter and cluster
+# Route only to nodes in a specific rack
 config = Config(
     seed_hosts=["node1"],
     port=8000,
@@ -301,26 +301,30 @@ returns nodes from the contacted seed's local datacenter, cluster-wide routing
 spans multiple datacenters only when the configuration includes at least one
 reachable seed from each datacenter.
 
-Default constructors keep compatibility fallback behavior:
+Default constructors stay constrained to their requested scope:
 
-- `DatacenterScope("dc1")` uses `DatacenterScope` -> `ClusterScope`
-- `RackScope("dc1", "rack1")` uses `RackScope` -> `DatacenterScope` -> `ClusterScope`
+- `DatacenterScope("dc1")` tries only datacenter `dc1`
+- `RackScope("dc1", "rack1")` tries only rack `rack1` in datacenter `dc1`
 
-Use the named `fallback` argument for explicit routing constraints:
+Use the named `fallback` argument when a broader fallback chain is desired:
 
 ```python
 from alternator import ClusterScope, DatacenterScope, RackScope
 
 cluster_only = ClusterScope()
-datacenter_only = DatacenterScope("dc1", fallback=None)
+datacenter_only = DatacenterScope("dc1")
 datacenter_then_cluster = DatacenterScope("dc1", fallback=ClusterScope())
-rack_only = RackScope("dc1", "rack1", fallback=None)
+rack_only = RackScope("dc1", "rack1")
 rack_then_datacenter = RackScope(
     "dc1",
     "rack1",
     fallback=DatacenterScope("dc1", fallback=None),
 )
-rack_then_datacenter_then_cluster = RackScope.with_default_fallback("dc1", "rack1")
+rack_then_datacenter_then_cluster = RackScope(
+    "dc1",
+    "rack1",
+    fallback=DatacenterScope("dc1", fallback=ClusterScope()),
+)
 ```
 
 `Helper.check_rack_and_datacenter_set_correctly()` validates the configured

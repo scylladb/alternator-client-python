@@ -1,7 +1,7 @@
 """Integration tests for wrong DC/rack error handling and fallback.
 
 These tests verify that the client gracefully handles incorrect datacenter
-and rack configurations by falling back to broader scopes.
+and rack configurations when broader fallback scopes are configured.
 
 These tests require a running Scylla cluster with Alternator enabled.
 Start a local cluster with: make scylla-start
@@ -12,6 +12,7 @@ import pytest
 from alternator import (
     AlternatorClient,
     AlternatorConfigBuilder,
+    ClusterScope,
     Config,
     DatacenterScope,
     Helper,
@@ -31,34 +32,32 @@ class TestWrongDatacenter:
     """Test wrong datacenter detection and fallback."""
 
     def test_wrong_datacenter_falls_back_to_cluster(self) -> None:
-        """When a non-existent datacenter is specified, client falls back to cluster scope.
+        """Explicit fallback lets a non-existent datacenter use cluster scope.
 
         The /localnodes?dc=nonexistent endpoint returns empty results,
         causing the manager to fall back to ClusterScope.
         """
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_datacenter("nonexistent_dc_12345")
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope(
+                "nonexistent_dc_12345", fallback=ClusterScope()
+            ),
         )
 
         assert isinstance(config.routing_scope, DatacenterScope)
 
-        # Should still work — falls back to cluster scope
+        # Should still work because fallback to cluster scope is explicit.
         with AlternatorClient(config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
     def test_wrong_datacenter_still_handles_operations(self) -> None:
         """After fallback, all operations should work normally."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_datacenter("bad_dc")
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope("bad_dc", fallback=ClusterScope()),
         )
 
         with AlternatorClient(config) as client:
@@ -68,11 +67,11 @@ class TestWrongDatacenter:
                 assert "TableNames" in response
 
     def test_wrong_datacenter_without_fallback_fails(self) -> None:
-        """Explicit datacenter-only routing fails when that datacenter is absent."""
+        """Default datacenter-only routing fails when that datacenter is absent."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
-            routing_scope=DatacenterScope("bad_dc", fallback=None),
+            routing_scope=DatacenterScope("bad_dc"),
         )
 
         with pytest.raises(NoNodesAvailableError), AlternatorClient(config):
@@ -83,33 +82,37 @@ class TestWrongRack:
     """Test wrong rack detection and fallback."""
 
     def test_wrong_rack_falls_back_to_datacenter(self) -> None:
-        """When a non-existent rack is specified, client falls back to datacenter scope.
+        """Explicit fallback lets a non-existent rack use broader scopes.
 
         Fallback chain: Rack → Datacenter → Cluster
         """
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_rack("datacenter1", "nonexistent_rack_12345")
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=RackScope(
+                "datacenter1",
+                "nonexistent_rack_12345",
+                fallback=DatacenterScope("datacenter1", fallback=ClusterScope()),
+            ),
         )
 
         assert isinstance(config.routing_scope, RackScope)
 
-        # Should still work — falls back through datacenter to cluster
+        # Should still work because fallback through datacenter to cluster is explicit.
         with AlternatorClient(config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
     def test_wrong_rack_and_datacenter_falls_back_to_cluster(self) -> None:
-        """When both rack and datacenter are wrong, falls back to cluster scope."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_rack("bad_dc", "bad_rack")
-            .build()
+        """Explicit fallback lets wrong rack and datacenter use cluster scope."""
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=RackScope(
+                "bad_dc",
+                "bad_rack",
+                fallback=DatacenterScope("bad_dc", fallback=ClusterScope()),
+            ),
         )
 
         assert isinstance(config.routing_scope, RackScope)
@@ -120,12 +123,14 @@ class TestWrongRack:
 
     def test_wrong_rack_still_handles_operations(self) -> None:
         """After rack fallback, all operations should work normally."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_rack("datacenter1", "bad_rack")
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=RackScope(
+                "datacenter1",
+                "bad_rack",
+                fallback=DatacenterScope("datacenter1", fallback=ClusterScope()),
+            ),
         )
 
         with AlternatorClient(config) as client:
