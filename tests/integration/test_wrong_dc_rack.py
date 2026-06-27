@@ -10,7 +10,6 @@ Start a local cluster with: make scylla-start
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     ClusterScope,
     Config,
     DatacenterScope,
@@ -165,12 +164,7 @@ class TestRackDatacenterFeatureSupport:
 
     def test_cluster_scope_returns_nodes(self) -> None:
         """Verify cluster scope returns nodes from the running cluster."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .build()
-        )
+        config = Config(seed_hosts=[SCYLLA_HOST], port=SCYLLA_PORT)
 
         with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
@@ -181,19 +175,17 @@ class TestRackDatacenterFeatureSupport:
 
         The default Scylla docker-compose uses 'datacenter1'.
         """
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_datacenter("datacenter1")
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope("datacenter1"),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
-    def test_helper_validates_correct_datacenter(self) -> None:
+    def test_session_validates_correct_datacenter(self) -> None:
         """Session validation succeeds for a known datacenter."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
@@ -203,7 +195,7 @@ class TestRackDatacenterFeatureSupport:
 
         assert Session(config).validate_scope()
 
-    def test_helper_validation_rejects_wrong_datacenter(self) -> None:
+    def test_session_validation_rejects_wrong_datacenter(self) -> None:
         """Session validation raises a clear error for an absent datacenter."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],

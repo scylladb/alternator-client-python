@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("alternator")
 
-# Re-export for backwards compatibility
+# Module exports.
 __all__ = [
     "NoNodesAvailableError",
     "NodeList",

@@ -34,18 +34,17 @@ Asynchronous usage::
 
 Configuration
 -------------
-Use ``Config`` for direct configuration or ``AlternatorConfigBuilder``
-for a fluent builder pattern::
+Use ``Config`` for direct configuration::
 
-    from alternator import AlternatorConfigBuilder, CompressionAlgorithm
+    from alternator import Config, CompressionAlgorithm, RequestCompressionConfig
 
-    config = (
-        AlternatorConfigBuilder()
-        .with_seeds("node1", "node2")
-        .with_port(8000)
-        .with_https()
-        .with_compression(CompressionAlgorithm.GZIP)
-        .build()
+    config = Config(
+        seed_hosts=["node1", "node2"],
+        port=8000,
+        scheme="https",
+        request_compression=RequestCompressionConfig(
+            algorithm=CompressionAlgorithm.GZIP,
+        ),
     )
 
 Key Classes
@@ -56,7 +55,6 @@ Key Classes
 - ``AsyncSession``: Async lifecycle and diagnostics facade
 - ``Config``: Main configuration dataclass
 - ``Auth``: Explicit disabled/static-credentials auth settings
-- ``AlternatorConfigBuilder``: Fluent builder for configuration
 - ``TLS``: TLS/SSL configuration
 - ``ClusterScope``, ``DatacenterScope``, ``RackScope``: Routing scope controls
 
@@ -86,8 +84,6 @@ from alternator.client import (
 )
 from alternator.config import (
     TLS,
-    AlternatorConfig,
-    AlternatorConfigBuilder,
     Auth,
     CompressionAlgorithm,
     Config,
@@ -102,7 +98,6 @@ from alternator.config import (
     RetryConfig,
     RetryMode,
     TimeoutConfig,
-    TlsConfig,
     TlsSessionCacheConfig,
     UserAgent,
     UserAgentCustomizer,
@@ -133,8 +128,6 @@ __all__ = [
     "Auth",
     "Config",
     "TLS",
-    "AlternatorConfig",
-    "AlternatorConfigBuilder",
     "CompressionAlgorithm",
     "HeaderOptimizationConfig",
     "HeaderWhitelistCallback",
@@ -147,7 +140,6 @@ __all__ = [
     "RetryConfig",
     "RetryMode",
     "TimeoutConfig",
-    "TlsConfig",
     "TlsSessionCacheConfig",
     "UserAgent",
     "UserAgentCustomizer",

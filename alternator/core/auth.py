@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import Any
 
 from alternator.config import Auth
 from alternator.exceptions import ConfigurationError
 
-_CREDENTIAL_KWARGS = frozenset(
+_BOTO_CREDENTIAL_KWARGS = frozenset(
     {
         "aws_access_key_id",
         "aws_secret_access_key",
@@ -24,19 +23,13 @@ def apply_auth(auth: Auth | None, boto_kwargs: dict[str, Any]) -> bool:
     Returns:
         Whether request signing should be enabled.
     """
-    legacy_credential_keys = _CREDENTIAL_KWARGS.intersection(boto_kwargs)
-    if legacy_credential_keys:
+    boto_credential_keys = _BOTO_CREDENTIAL_KWARGS.intersection(boto_kwargs)
+    if boto_credential_keys:
         if auth is not None:
             raise ConfigurationError(
                 "Do not combine auth=... with raw boto credential kwargs; "
                 "use Auth.static_credentials(...) instead"
             )
-        warnings.warn(
-            "Passing raw boto credential kwargs is deprecated; "
-            "use auth=Auth.static_credentials(...) instead.",
-            DeprecationWarning,
-            stacklevel=3,
-        )
         return "aws_access_key_id" in boto_kwargs
 
     resolved_auth = auth or Auth.disabled()

@@ -163,33 +163,37 @@ config = Config(
 )
 ```
 
-> **Compatibility:** `AlternatorConfig` and `TlsConfig` remain available for
-> existing callers, but are deprecated. Prefer `Config` and `TLS` for new code.
-> See [docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md)
-> for compatibility and versioning decisions.
-
-### Using the Builder Pattern
+### Composed Configuration
 
 ```python
 from alternator import (
-    AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
+    DatacenterScope,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
+    NodeListPollingConfig,
+    RequestCompressionConfig,
     ResponseCompression,
     TLS,
 )
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1.example.com", "node2.example.com")
-    .with_port(8000)
-    .with_https(TLS.system_default())
-    .with_datacenter("us-east-1")
-    .with_compression(CompressionAlgorithm.GZIP, min_size=1024)
-    .with_response_compression(ResponseCompression.GZIP)
-    .with_key_affinity(KeyRouteAffinityMode.RMW)
-    .with_refresh_intervals(active_ms=1000, idle_ms=60000)
-    .build()
+config = Config(
+    seed_hosts=["node1.example.com", "node2.example.com"],
+    port=8000,
+    scheme="https",
+    tls=TLS.system_default(),
+    routing_scope=DatacenterScope("us-east-1"),
+    request_compression=RequestCompressionConfig(
+        algorithm=CompressionAlgorithm.GZIP,
+        min_size_bytes=1024,
+    ),
+    response_compression=(ResponseCompression.GZIP,),
+    key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+    node_list_polling=NodeListPollingConfig(
+        active_interval_ms=1000,
+        idle_interval_ms=60000,
+    ),
 )
 ```
 
@@ -247,8 +251,9 @@ with alternator.client(
     client.list_tables()
 ```
 
-Passing raw boto credential kwargs such as `aws_access_key_id` still works for
-compatibility, but is deprecated. Prefer `auth=Auth.static_credentials(...)`.
+You can also pass boto-style credential kwargs such as `aws_access_key_id`.
+Prefer `auth=Auth.static_credentials(...)` when you want the authentication
+choice to be explicit in Alternator code.
 
 ## Comparing with a Regular AWS SDK Client
 
@@ -341,7 +346,7 @@ rack_then_datacenter_then_cluster = RackScope(
 
 `Session.validate_scope()` validates the configured
 scope by querying `/localnodes` with the configured datacenter and rack filters
-without replacing the helper's current live-node list.
+without replacing the session's current live-node list.
 `AsyncSession` exposes the same validation methods as awaitable methods.
 
 ## Key Affinity (LWT Optimization)
@@ -350,19 +355,18 @@ For Lightweight Transactions (conditional writes), routing requests for the same
 
 ```python
 from alternator import (
-    AlternatorConfigBuilder,
+    Config,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
 )
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1")
-    .with_port(8000)
-    .with_key_affinity(
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    key_affinity=KeyRouteAffinityConfig(
         mode=KeyRouteAffinityMode.RMW,  # Only for read-modify-write ops
-        table_pk_map={"my_table": "pk"},  # Optional: preload PK names
-    )
-    .build()
+        table_pk_attributes={"my_table": "pk"},  # Optional: preload PK names
+    ),
 )
 ```
 
@@ -455,25 +459,24 @@ Enable gzip compression for large request bodies:
 
 ```python
 from alternator import (
-    AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
+    RequestCompressionConfig,
     ResponseCompression,
 )
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1")
-    .with_port(8000)
-    .with_compression(
-        CompressionAlgorithm.GZIP,
-        min_size=1024,  # Only compress bodies >= 1KB
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    request_compression=RequestCompressionConfig(
+        algorithm=CompressionAlgorithm.GZIP,
+        min_size_bytes=1024,  # Only compress bodies >= 1KB
         gzip_level=6,   # Python gzip level 0-9; default is 9
-    )
-    .with_response_compression(
+    ),
+    response_compression=(
         ResponseCompression.GZIP,
         ResponseCompression.DEFLATE,
-    )
-    .build()
+    ),
 )
 ```
 
@@ -486,8 +489,7 @@ payload.
 Response compression is disabled by default. When enabled, the client sends
 `Accept-Encoding` with the configured encodings and decodes `Content-Encoding:
 gzip` or `Content-Encoding: deflate` responses before boto3/aioboto3 parses the
-DynamoDB JSON body. Use `.without_response_compression()` to disable it again in
-builder chains.
+DynamoDB JSON body.
 
 ## Header Optimization
 
@@ -497,22 +499,21 @@ headers are preserved automatically. Use `whitelist` for static additions and
 state:
 
 ```python
-from alternator import AlternatorConfigBuilder, HeaderWhitelistContext
+from alternator import Config, HeaderOptimizationConfig, HeaderWhitelistContext
 
 def extra_headers(context: HeaderWhitelistContext) -> set[str]:
     if context.auth_enabled:
         return {"X-Service-Trace"}
     return {"X-Anonymous-Trace"}
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1")
-    .with_port(8000)
-    .with_header_optimization(
-        whitelist={"X-Static-Header"},
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    header_optimization=HeaderOptimizationConfig(
+        enabled=True,
+        whitelist=frozenset({"X-Static-Header"}),
         whitelist_callback=extra_headers,
-    )
-    .build()
+    ),
 )
 ```
 
@@ -817,7 +818,7 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 ## Known Limitations
 
 - **Request Compression**: Gzip request compression requires ScyllaDB 2026.1.0+.
-- **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `with_response_compression(...)`.
+- **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `Config.response_compression`.
 - **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
@@ -831,7 +832,7 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 - `examples/sync_demo.py`: synchronous client lifecycle and basic operations
 - `examples/async_demo.py`: async client lifecycle and concurrent operations
 - `examples/compare_aws_sdk.py`: Alternator client setup compared with a regular AWS SDK DynamoDB client
-- `examples/capability_configuration.py`: helper lifecycle, explicit routing fallback, static auth, timeouts/retries, mTLS, compression/header optimization, and key affinity configuration recipes
+- `examples/capability_configuration.py`: session lifecycle, explicit routing fallback, static auth, timeouts/retries, mTLS, compression/header optimization, and key affinity configuration recipes
 
 ## Release Notes
 

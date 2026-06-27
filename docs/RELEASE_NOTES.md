@@ -1,9 +1,6 @@
 # Capability Release Notes
 
-Use this file as the release-note source for the capability roadmap tracked in
-[FEATURE_PARITY.md](../FEATURE_PARITY.md). Keep
-[docs/COMPATIBILITY_AND_RELEASE.md](COMPATIBILITY_AND_RELEASE.md) as the
-authority for compatibility decisions.
+Use this file as the release-note source for the current capability batch.
 
 ## Next Major Release
 
@@ -28,19 +25,19 @@ authority for compatibility decisions.
 - Updated key-affinity routing semantics for read-modify-write operations and
   `BatchWriteItem` preferred-node voting.
 
-### Compatibility Notes
+### API Notes
 
 - Request signing remains disabled by default.
 - Alternator request signing continues to use explicit static credentials via
   `auth=Auth.static_credentials(...)`.
-- Raw SDK credential kwargs remain supported for compatibility, but emit
-  deprecation warnings.
+- Boto-style credential kwargs such as `aws_access_key_id` remain accepted by
+  the boto3-shaped factories. Do not combine them with `auth=...`.
 - The convenience default port remains `8000`; pass `port=...` explicitly if
   your deployment uses a different port.
 - Datacenter and rack constructors now stay constrained by default. Use
   `fallback=...` when broader routing is desired.
-- Deprecated names such as `AlternatorConfig` and `TlsConfig` remain available
-  and continue to warn. Prefer `Config` and `TLS` in new code.
+- The public config names are `Config` and `TLS`; pre-release aliases and the
+  fluent config construction API are not part of the release API.
 - Node health, quarantine behavior, decommission handling, and dead-node
   handling remain planning-only.
 
@@ -58,23 +55,22 @@ authority for compatibility decisions.
 - TLS key logs contain traffic decryption material and should only be used in
   protected debugging environments.
 
-### Migration Steps
+### Review Steps
 
-- Replace `AlternatorConfig` with `Config` and `TlsConfig` with `TLS` in new or
-  updated code.
-- Replace raw SDK credential kwargs with
-  `auth=Auth.static_credentials(access_key_id, secret_access_key)`.
+- Use direct `Config(...)` construction with typed nested config objects.
+- Prefer `auth=Auth.static_credentials(access_key_id, secret_access_key)` when
+  Alternator auth should be explicit in application code.
 - Replace implicit topology fallback assumptions with explicit `fallback=...`
   when requests may broaden from rack to datacenter or cluster scope.
-- Preload partition-key metadata with `table_pk_map` when key affinity should be
+- Preload partition-key metadata with
+  `KeyRouteAffinityConfig(table_pk_attributes=...)` when key affinity should be
   active on the first request for a table.
 - Review timeout configuration as per-attempt SDK settings, not whole-operation
   deadlines.
 
 ### Versioning Expectation
 
-The capability batch is compatible additive work and should be released as a
-minor version unless a separate maintainer decision adds an incompatible change.
-Changed defaults, removed deprecated names, removed legacy credential kwargs,
-changed routing fallback defaults, changed auth defaults, or default-enabled node
-health/quarantine behavior require a major release.
+This release defines the initial public API for the current capability batch.
+Future changes that remove public names, change defaults, change auth behavior,
+or default-enable node health/quarantine behavior should be treated as breaking
+changes.

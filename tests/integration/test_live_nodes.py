@@ -1,10 +1,16 @@
-"""Integration tests for live-node discovery through public helpers."""
+"""Integration tests for live-node discovery through public sessions."""
 
 from __future__ import annotations
 
 import pytest
 
-from alternator import AlternatorConfigBuilder, Auth, KeyRouteAffinityMode, Session
+from alternator import (
+    Auth,
+    Config,
+    KeyRouteAffinityConfig,
+    KeyRouteAffinityMode,
+    Session,
+)
 from alternator.async_client import AsyncSession
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
@@ -15,51 +21,49 @@ pytestmark = [
 
 
 def _affinity_config() -> object:
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_PORT)
-        .with_key_affinity(
-            KeyRouteAffinityMode.ANY_WRITE,
-            table_pk_map={"preconfigured_table": "pk"},
-        )
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_PORT,
+        key_affinity=KeyRouteAffinityConfig(
+            mode=KeyRouteAffinityMode.ANY_WRITE,
+            table_pk_attributes={"preconfigured_table": "pk"},
+        ),
     )
 
 
-class TestLiveNodeHelperDiagnostics:
-    """Verify sync helper diagnostics and shared-client lifecycle."""
+class TestLiveNodeSessionDiagnostics:
+    """Verify sync session diagnostics and shared-client lifecycle."""
 
-    def test_helper_exposes_nodes_clients_and_partition_keys(self) -> None:
-        with Session(_affinity_config(), auth=Auth.disabled()) as helper:
-            assert helper.refresh_nodes()
-            nodes = helper.nodes
+    def test_session_exposes_nodes_clients_and_partition_keys(self) -> None:
+        with Session(_affinity_config(), auth=Auth.disabled()) as session:
+            assert session.refresh_nodes()
+            nodes = session.nodes
             assert nodes
-            assert helper.active_nodes == nodes
-            assert helper.quarantined_nodes == []
-            assert helper.supports_topology_filters()
-            assert helper.partition_key_for("preconfigured_table") == "pk"
+            assert session.active_nodes == nodes
+            assert session.quarantined_nodes == []
+            assert session.supports_topology_filters()
+            assert session.partition_key_for("preconfigured_table") == "pk"
 
-            client = helper.client("dynamodb")
+            client = session.client("dynamodb")
             assert "TableNames" in client.list_tables()
 
-            resource = helper.resource("dynamodb")
+            resource = session.resource("dynamodb")
             assert "TableNames" in resource.meta.client.list_tables()
 
 
-class TestAsyncLiveNodeHelperDiagnostics:
-    """Verify async helper diagnostics and shared-client lifecycle."""
+class TestAsyncLiveNodeSessionDiagnostics:
+    """Verify async session diagnostics and shared-client lifecycle."""
 
     @pytest.mark.asyncio
-    async def test_helper_exposes_nodes_clients_and_partition_keys(self) -> None:
-        async with AsyncSession(_affinity_config(), auth=Auth.disabled()) as helper:
-            assert await helper.refresh_nodes()
-            nodes = helper.nodes
+    async def test_session_exposes_nodes_clients_and_partition_keys(self) -> None:
+        async with AsyncSession(_affinity_config(), auth=Auth.disabled()) as session:
+            assert await session.refresh_nodes()
+            nodes = session.nodes
             assert nodes
-            assert helper.active_nodes == nodes
-            assert helper.quarantined_nodes == []
-            assert await helper.supports_topology_filters()
-            assert await helper.partition_key_for("preconfigured_table") == "pk"
+            assert session.active_nodes == nodes
+            assert session.quarantined_nodes == []
+            assert await session.supports_topology_filters()
+            assert await session.partition_key_for("preconfigured_table") == "pk"
 
-            client = await helper.client("dynamodb")
+            client = await session.client("dynamodb")
             assert "TableNames" in await client.list_tables()

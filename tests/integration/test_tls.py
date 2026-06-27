@@ -17,7 +17,7 @@ import pytest
 
 from alternator import (
     TLS,
-    AlternatorConfigBuilder,
+    Config,
 )
 from alternator import (
     client as alternator_client,
@@ -51,17 +51,14 @@ class TestTlsSessionCacheAln:
 
     def test_session_cache_enabled_for_aln(self, ca_path: Path) -> None:
         """Test that TLS session caching works for /localnodes discovery."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(
-                TLS(
-                    custom_ca_cert_paths=(ca_path,),
-                    session_cache=TlsSessionCacheConfig(enabled=True),
-                )
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS(
+                custom_ca_cert_paths=(ca_path,),
+                session_cache=TlsSessionCacheConfig(enabled=True),
+            ),
         )
 
         with alternator_client(
@@ -74,17 +71,14 @@ class TestTlsSessionCacheAln:
 
     def test_session_cache_disabled_for_aln(self, ca_path: Path) -> None:
         """Test that disabling TLS session cache still works for ALN requests."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(
-                TLS(
-                    custom_ca_cert_paths=(ca_path,),
-                    session_cache=TlsSessionCacheConfig(enabled=False),
-                )
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS(
+                custom_ca_cert_paths=(ca_path,),
+                session_cache=TlsSessionCacheConfig(enabled=False),
+            ),
         )
 
         with alternator_client(
@@ -102,17 +96,14 @@ class TestTlsSessionCacheDynamoDbApi:
         self, ca_path: Path, table_name: str
     ) -> None:
         """Test session caching with DynamoDB API operations over HTTPS."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(
-                TLS(
-                    custom_ca_cert_paths=(ca_path,),
-                    session_cache=TlsSessionCacheConfig(enabled=True),
-                )
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS(
+                custom_ca_cert_paths=(ca_path,),
+                session_cache=TlsSessionCacheConfig(enabled=True),
+            ),
         )
 
         with alternator_client(
@@ -148,17 +139,14 @@ class TestTlsSessionCacheDynamoDbApi:
         self, ca_path: Path, table_name: str
     ) -> None:
         """Test DynamoDB API operations over HTTPS without session cache."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(
-                TLS(
-                    custom_ca_cert_paths=(ca_path,),
-                    session_cache=TlsSessionCacheConfig(enabled=False),
-                )
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS(
+                custom_ca_cert_paths=(ca_path,),
+                session_cache=TlsSessionCacheConfig(enabled=False),
+            ),
         )
 
         with alternator_client(
@@ -210,12 +198,11 @@ class TestSslKeyLogFile:
             os.environ["SSLKEYLOGFILE"] = keylog_path
 
             try:
-                config = (
-                    AlternatorConfigBuilder()
-                    .with_seeds(SCYLLA_HOST)
-                    .with_port(SCYLLA_HTTPS_PORT)
-                    .with_https(TLS.with_custom_ca(ca_path))
-                    .build()
+                config = Config(
+                    seed_hosts=[SCYLLA_HOST],
+                    port=SCYLLA_HTTPS_PORT,
+                    scheme="https",
+                    tls=TLS.with_custom_ca(ca_path),
                 )
 
                 with alternator_client(
@@ -251,12 +238,11 @@ class TestSslKeyLogFile:
             os.environ["SSLKEYLOGFILE"] = keylog_path
 
             try:
-                config = (
-                    AlternatorConfigBuilder()
-                    .with_seeds(SCYLLA_HOST)
-                    .with_port(SCYLLA_HTTPS_PORT)
-                    .with_https(TLS.with_custom_ca(ca_path))
-                    .build()
+                config = Config(
+                    seed_hosts=[SCYLLA_HOST],
+                    port=SCYLLA_HTTPS_PORT,
+                    scheme="https",
+                    tls=TLS.with_custom_ca(ca_path),
                 )
 
                 with alternator_client(

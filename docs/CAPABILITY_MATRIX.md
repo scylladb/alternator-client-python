@@ -14,7 +14,7 @@ and intentionally deferred behavior.
 | Request query plans | Supported | Existing API | Requests use stable seeded node ordering for retries. |
 | Auth | Supported | Existing API | Disabled by default; explicit static credentials enable signing. |
 | Request compression | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip request compression supports threshold and compression-level configuration. |
-| Response compression | Supported | [#65](https://github.com/scylladb/alternator-client-python/issues/65) | Gzip and deflate response decoding is disabled by default and enabled with `with_response_compression(...)`. |
+| Response compression | Supported | [#65](https://github.com/scylladb/alternator-client-python/issues/65) | Gzip and deflate response decoding is disabled by default and enabled with `Config.response_compression`. |
 | Header optimization | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Required headers are preserved, with static and callback-computed whitelist additions. |
 | User-Agent replacement | Supported | [#61](https://github.com/scylladb/alternator-client-python/issues/61) | Requests do not preserve boto3/botocore user-agent tokens. By default, requests send the Alternator Python client identity; `Config.user_agent=None` removes the wire header; a string sets the final value; a callback can wrap/add to the default identity. |
 | TLS server trust | Supported | Existing API | System CA, custom CA, hostname verification, and trust-all mode exist. |
@@ -23,7 +23,6 @@ and intentionally deferred behavior.
 | Transport and SDK config knobs | Supported | [#34](https://github.com/scylladb/alternator-client-python/issues/34), [#89](https://github.com/scylladb/alternator-client-python/issues/89) | Retry, pool, connect/read timeout, region, TLS client certificates, and User-Agent settings have typed Alternator config fields. The client does not expose raw SDK config mutation. |
 | Key route affinity | Supported | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | RMW detection, single-write affinity, and BatchWriteItem preferred-node voting are implemented with fallback on missing or ambiguous routing data. |
 | Session lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Session` and `AsyncSession` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
-| Compatibility and release decisions | Supported | [#39](https://github.com/scylladb/alternator-client-python/issues/39) | Decision record lives in [docs/COMPATIBILITY_AND_RELEASE.md](COMPATIBILITY_AND_RELEASE.md). |
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
 | Vector search extension | Supported | Existing API | Python client enables ScyllaDB Alternator vector extensions. |
 | Capability test harness | Partial | [#36](https://github.com/scylladb/alternator-client-python/issues/36) | Fake Alternator server fixture introduced for deterministic unit tests. |

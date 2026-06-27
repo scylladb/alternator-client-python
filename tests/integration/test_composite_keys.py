@@ -11,8 +11,8 @@ from typing import Any
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     Config,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
 )
 from alternator import (
@@ -268,15 +268,13 @@ class TestCompositeKeyAffinity:
 
     def test_affinity_uses_hash_key_only(self, table_name: str) -> None:
         """Test that affinity routing works with composite keys."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(
-                KeyRouteAffinityMode.ANY_WRITE,
-                table_pk_map={table_name: "pk"},
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(
+                mode=KeyRouteAffinityMode.ANY_WRITE,
+                table_pk_attributes={table_name: "pk"},
+            ),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -308,12 +306,10 @@ class TestCompositeKeyAffinity:
 
     def test_affinity_auto_discover_pk(self, table_name: str) -> None:
         """Test auto-discovery of partition key for composite key table."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(KeyRouteAffinityMode.ANY_WRITE)
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.ANY_WRITE),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:

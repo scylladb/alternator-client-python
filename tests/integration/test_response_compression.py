@@ -8,7 +8,6 @@ from typing import Any
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     Config,
     ResponseCompression,
 )
@@ -34,12 +33,10 @@ def _large_response_payload() -> str:
 
 
 def _response_compression_config(encoding: ResponseCompression) -> Config:
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_PORT)
-        .with_response_compression(encoding)
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_PORT,
+        response_compression=(encoding,),
     )
 
 

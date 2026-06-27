@@ -13,8 +13,8 @@ import time
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     Config,
+    RetryConfig,
 )
 from alternator import (
     client as alternator_client,
@@ -136,12 +136,10 @@ class TestQuarantineAndRelease:
         The client's retry mechanism provides resilience similar to
         quarantine by automatically retrying failed requests on other nodes.
         """
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_retries(max_attempts=3)
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            retries=RetryConfig(max_attempts=3),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:

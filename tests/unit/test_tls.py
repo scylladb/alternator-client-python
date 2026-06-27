@@ -173,7 +173,7 @@ class TestCreateSslContext:
             assert key_log_path.parent == tmp_path
 
 
-class TestTlsConfig:
+class TestTLS:
     """Tests for TLS class."""
 
     def test_default_values(self) -> None:

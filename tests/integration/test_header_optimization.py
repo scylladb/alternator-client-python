@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from alternator import AlternatorConfigBuilder, Auth
+from alternator import Auth, Config, HeaderOptimizationConfig
 from alternator import client as alternator_client
 from alternator.async_client import AsyncSession
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
@@ -21,12 +21,10 @@ pytestmark = [
 
 
 def _user_agent_config(user_agent_label: str) -> object:
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_PORT)
-        .with_user_agent(user_agent_label)
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_PORT,
+        user_agent=user_agent_label,
     )
 
 
@@ -44,13 +42,14 @@ class TestHeaderOptimization:
             assert request.header("user-agent") == "alternator-unfiltered"
 
     def test_filters_wire_headers_and_preserves_auth(self) -> None:
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_header_optimization(whitelist={"X-Keep-Me"})
-            .with_user_agent("alternator-filtered")
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            header_optimization=HeaderOptimizationConfig(
+                enabled=True,
+                whitelist=frozenset({"X-Keep-Me"}),
+            ),
+            user_agent="alternator-filtered",
         )
         with alternator_client(
             "dynamodb",
@@ -74,12 +73,13 @@ class TestAsyncHeaderOptimization:
 
     @pytest.mark.asyncio
     async def test_filters_wire_headers_and_preserves_auth(self) -> None:
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_header_optimization(whitelist={"X-Keep-Me"})
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            header_optimization=HeaderOptimizationConfig(
+                enabled=True,
+                whitelist=frozenset({"X-Keep-Me"}),
+            ),
         )
         async with AsyncSession(
             config,
