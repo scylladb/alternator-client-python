@@ -12,7 +12,11 @@ from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.hooks import BaseEventHooks
 
 from alternator.config import CompressionAlgorithm
-from alternator.core.compression import create_compression_handler
+from alternator.core.compression import (
+    create_compression_handler,
+    create_response_compression_decode_handler,
+    create_response_compression_request_handler,
+)
 from alternator.core.headers import (
     compute_header_whitelist,
     create_header_filter_handler,
@@ -185,6 +189,15 @@ def _register_alternator_handlers(
             gzip_level=config.request_compression.gzip_level,
         )
         events.register("request-created.dynamodb.*", compress_handler)
+
+    # Register response compression handlers if enabled
+    if config.response_compression:
+        accept_encoding_handler = create_response_compression_request_handler(
+            config.response_compression,
+        )
+        decode_response_handler = create_response_compression_decode_handler()
+        events.register("before-send.dynamodb.*", accept_encoding_handler)
+        events.register("before-parse.dynamodb.*", decode_response_handler)
 
     # Register header filter if optimization enabled
     if config.header_optimization.enabled:

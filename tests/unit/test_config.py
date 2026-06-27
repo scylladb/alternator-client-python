@@ -14,6 +14,7 @@ from alternator.config import (
     KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
     RequestCompressionConfig,
+    ResponseCompression,
     RetryConfig,
     TlsConfig,
     TlsSessionCacheConfig,
@@ -85,6 +86,7 @@ class TestAlternatorConfig:
         assert config.request_compression.algorithm == CompressionAlgorithm.NONE
         assert config.request_compression.min_size_bytes == 1024
         assert config.request_compression.gzip_level == 9
+        assert config.response_compression == ()
         assert config.header_optimization.enabled is False
         assert config.header_optimization.whitelist is None
         assert config.header_optimization.whitelist_callback is None
@@ -215,6 +217,57 @@ class TestAlternatorConfigBuilder:
         assert config.request_compression.algorithm == CompressionAlgorithm.GZIP
         assert config.request_compression.min_size_bytes == 2048
         assert config.request_compression.gzip_level == 1
+
+    def test_build_with_response_compression(self) -> None:
+        """Test building config with response compression."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_response_compression(
+                ResponseCompression.GZIP,
+                ResponseCompression.DEFLATE,
+            )
+            .build()
+        )
+        assert config.response_compression == (
+            ResponseCompression.GZIP,
+            ResponseCompression.DEFLATE,
+        )
+
+    def test_without_response_compression(self) -> None:
+        """Test disabling response compression."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_response_compression(ResponseCompression.GZIP)
+            .without_response_compression()
+            .build()
+        )
+        assert config.response_compression == ()
+
+    def test_with_response_compression_rejects_invalid_encoding(self) -> None:
+        """Test enabling response compression rejects invalid encodings."""
+        with pytest.raises(
+            ConfigurationError,
+            match="unsupported response compression encoding",
+        ):
+            AlternatorConfigBuilder().with_response_compression(
+                None,  # type: ignore[arg-type] -- validate runtime input
+            )
+
+    def test_invalid_response_compression_raises(self) -> None:
+        """Test invalid response compression encodings raise."""
+        with pytest.raises(
+            ConfigurationError,
+            match="unsupported response compression encoding",
+        ):
+            Config(
+                seed_hosts=["localhost"],
+                port=8000,
+                response_compression=("br",),  # type: ignore[arg-type] -- validate runtime input
+            )
 
     @pytest.mark.parametrize("gzip_level", [-1, 10])
     def test_invalid_compression_level_raises(self, gzip_level: int) -> None:

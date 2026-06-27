@@ -8,7 +8,8 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 - **Node Discovery**: Automatically discovers cluster topology via the `/localnodes` endpoint
 - **Topology Awareness**: Route requests to specific datacenters or racks
 - **Key Affinity Routing**: Optimizes LWT (Lightweight Transaction) operations by routing requests for the same partition key to the same node
-- **Request Compression**: Optional gzip compression to reduce bandwidth
+- **Request Compression**: Optional gzip request compression to reduce bandwidth
+- **Response Compression**: Optional gzip/deflate response decompression
 - **Header Optimization**: Filters unnecessary headers to reduce request overhead
 - **TLS Support**: Full TLS/SSL support with custom CA certificates
 - **Async Support**: Full async/await support via aioboto3
@@ -173,6 +174,7 @@ from alternator import (
     AlternatorConfigBuilder,
     CompressionAlgorithm,
     KeyRouteAffinityMode,
+    ResponseCompression,
     TLS,
 )
 
@@ -183,6 +185,7 @@ config = (
     .with_https(TLS.system_default())
     .with_datacenter("us-east-1")
     .with_compression(CompressionAlgorithm.GZIP, min_size=1024)
+    .with_response_compression(ResponseCompression.GZIP)
     .with_key_affinity(KeyRouteAffinityMode.RMW)
     .with_refresh_intervals(active_ms=1000, idle_ms=60000)
     .build()
@@ -200,6 +203,7 @@ config = (
 | `compression` | `CompressionAlgorithm` | `NONE` | Request compression |
 | `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
 | `gzip_level` | `int` | `9` | gzip compression level, `0` through `9` |
+| `response_compression` | `Sequence[ResponseCompression]` | empty | Accepted response compression encodings |
 | `optimize_headers` | `bool` | `False` | Enable header filtering |
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
 | `header_whitelist_callback` | callable | `None` | Callback for dynamic header whitelist additions |
@@ -435,14 +439,18 @@ temporary locations, delete them after debugging, and never commit them. Key log
 support depends on Python/OpenSSL exposing `SSLContext.keylog_filename`; runtimes
 without that attribute ignore `key_log_file_path`.
 
-## Request Compression
+## Request And Response Compression
 
 Enable gzip compression for large request bodies:
 
-> **Note:** Gzip request compression requires **ScyllaDB 2026.1.0 or later**. Earlier versions do not support the `Content-Encoding: gzip` header. Response compression (`Accept-Encoding: gzip`) is not yet supported by Alternator.
+> **Note:** Gzip request compression requires **ScyllaDB 2026.1.0 or later**. HTTP response compression requires an Alternator build that includes ScyllaDB core response-compression support from `scylladb/scylladb#27454`.
 
 ```python
-from alternator import AlternatorConfigBuilder, CompressionAlgorithm
+from alternator import (
+    AlternatorConfigBuilder,
+    CompressionAlgorithm,
+    ResponseCompression,
+)
 
 config = (
     AlternatorConfigBuilder()
@@ -453,6 +461,10 @@ config = (
         min_size=1024,  # Only compress bodies >= 1KB
         gzip_level=6,   # Python gzip level 0-9; default is 9
     )
+    .with_response_compression(
+        ResponseCompression.GZIP,
+        ResponseCompression.DEFLATE,
+    )
     .build()
 )
 ```
@@ -462,6 +474,12 @@ Compression uses Python's `gzip.compress` implementation. Levels `0` through
 higher levels spend more CPU and usually produce smaller bodies. The client only
 sends compressed bodies when the compressed payload is smaller than the original
 payload.
+
+Response compression is disabled by default. When enabled, the client sends
+`Accept-Encoding` with the configured encodings and decodes `Content-Encoding:
+gzip` or `Content-Encoding: deflate` responses before boto3/aioboto3 parses the
+DynamoDB JSON body. Use `.without_response_compression()` to disable it again in
+builder chains.
 
 ## Header Optimization
 
@@ -760,7 +778,8 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 
 ## Known Limitations
 
-- **Request Compression**: Gzip compression requires ScyllaDB 2026.1.0+. Response compression is not yet supported by Alternator.
+- **Request Compression**: Gzip request compression requires ScyllaDB 2026.1.0+.
+- **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `with_response_compression(...)`.
 - **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.

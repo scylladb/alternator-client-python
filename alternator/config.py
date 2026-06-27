@@ -27,6 +27,13 @@ class CompressionAlgorithm(Enum):
     GZIP = auto()
 
 
+class ResponseCompression(Enum):
+    """HTTP response compression encoding accepted by the client."""
+
+    GZIP = "gzip"
+    DEFLATE = "deflate"
+
+
 class KeyRouteAffinityMode(Enum):
     """Mode for key-based routing affinity (LWT optimization)."""
 
@@ -361,6 +368,9 @@ class Config:
         default_factory=RequestCompressionConfig
     )
 
+    # Response compression settings
+    response_compression: Sequence[ResponseCompression] = field(default_factory=tuple)
+
     # Header optimization
     header_optimization: HeaderOptimizationConfig = field(
         default_factory=HeaderOptimizationConfig
@@ -406,6 +416,11 @@ class Config:
             )
         if not self.aws_region:
             raise ConfigurationError("aws_region must not be empty")
+        object.__setattr__(
+            self,
+            "response_compression",
+            _normalize_response_compression(self.response_compression),
+        )
 
 
 @dataclass(frozen=True)
@@ -443,6 +458,7 @@ class AlternatorConfigBuilder:
         self._scheme: Literal["http", "https"] = "http"
         self._routing_scope: RoutingScope | None = None
         self._request_compression = RequestCompressionConfig()
+        self._response_compression: tuple[ResponseCompression, ...] = ()
         self._header_optimization = HeaderOptimizationConfig()
         self._tls = TLS.system_default()
         self._key_affinity = KeyRouteAffinityConfig()
@@ -508,6 +524,21 @@ class AlternatorConfigBuilder:
             min_size_bytes=min_size,
             gzip_level=gzip_level,
         )
+        return self
+
+    def with_response_compression(
+        self,
+        encoding: ResponseCompression,
+        *additional_encodings: ResponseCompression,
+    ) -> AlternatorConfigBuilder:
+        """Enable response compression for the accepted encodings."""
+        encodings = (encoding, *additional_encodings)
+        self._response_compression = _normalize_response_compression(encodings)
+        return self
+
+    def without_response_compression(self) -> AlternatorConfigBuilder:
+        """Disable response compression."""
+        self._response_compression = ()
         return self
 
     def with_header_optimization(
@@ -601,6 +632,7 @@ class AlternatorConfigBuilder:
             scheme=self._scheme,
             routing_scope=self._routing_scope or ClusterScope(),
             request_compression=self._request_compression,
+            response_compression=self._response_compression,
             header_optimization=self._header_optimization,
             tls=self._tls,
             key_affinity=self._key_affinity,
@@ -629,3 +661,16 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
     if config.sdk_config_customizer is not None:
         config.sdk_config_customizer(kwargs)
     return kwargs
+
+
+def _normalize_response_compression(
+    encodings: Sequence[ResponseCompression],
+) -> tuple[ResponseCompression, ...]:
+    """Validate and freeze response compression encodings."""
+    normalized = tuple(encodings)
+    for encoding in normalized:
+        if not isinstance(encoding, ResponseCompression):
+            raise ConfigurationError(
+                f"unsupported response compression encoding: {encoding!r}"
+            )
+    return normalized

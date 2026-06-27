@@ -19,6 +19,7 @@ authority for compatibility decisions.
 - Added TLS client certificate, client key, and key log file settings.
 - Added configurable gzip compression level and callback-based header whitelist
   additions.
+- Added opt-in gzip and deflate response compression decoding.
 - Updated key-affinity routing semantics for read-modify-write operations and
   `BatchWriteItem` preferred-node voting.
 
