@@ -9,7 +9,6 @@ connections. Copy the functions into application code as needed.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 
 from alternator import (
     TLS,
@@ -74,13 +73,8 @@ def datacenter_only_config() -> Config:
     )
 
 
-def customize_sdk(kwargs: dict[str, Any]) -> None:
-    """Adjust supported SDK config kwargs without taking over endpoint routing."""
-    kwargs["user_agent_extra"] = "orders-service"
-
-
 def transport_config() -> Config:
-    """Configure retries, per-attempt timeouts, pool size, and SDK kwargs."""
+    """Configure retries, per-attempt timeouts, pool size, and User-Agent."""
     return (
         AlternatorConfigBuilder()
         .with_seeds("node1.example.com", "node2.example.com")
@@ -93,7 +87,7 @@ def transport_config() -> Config:
         )
         .with_pool_connections(300)
         .with_aws_region("us-east-1")
-        .with_sdk_config_customizer(customize_sdk)
+        .with_user_agent(lambda default: f"orders-service {default}")
         .build()
     )
 

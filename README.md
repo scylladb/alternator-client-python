@@ -213,6 +213,7 @@ config = (
 | `max_pool_connections` | `int` | `200` | Max connections per host |
 | `timeouts` | `TimeoutConfig` | discovery 5s, connect 5s, read 30s | Discovery and SDK per-attempt timeouts |
 | `aws_region` | `str` | `"us-east-1"` | Region placeholder required by the SDK |
+| `user_agent` | str, callable, or `None` | `alternator-client-python/<version>` | Final User-Agent; `None` omits the wire header |
 | `sdk_config_customizer` | callable | `None` | Callback for safe SDK config kwargs adjustments |
 | `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
 | `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
@@ -740,27 +741,47 @@ config = Config(
 )
 ```
 
-Use `sdk_config_customizer` for supported SDK config kwargs that are not modeled
-directly:
+By default, Alternator sends `alternator-client-python/<version>` as the final
+wire `User-Agent` header. Pass `None` to omit the header:
 
 ```python
-from alternator import Config
-
-def customize_sdk(kwargs: dict[str, object]) -> None:
-    kwargs["user_agent_extra"] = "my-service"
+from alternator import Config, create_client
 
 config = Config(
-    seed_hosts=["node1"],
+    seed_hosts=["node1", "node2"],
     port=8000,
-    sdk_config_customizer=customize_sdk,
+    user_agent=None,
 )
+client = create_client(config)
 ```
 
-The client still owns the SDK config object and endpoint routing. Auth-managed
-signature settings are reapplied after the customizer. Python botocore does not
-expose direct knobs for max idle connections, max idle connections per host, or
-idle connection timeout; tune `max_pool_connections`, retries, and timeouts
-instead.
+Pass a string to `user_agent` when you need to set a final value:
+
+```python
+config = Config(
+    seed_hosts=["node1", "node2"],
+    port=8000,
+    user_agent="orders-service/1.0",
+)
+client = create_client(config)
+```
+
+Pass a callback when you need to wrap or add to the default
+`alternator-client-python/<version>` identity:
+
+```python
+config = Config(
+    seed_hosts=["node1", "node2"],
+    port=8000,
+    user_agent=lambda default: f"orders-service {default}",
+)
+client = create_client(config)
+```
+
+The client still owns the SDK config object, endpoint routing, and the final
+wire `User-Agent` header. Python botocore does not expose direct knobs for max
+idle connections, max idle connections per host, or idle connection timeout;
+tune `max_pool_connections`, retries, and timeouts instead.
 
 ## Production Recommendations
 

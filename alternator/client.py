@@ -227,6 +227,7 @@ def _create_client_with_manager(
     initial_endpoint = manager.next_node_uri()
     auth_enabled = apply_auth(auth, boto_kwargs)
     boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
+    user_agent = cast("str | None", getattr(boto_config, "user_agent", None))
 
     # Create boto3 client
     # Alternator doesn't use AWS regions, but boto3 requires one;
@@ -246,6 +247,7 @@ def _create_client_with_manager(
         config,
         _create_affinity_node_computer(config, client),
         auth_enabled=auth_enabled,
+        user_agent=user_agent,
     )
 
     # Attach manager for cleanup reference
@@ -415,6 +417,7 @@ def _create_resource_with_manager(
     initial_endpoint = manager.next_node_uri()
     auth_enabled = apply_auth(auth, boto_kwargs)
     boto_config = _create_boto_config(config, auth_enabled=auth_enabled)
+    user_agent = cast("str | None", getattr(boto_config, "user_agent", None))
 
     # Create boto3 resource
     # Alternator doesn't use AWS regions, but boto3 requires one;
@@ -434,6 +437,7 @@ def _create_resource_with_manager(
         config,
         _create_affinity_node_computer(config, resource.meta.client),
         auth_enabled=auth_enabled,
+        user_agent=user_agent,
     )
 
     # Attach manager for cleanup reference

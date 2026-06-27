@@ -7,7 +7,14 @@ import pytest
 from botocore import UNSIGNED
 
 from alternator.client import _create_boto_config
-from alternator.config import TLS, Config, RetryConfig, RetryMode, TimeoutConfig
+from alternator.config import (
+    DEFAULT_USER_AGENT,
+    TLS,
+    Config,
+    RetryConfig,
+    RetryMode,
+    TimeoutConfig,
+)
 
 
 class TestCreateBotoConfig:
@@ -83,18 +90,98 @@ class TestCreateBotoConfig:
         assert boto_config.connect_timeout == 2.5
         assert boto_config.read_timeout == 7.5
 
+    def test_default_user_agent_propagated(self) -> None:
+        """By default Alternator supplies its own SDK user-agent."""
+        config = self._make_config()
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent == DEFAULT_USER_AGENT
+        assert boto_config._user_provided_options["user_agent"] == DEFAULT_USER_AGENT
+
+    def test_user_agent_callback_can_append_to_current_value(self) -> None:
+        """Callback can keep the SDK user-agent and add Alternator identity."""
+        current = "Boto3/1.0 Botocore/1.0"
+
+        config = self._make_config(user_agent=lambda default: f"{current} {default}")
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent == f"Boto3/1.0 Botocore/1.0 {DEFAULT_USER_AGENT}"
+
+    def test_user_agent_callback_can_wrap_default_value(self) -> None:
+        """Callback can place the Alternator identity inside another string."""
+        config = self._make_config(user_agent=lambda default: f"service-a ({default})")
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent == f"service-a ({DEFAULT_USER_AGENT})"
+
+    def test_user_agent_callback_can_replace_default_value(self) -> None:
+        """Callback can replace the Alternator identity completely."""
+        config = self._make_config(user_agent=lambda _default: "orders-service/1.0")
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent == "orders-service/1.0"
+
+    def test_user_agent_string_replaces_default_value(self) -> None:
+        """A literal user-agent value replaces the Alternator identity."""
+        config = self._make_config(user_agent="orders-service/1.0")
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent == "orders-service/1.0"
+
+    def test_user_agent_callback_must_return_non_empty_string(self) -> None:
+        """Invalid user-agent callback results fail during SDK config creation."""
+        config = self._make_config(user_agent=lambda _default: "")
+
+        with pytest.raises(ValueError, match="user_agent"):
+            _create_boto_config(config, auth_enabled=False)
+
+    def test_user_agent_string_must_be_non_empty(self) -> None:
+        """Invalid literal user-agent values fail during SDK config creation."""
+        config = self._make_config(user_agent="")
+
+        with pytest.raises(ValueError, match="user_agent"):
+            _create_boto_config(config, auth_enabled=False)
+
     def test_sdk_config_customizer_can_adjust_safe_fields(self) -> None:
         """SDK config customizer can adjust generated config kwargs."""
 
         def customize(kwargs: dict[str, object]) -> None:
             kwargs["connect_timeout"] = 9.0
-            kwargs["user_agent_extra"] = "alternator-test"
 
         config = self._make_config(sdk_config_customizer=customize)
         boto_config = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.connect_timeout == 9.0
-        assert boto_config.user_agent_extra == "alternator-test"
+        assert boto_config.user_agent == DEFAULT_USER_AGENT
+
+    def test_user_agent_none_overrides_sdk_config_customizer(self) -> None:
+        """The typed user-agent API removes generic customizer user-agent output."""
+
+        def customize(kwargs: dict[str, object]) -> None:
+            kwargs["user_agent"] = "legacy-customizer/1.0"
+
+        config = self._make_config(
+            sdk_config_customizer=customize,
+            user_agent=None,
+        )
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent is None
+        assert "user_agent" not in boto_config._user_provided_options
+
+    def test_user_agent_callback_overrides_sdk_config_customizer(self) -> None:
+        """The typed user-agent API wins over the generic SDK customizer."""
+
+        def customize(kwargs: dict[str, object]) -> None:
+            kwargs["user_agent"] = "legacy-customizer/1.0"
+
+        config = self._make_config(
+            sdk_config_customizer=customize,
+            user_agent=lambda default: f"orders-service {default}",
+        )
+        boto_config = _create_boto_config(config, auth_enabled=False)
+
+        assert boto_config.user_agent == f"orders-service {DEFAULT_USER_AGENT}"
 
     def test_sdk_config_customizer_cannot_override_signature(self) -> None:
         """Auth-managed signature settings override customizer changes."""
@@ -175,6 +262,8 @@ class TestCreateAioConfig:
             "/path/to/client.crt",
             "/path/to/client.key",
         )
+        assert aio_config.user_agent == DEFAULT_USER_AGENT
+        assert aio_config._user_provided_options["user_agent"] == DEFAULT_USER_AGENT
 
 
 class TestUnsignedRequestNoAuthHeader:

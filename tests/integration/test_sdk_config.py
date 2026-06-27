@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from alternator import (
@@ -24,9 +22,6 @@ pytestmark = [
 
 
 def _transport_config(user_agent_label: str) -> Config:
-    def customize_sdk(kwargs: dict[str, Any]) -> None:
-        kwargs["user_agent_extra"] = user_agent_label
-
     return Config(
         seed_hosts=[SCYLLA_HOST],
         port=SCYLLA_PORT,
@@ -39,7 +34,7 @@ def _transport_config(user_agent_label: str) -> Config:
             read_seconds=11.0,
         ),
         aws_region="us-west-2",
-        sdk_config_customizer=customize_sdk,
+        user_agent=user_agent_label,
     )
 
 
@@ -56,7 +51,7 @@ class TestSdkConfigPropagation:
             assert sdk_config.connect_timeout == 3.0
             assert sdk_config.read_timeout == 11.0
             assert sdk_config.retries["mode"] == RetryMode.STANDARD.value
-            assert "alternator-sdk-config-sync" in sdk_config.user_agent_extra
+            assert sdk_config.user_agent.startswith("alternator-sdk-config-sync")
             assert "TableNames" in client.list_tables()
         finally:
             close_client(client)
@@ -76,7 +71,7 @@ class TestAsyncSdkConfigPropagation:
             assert sdk_config.connect_timeout == 3.0
             assert sdk_config.read_timeout == 11.0
             assert sdk_config.retries["mode"] == RetryMode.STANDARD.value
-            assert "alternator-sdk-config-async" in sdk_config.user_agent_extra
+            assert sdk_config.user_agent.startswith("alternator-sdk-config-async")
             assert "TableNames" in await client.list_tables()
         finally:
             await close_async_client(client)

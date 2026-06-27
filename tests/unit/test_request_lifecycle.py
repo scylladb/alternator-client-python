@@ -11,7 +11,13 @@ from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import EndpointConnectionError
 
-from alternator.config import CompressionAlgorithm, Config, RequestCompressionConfig
+from alternator.config import (
+    DEFAULT_USER_AGENT,
+    CompressionAlgorithm,
+    Config,
+    HeaderOptimizationConfig,
+    RequestCompressionConfig,
+)
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.live_nodes import NodeList
 
@@ -23,6 +29,12 @@ class _StaticManager:
     @property
     def nodes(self) -> NodeList:
         return self._nodes
+
+
+def _header_text(value: object) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
 
 
 def test_signed_request_url_and_compressed_body_are_final_before_signing() -> None:
@@ -79,6 +91,87 @@ def test_signed_request_url_and_compressed_body_are_final_before_signing() -> No
     assert seen["before_sign_body"].startswith(b"\x1f\x8b")
     assert seen["before_sign_headers"]["Content-Encoding"] == "gzip"
     assert seen["authorization"] is not None
+
+
+def test_unset_user_agent_removes_sdk_user_agent_before_send() -> None:
+    """Final request does not include User-Agent when Alternator value is unset."""
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        header_optimization=HeaderOptimizationConfig(enabled=True),
+    )
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url="http://seed:8000",
+        region_name="us-east-1",
+        config=BotoConfig(
+            signature_version=UNSIGNED,
+            user_agent="Boto3/1.0 Botocore/1.0",
+        ),
+    )
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("node-b",)),
+        config,
+        auth_enabled=False,
+        user_agent=None,
+    )
+    seen: dict[str, object] = {}
+
+    def capture_before_send(request: AWSPreparedRequest, **_: object) -> None:
+        seen["user_agent"] = request.headers.get("User-Agent")
+        raise RuntimeError("captured")
+
+    client.meta.events.register_last(
+        "before-send.dynamodb.ListTables", capture_before_send
+    )
+
+    with pytest.raises(RuntimeError, match="captured"):
+        client.list_tables()
+
+    assert seen["user_agent"] is None
+
+
+def test_configured_user_agent_replaces_sdk_user_agent_before_send() -> None:
+    """Final User-Agent contains only the configured Alternator value."""
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        header_optimization=HeaderOptimizationConfig(enabled=True),
+        user_agent=DEFAULT_USER_AGENT,
+    )
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url="http://seed:8000",
+        region_name="us-east-1",
+        config=BotoConfig(
+            signature_version=UNSIGNED,
+            user_agent="Boto3/1.0 Botocore/1.0",
+        ),
+    )
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("node-b",)),
+        config,
+        auth_enabled=False,
+        user_agent=DEFAULT_USER_AGENT,
+    )
+    seen: dict[str, str] = {}
+
+    def capture_before_send(request: AWSPreparedRequest, **_: object) -> None:
+        seen["user_agent"] = _header_text(request.headers.get("User-Agent"))
+        raise RuntimeError("captured")
+
+    client.meta.events.register_last(
+        "before-send.dynamodb.ListTables", capture_before_send
+    )
+
+    with pytest.raises(RuntimeError, match="captured"):
+        client.list_tables()
+
+    assert seen["user_agent"] == DEFAULT_USER_AGENT
+    assert "Boto3" not in seen["user_agent"]
+    assert "Botocore" not in seen["user_agent"]
 
 
 def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) -> None:

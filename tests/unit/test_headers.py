@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from alternator.config import (
+    DEFAULT_USER_AGENT,
     CompressionAlgorithm,
     Config,
     HeaderOptimizationConfig,
@@ -19,6 +20,7 @@ from alternator.core.headers import (
     COMPRESSION_HEADERS,
     compute_header_whitelist,
     create_header_filter_handler,
+    create_user_agent_header_handler,
 )
 
 
@@ -229,6 +231,37 @@ class TestHeaderFilterHandler:
         handler(request, operation_name="PutItem", extra="value")
 
 
+class TestUserAgentHeaderHandler:
+    """Tests for create_user_agent_header_handler function."""
+
+    def test_replaces_existing_user_agent(self) -> None:
+        """Test the Alternator user-agent replaces an SDK-generated value."""
+        handler = create_user_agent_header_handler(DEFAULT_USER_AGENT)
+        request = MagicMock()
+        request.headers = {"User-Agent": "Boto3/1.0 Botocore/1.0"}
+
+        handler(request)
+
+        assert request.headers["User-Agent"] == DEFAULT_USER_AGENT
+
+    def test_removes_existing_user_agent_when_unset(self) -> None:
+        """Test an unset Alternator user-agent removes SDK-generated values."""
+        handler = create_user_agent_header_handler(None)
+        request = MagicMock()
+        request.headers = {"User-Agent": "Boto3/1.0 Botocore/1.0"}
+
+        handler(request)
+
+        assert "User-Agent" not in request.headers
+
+    def test_handles_missing_headers_attribute(self) -> None:
+        """Test handler handles request without headers attribute."""
+        handler = create_user_agent_header_handler(DEFAULT_USER_AGENT)
+        request = MagicMock(spec=[])
+
+        handler(request)
+
+
 class TestBaseRequiredHeaders:
     """Tests for BASE_REQUIRED_HEADERS constant."""
 
@@ -433,3 +466,77 @@ class TestHeaderFilterWithHandlerRegistration:
         assert "X-Dynamic-Header" in request.headers
         assert "X-Remove-Me" not in request.headers
         assert "Authorization" in request.headers
+
+    def test_default_user_agent_readded_after_header_filter(self) -> None:
+        """Test default Alternator user-agent is present even with filtering."""
+        config = _make_config()
+        manager = _make_manager()
+        events = MagicMock()
+
+        _register_alternator_handlers(events, manager, config, auth_enabled=False)
+
+        registered_handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+        final_handlers = {
+            call[0][1].__name__: call[0][1]
+            for call in events.register_last.call_args_list
+        }
+
+        request = _make_request(include_auth_headers=False)
+        registered_handlers["filter_headers"](request)
+        assert "User-Agent" not in request.headers
+
+        final_handlers["set_user_agent"](request)
+        assert request.headers["User-Agent"] == DEFAULT_USER_AGENT
+
+    def test_user_agent_remains_absent_after_header_filter_when_unset(self) -> None:
+        """Test final User-Agent is absent when Alternator user-agent is None."""
+        config = _make_config()
+        manager = _make_manager()
+        events = MagicMock()
+
+        _register_alternator_handlers(
+            events,
+            manager,
+            config,
+            auth_enabled=False,
+            user_agent=None,
+        )
+
+        registered_handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+        final_handlers = {
+            call[0][1].__name__: call[0][1]
+            for call in events.register_last.call_args_list
+        }
+
+        request = _make_request(include_auth_headers=False)
+        registered_handlers["filter_headers"](request)
+        assert "User-Agent" not in request.headers
+
+        final_handlers["set_user_agent"](request)
+        assert "User-Agent" not in request.headers
+
+    def test_custom_user_agent_used_by_registered_handler(self) -> None:
+        """Test handler registration uses the supplied Alternator user-agent."""
+        config = _make_config(optimize_headers=False)
+        manager = _make_manager()
+        events = MagicMock()
+
+        _register_alternator_handlers(
+            events,
+            manager,
+            config,
+            user_agent="custom-alternator/2.0",
+        )
+
+        final_handlers = {
+            call[0][1].__name__: call[0][1]
+            for call in events.register_last.call_args_list
+        }
+        request = _make_request(include_auth_headers=False)
+        final_handlers["set_user_agent"](request)
+
+        assert request.headers["User-Agent"] == "custom-alternator/2.0"
