@@ -217,6 +217,25 @@ def test_close_resource_closes_underlying_boto_client() -> None:
 
 
 @pytest.mark.asyncio
+async def test_async_session_accepts_seed_keywords() -> None:
+    """AsyncSession can be configured directly without a prebuilt Config."""
+    session = AsyncSession(seeds=["node1", "node2"], port=8042, scheme="https")
+
+    assert session.config.seed_hosts == ("node1", "node2")
+    assert session.config.port == 8042
+    assert session.config.scheme == "https"
+
+
+@pytest.mark.asyncio
+async def test_async_session_rejects_unsupported_service_name() -> None:
+    """AsyncSession only creates DynamoDB clients."""
+    session = AsyncSession(seeds=["node1"], port=8000)
+
+    with pytest.raises(ConfigurationError, match="'dynamodb'"):
+        await session.client("s3")
+
+
+@pytest.mark.asyncio
 async def test_async_helper_lifecycle_and_node_diagnostics(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
