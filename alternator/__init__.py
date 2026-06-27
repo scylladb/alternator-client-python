@@ -73,6 +73,7 @@ Vector Search (ScyllaDB Extension)
 Notes
 -----
 - Gzip compression requires ScyllaDB 2026.1.0 or later
+- Response compression supports gzip and deflate when the server supports it
 - For async support, install with: ``pip install alternator[async]``
 - Vector search is a ScyllaDB Alternator extension not available on AWS DynamoDB
 """
@@ -102,6 +103,7 @@ from alternator.config import (
     KeyRouteAffinityMode,
     NodeListPollingConfig,
     RequestCompressionConfig,
+    ResponseCompression,
     RetryConfig,
     RetryMode,
     SDKConfigCustomizer,
@@ -150,6 +152,7 @@ __all__ = [
     "HeaderWhitelistCallback",
     "HeaderWhitelistContext",
     "RequestCompressionConfig",
+    "ResponseCompression",
     "KeyRouteAffinityConfig",
     "KeyRouteAffinityMode",
     "NodeListPollingConfig",

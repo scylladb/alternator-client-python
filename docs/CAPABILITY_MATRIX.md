@@ -14,6 +14,7 @@ and intentionally deferred behavior.
 | Request query plans | Supported | Existing API | Requests use stable seeded node ordering for retries. |
 | Auth | Supported | Existing API | Disabled by default; explicit static credentials enable signing. |
 | Request compression | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip request compression supports threshold and compression-level configuration. |
+| Response compression | Supported | [#65](https://github.com/scylladb/alternator-client-python/issues/65) | Gzip and deflate response decoding is disabled by default and enabled with `with_response_compression(...)`. |
 | Header optimization | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Required headers are preserved, with static and callback-computed whitelist additions. |
 | TLS server trust | Supported | Existing API | System CA, custom CA, hostname verification, and trust-all mode exist. |
 | TLS client certificates | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS certificate/key paths are loaded into discovery SSL contexts and SDK `client_cert` config. |
