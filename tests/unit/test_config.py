@@ -385,8 +385,6 @@ class TestTLS:
         """Test default session cache configuration."""
         tls = TLS()
         assert tls.session_cache.enabled is True
-        assert tls.session_cache.cache_size == 1024
-        assert tls.session_cache.timeout_seconds == 86400
 
 
 class TestTlsSessionCacheConfig:
@@ -396,19 +394,11 @@ class TestTlsSessionCacheConfig:
         """Test default values."""
         cache = TlsSessionCacheConfig()
         assert cache.enabled is True
-        assert cache.cache_size == 1024
-        assert cache.timeout_seconds == 86400
 
     def test_custom_values(self) -> None:
         """Test custom values."""
-        cache = TlsSessionCacheConfig(
-            enabled=False,
-            cache_size=512,
-            timeout_seconds=3600,
-        )
+        cache = TlsSessionCacheConfig(enabled=False)
         assert cache.enabled is False
-        assert cache.cache_size == 512
-        assert cache.timeout_seconds == 3600
 
 
 class TestKeyRouteAffinityConfig:

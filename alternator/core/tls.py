@@ -51,10 +51,7 @@ def create_ssl_context(tls_config: TLS) -> ssl.SSLContext:
     if tls_config.key_log_file_path is not None and hasattr(context, "keylog_filename"):
         context.keylog_filename = str(tls_config.key_log_file_path)
 
-    # Configure session caching
-    # Note: Python's ssl module only exposes session ticket control (OP_NO_TICKET).
-    # The cache_size and timeout_seconds settings in TlsSessionCacheConfig are
-    # reserved for future use with custom implementations or alternative TLS backends.
+    # Configure session ticket reuse.
     if tls_config.session_cache.enabled:
         # Enable session tickets for session reuse
         context.options &= ~ssl.OP_NO_TICKET

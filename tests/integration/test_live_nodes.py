@@ -39,8 +39,6 @@ class TestLiveNodeSessionDiagnostics:
             assert session.refresh_nodes()
             nodes = session.nodes
             assert nodes
-            assert session.active_nodes == nodes
-            assert session.quarantined_nodes == []
             assert session.supports_topology_filters()
             assert session.partition_key_for("preconfigured_table") == "pk"
 
@@ -60,8 +58,6 @@ class TestAsyncLiveNodeSessionDiagnostics:
             assert await session.refresh_nodes()
             nodes = session.nodes
             assert nodes
-            assert session.active_nodes == nodes
-            assert session.quarantined_nodes == []
             assert await session.supports_topology_filters()
             assert await session.partition_key_for("preconfigured_table") == "pk"
 

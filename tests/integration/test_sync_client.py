@@ -332,8 +332,8 @@ class TestPartitionKeyAutoDiscovery:
 
     def test_auto_discover_pk_name(self, table_name: str) -> None:
         """Test that partition key name is auto-discovered via DescribeTable."""
-        # Configure affinity WITHOUT pre-defined table_pk_map
-        # The client should discover the PK name automatically
+        # Configure affinity without preloaded partition-key attributes.
+        # The client should discover the PK name automatically.
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,

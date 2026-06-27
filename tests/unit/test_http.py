@@ -210,11 +210,7 @@ class TestCreateSslContext:
 
     def test_session_cache_custom_config(self) -> None:
         """Test custom session cache configuration."""
-        cache_config = TlsSessionCacheConfig(
-            enabled=True,
-            cache_size=512,
-            timeout_seconds=3600,
-        )
+        cache_config = TlsSessionCacheConfig(enabled=True)
         tls_config = TLS(session_cache=cache_config)
         context = create_ssl_context(tls_config)
 

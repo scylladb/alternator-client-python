@@ -296,7 +296,7 @@ class TestAsyncKeyAffinity:
         """Test async auto-discovery of partition key via DescribeTable."""
         from alternator.async_client import AsyncSession
 
-        # Configure affinity WITHOUT pre-defined table_pk_map
+        # Configure affinity without preloaded partition-key attributes.
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,

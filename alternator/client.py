@@ -629,16 +629,6 @@ class Session:
             return []
         return list(self._manager.nodes.nodes)
 
-    @property
-    def active_nodes(self) -> list[str]:
-        """Return active nodes; currently this is the live-node list."""
-        return self.nodes
-
-    @property
-    def quarantined_nodes(self) -> list[str]:
-        """Return quarantined nodes; node quarantine is not implemented."""
-        return []
-
     def validate_scope(self) -> bool:
         """Return whether the configured rack/datacenter scope is complete."""
         manager = self._manager

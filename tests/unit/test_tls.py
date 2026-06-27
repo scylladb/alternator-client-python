@@ -244,20 +244,12 @@ class TestTlsSessionCacheConfig:
         config = TlsSessionCacheConfig()
 
         assert config.enabled is True
-        assert config.cache_size == 1024
-        assert config.timeout_seconds == 86400  # 24 hours
 
     def test_custom_values(self) -> None:
         """Test TlsSessionCacheConfig with custom values."""
-        config = TlsSessionCacheConfig(
-            enabled=False,
-            cache_size=2048,
-            timeout_seconds=3600,
-        )
+        config = TlsSessionCacheConfig(enabled=False)
 
         assert config.enabled is False
-        assert config.cache_size == 2048
-        assert config.timeout_seconds == 3600
 
     def test_immutable(self) -> None:
         """Test TlsSessionCacheConfig is immutable (frozen)."""

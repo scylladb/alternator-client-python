@@ -145,10 +145,6 @@ async with AsyncSession(config) as session:
     await client.list_tables()
 ```
 
-`active_nodes` currently returns the live-node list, and
-`quarantined_nodes` returns an empty list because node health and
-quarantine behavior are intentionally deferred.
-
 ## Configuration
 
 ### Basic Configuration
@@ -429,11 +425,7 @@ tls = TLS(
     custom_ca_cert_paths=[Path("/path/to/ca.pem")],
     trust_system_ca_certs=True,
     verify_hostname=True,
-    session_cache=TlsSessionCacheConfig(
-        enabled=True,
-        cache_size=1024,
-        timeout_seconds=86400,
-    ),
+    session_cache=TlsSessionCacheConfig(enabled=True),
     client_cert_path=Path("/path/to/client.crt"),
     client_key_path=Path("/path/to/client.key"),
     key_log_file_path=Path("/secure/tmp/alternator-tls.keys"),
@@ -820,12 +812,12 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 - **Request Compression**: Gzip request compression requires ScyllaDB 2026.1.0+.
 - **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `Config.response_compression`.
 - **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
-- **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
+- **TLS Session Cache Settings**: `TlsSessionCacheConfig.enabled` controls session ticket behavior. Python's `ssl` module does not expose direct cache size or timeout controls.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
-- **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
+- **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading `KeyRouteAffinityConfig.table_pk_attributes` avoids this initial miss.
 - **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Ties, missing partition-key metadata, unsupported key values, no active nodes, or no eligible votes fall back to normal routing. Batches are not split by affinity target.
-- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `Session.quarantined_nodes` returns an empty list until a future implementation is explicitly added.
+- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only.
 
 ## Examples
 

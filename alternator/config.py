@@ -51,16 +51,12 @@ class TlsSessionCacheConfig:
     TLS session cache settings for connection reuse.
 
     Note:
-        Python's ``ssl`` module does not expose direct control over session
-        cache size or timeout. Only the ``enabled`` flag is effective, controlling
-        whether session tickets (OP_NO_TICKET) are enabled or disabled.
-        The ``cache_size`` and ``timeout_seconds`` parameters are reserved for
-        future use with custom implementations or alternative TLS backends.
+        Python's ``ssl`` module exposes session ticket control through
+        ``OP_NO_TICKET``. This flag controls whether session tickets are enabled
+        or disabled for TLS connection reuse.
     """
 
     enabled: bool = True
-    cache_size: int = 1024  # Reserved for future use
-    timeout_seconds: int = 86400  # Reserved for future use (24 hours)
 
 
 @dataclass(frozen=True)

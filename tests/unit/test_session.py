@@ -67,8 +67,6 @@ def test_session_lifecycle_and_node_diagnostics(
     assert session.nodes == []
     assert session.refresh_nodes() is True
     assert session.nodes == ["node1", "node2"]
-    assert session.active_nodes == ["node1", "node2"]
-    assert session.quarantined_nodes == []
 
     session.start()
     session.start()
@@ -247,8 +245,6 @@ async def test_async_session_lifecycle_and_node_diagnostics(
     assert session.nodes == []
     assert await session.refresh_nodes() is True
     assert session.nodes == ["node1", "node2"]
-    assert session.active_nodes == ["node1", "node2"]
-    assert session.quarantined_nodes == []
 
     await session.start()
     await session.start()

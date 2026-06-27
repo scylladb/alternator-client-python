@@ -192,7 +192,7 @@ class AsyncPartitionKeyCache:
         async with self._lock:
             self._cache.clear()
 
-    def preload(self, table_pk_map: dict[str, str]) -> None:
+    def preload(self, table_pk_attributes: dict[str, str]) -> None:
         """
         Preload cache with known table -> pk mappings.
 
@@ -200,9 +200,9 @@ class AsyncPartitionKeyCache:
         before concurrent access begins.
 
         Args:
-            table_pk_map: Mapping of table name to partition key name
+            table_pk_attributes: Mapping of table name to partition key name
         """
-        self._cache.update(table_pk_map)
+        self._cache.update(table_pk_attributes)
 
 
 def _create_async_affinity_node_computer(
@@ -523,16 +523,6 @@ class AsyncSession:
         if self._manager is None:
             return []
         return list(self._manager.nodes.nodes)
-
-    @property
-    def active_nodes(self) -> list[str]:
-        """Return active nodes; currently this is the live-node list."""
-        return self.nodes
-
-    @property
-    def quarantined_nodes(self) -> list[str]:
-        """Return quarantined nodes; node quarantine is not implemented."""
-        return []
 
     async def validate_scope(self) -> bool:
         """Validate configured rack/datacenter scope without changing state."""
