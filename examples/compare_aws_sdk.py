@@ -9,7 +9,8 @@ AWS DynamoDB, which requires normal AWS SDK credentials and region setup.
 from __future__ import annotations
 
 import argparse
-from typing import Protocol
+from collections.abc import Mapping
+from typing import Protocol, cast
 
 import boto3
 
@@ -17,18 +18,34 @@ import alternator
 from alternator import Auth
 
 
+class DynamoDBServiceModelLike(Protocol):
+    """Minimal service model protocol used by this example."""
+
+    service_name: str
+
+
+class DynamoDBClientMetaLike(Protocol):
+    """Minimal DynamoDB client metadata protocol used by this example."""
+
+    service_model: DynamoDBServiceModelLike
+    endpoint_url: str
+
+
 class DynamoDBLikeClient(Protocol):
     """Minimal DynamoDB client protocol used by this example."""
 
     @property
-    def meta(self) -> object: ...
+    def meta(self) -> DynamoDBClientMetaLike:
+        pass
 
-    def list_tables(self) -> dict[str, object]: ...
+    def list_tables(self) -> Mapping[str, object]:
+        pass
 
 
-def print_client_details(name: str, client: DynamoDBLikeClient) -> None:
+def print_client_details(name: str, client: object) -> None:
     """Print comparable client metadata."""
-    meta = client.meta
+    typed_client = cast(DynamoDBLikeClient, client)
+    meta = typed_client.meta
     print(f"{name}:")
     print(f"  service: {meta.service_model.service_name}")
     print(f"  endpoint: {meta.endpoint_url}")

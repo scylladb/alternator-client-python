@@ -1,6 +1,7 @@
 """Tests for AsyncLiveNodesManager and AsyncPartitionKeyCache."""
 
 import asyncio
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -39,11 +40,11 @@ class TestAsyncLiveNodesManager:
 
         # Start
         await manager.start()
-        assert manager._refresh_task is not None
+        assert cast(object, manager._refresh_task) is not None
 
         # Stop
         await manager.stop()
-        assert manager._refresh_task is None
+        assert cast(object, manager._refresh_task) is None
 
     @pytest.mark.asyncio
     async def test_next_node_uri_format(self, config: Config) -> None:
@@ -152,7 +153,11 @@ class TestAsyncLiveNodesManager:
     @pytest.mark.asyncio
     async def test_url_construction(self, config: Config) -> None:
         """Test build_localnodes_url constructs correct URL."""
-        manager = AsyncLiveNodesManager(config, lambda _: [])
+
+        async def empty_fetch(url: str) -> list[str]:
+            return []
+
+        manager = AsyncLiveNodesManager(config, empty_fetch)
 
         url = manager._core.build_localnodes_url(ClusterScope(), "192.168.1.1")
         assert url == "http://192.168.1.1:8000/localnodes"
@@ -160,7 +165,11 @@ class TestAsyncLiveNodesManager:
     @pytest.mark.asyncio
     async def test_url_construction_with_dc_scope(self, config: Config) -> None:
         """Test URL construction with datacenter scope."""
-        manager = AsyncLiveNodesManager(config, lambda _: [])
+
+        async def empty_fetch(url: str) -> list[str]:
+            return []
+
+        manager = AsyncLiveNodesManager(config, empty_fetch)
 
         url = manager._core.build_localnodes_url(
             DatacenterScope(datacenter="dc1"), "192.168.1.1"
@@ -380,7 +389,7 @@ class TestAsyncPartitionKeyCache:
         fetch_count = 0
         fetch_event = asyncio.Event()
 
-        async def slow_describe_table(TableName: str) -> dict:
+        async def slow_describe_table(TableName: str) -> dict[str, Any]:
             nonlocal fetch_count
             fetch_count += 1
             # Wait a bit to simulate network delay

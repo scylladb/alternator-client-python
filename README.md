@@ -841,6 +841,9 @@ make test-unit
 # Run linting
 make lint
 
+# Run mypy type checks
+make typecheck
+
 # Start local Scylla cluster for integration tests
 make scylla-start
 make test-integration

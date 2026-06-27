@@ -50,7 +50,7 @@ class TestCreateSyncHttpFetcher:
         MockHTTPHandler.response_code = 200
 
         fetcher = create_sync_http_fetcher()
-        host, port = mock_server.server_address
+        host, port = "127.0.0.1", mock_server.server_port
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)
@@ -63,7 +63,7 @@ class TestCreateSyncHttpFetcher:
         MockHTTPHandler.response_code = 200
 
         fetcher = create_sync_http_fetcher()
-        host, port = mock_server.server_address
+        host, port = "127.0.0.1", mock_server.server_port
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)
@@ -99,7 +99,7 @@ class TestCreateSyncHttpFetcher:
         thread.start()
 
         fetcher = create_sync_http_fetcher()
-        host, port = server.server_address
+        host, port = "127.0.0.1", server.server_port
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)
@@ -113,7 +113,7 @@ class TestCreateSyncHttpFetcher:
         MockHTTPHandler.response_code = 404
 
         fetcher = create_sync_http_fetcher()
-        host, port = mock_server.server_address
+        host, port = "127.0.0.1", mock_server.server_port
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)
@@ -126,7 +126,7 @@ class TestCreateSyncHttpFetcher:
         MockHTTPHandler.response_code = 500
 
         fetcher = create_sync_http_fetcher()
-        host, port = mock_server.server_address
+        host, port = "127.0.0.1", mock_server.server_port
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)
@@ -139,7 +139,7 @@ class TestCreateSyncHttpFetcher:
         MockHTTPHandler.response_code = 503
 
         fetcher = create_sync_http_fetcher()
-        host, port = mock_server.server_address
+        host, port = "127.0.0.1", mock_server.server_port
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)

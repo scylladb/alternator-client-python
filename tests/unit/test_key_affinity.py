@@ -26,9 +26,11 @@ from alternator.core.key_affinity import (
 from alternator.core.live_nodes import NodeList
 from alternator.core.request import extract_request_params
 
+Params = dict[str, Any]
+
 
 def _batch_write_routing_target(
-    params: dict[str, Any],
+    params: Params,
 ) -> tuple[str | None, tuple[str, Any] | None, int | None]:
     table_name = get_table_name(params)
     pk = extract_partition_key(params, "pk")
@@ -69,7 +71,7 @@ class TestIsRmwOperation:
 
     def test_put_with_expected_is_rmw(self) -> None:
         """Test PutItem with Expected is RMW."""
-        params = {"Expected": {}}
+        params: Params = {"Expected": {}}
         assert is_rmw_operation("PutItem", params) is True
 
     def test_put_with_all_old_return_values_is_rmw(self) -> None:
@@ -94,7 +96,7 @@ class TestIsRmwOperation:
 
     def test_delete_with_expected_is_rmw(self) -> None:
         """Test DeleteItem with Expected is RMW."""
-        params = {"Expected": {}}
+        params: Params = {"Expected": {}}
         assert is_rmw_operation("DeleteItem", params) is True
 
     def test_delete_with_all_old_return_values_is_rmw(self) -> None:
@@ -134,7 +136,7 @@ class TestIsRmwOperation:
 
     def test_update_with_expected_is_rmw(self) -> None:
         """Test UpdateItem with Expected is RMW."""
-        params = {"Expected": {}}
+        params: Params = {"Expected": {}}
         assert is_rmw_operation("UpdateItem", params) is True
 
     def test_update_with_empty_return_values_is_not_rmw(self) -> None:
@@ -178,7 +180,7 @@ class TestIsRmwOperation:
 
     def test_scan_is_not_rmw(self) -> None:
         """Test Scan is never RMW."""
-        params = {}
+        params: Params = {}
         assert is_rmw_operation("Scan", params) is False
 
 
@@ -230,7 +232,7 @@ class TestShouldUseAffinity:
 
     def test_rmw_mode_with_non_rmw_operation(self) -> None:
         """Test RMW mode with non-RMW operation."""
-        params = {}
+        params: Params = {}
         assert should_use_affinity("RMW", "PutItem", params) is False
 
     def test_rmw_mode_with_batch_write(self) -> None:
@@ -252,7 +254,7 @@ class TestShouldUseAffinity:
 
     def test_any_write_mode_with_write(self) -> None:
         """Test ANY_WRITE mode with write operation."""
-        params = {}
+        params: Params = {}
         assert should_use_affinity("ANY_WRITE", "PutItem", params) is True
         assert should_use_affinity("ANY_WRITE", "UpdateItem", params) is True
         assert should_use_affinity("ANY_WRITE", "DeleteItem", params) is True
@@ -260,7 +262,7 @@ class TestShouldUseAffinity:
 
     def test_any_write_mode_with_read(self) -> None:
         """Test ANY_WRITE mode with read operation."""
-        params = {}
+        params: Params = {}
         assert should_use_affinity("ANY_WRITE", "GetItem", params) is False
         assert should_use_affinity("ANY_WRITE", "Query", params) is False
 
@@ -464,13 +466,16 @@ class TestSelectAffinityNode:
             }
         }
 
+        def no_pk_name(table_name: str) -> str | None:
+            return None
+
         assert (
             select_affinity_node(
                 mode="ANY_WRITE",
                 operation_name="BatchWriteItem",
                 params=params,
                 nodes=nodes,
-                get_pk_name={}.get,
+                get_pk_name=no_pk_name,
             )
             is None
         )

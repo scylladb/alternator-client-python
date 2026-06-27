@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import boto3
 import pytest
@@ -219,9 +219,9 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
     )
     client.meta.events.register_first(
         "needs-retry.dynamodb.PutItem",
-        retry_without_sleep,
+        cast(Any, retry_without_sleep),
     )
-    monkeypatch.setattr(client._endpoint.http_session, "send", fail_send)
+    monkeypatch.setattr(cast(Any, client)._endpoint.http_session, "send", fail_send)
 
     with pytest.raises(EndpointConnectionError):
         client.put_item(TableName="tbl", Item={"pk": {"S": "k"}})

@@ -2,6 +2,7 @@
 
 import contextlib
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from botocore import UNSIGNED
@@ -26,12 +27,12 @@ class TestCreateBotoConfig:
             "port": 9998,
         }
         defaults.update(overrides)
-        return Config(**defaults)  # type: ignore[arg-type]  -- test helper
+        return Config(**cast(Any, defaults))
 
     def test_unsigned_when_no_credentials(self) -> None:
         """Without credentials the signature must be UNSIGNED."""
         config = self._make_config()
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         # BotoConfig stores user-provided options in _user_provided_options
         assert boto_config.signature_version is UNSIGNED
@@ -39,7 +40,7 @@ class TestCreateBotoConfig:
     def test_no_unsigned_when_credentials_provided(self) -> None:
         """With credentials the signature_version must not be set."""
         config = self._make_config()
-        boto_config = _create_boto_config(config, auth_enabled=True)
+        boto_config: Any = _create_boto_config(config, auth_enabled=True)
 
         assert "signature_version" not in boto_config._user_provided_options
 
@@ -48,7 +49,7 @@ class TestCreateBotoConfig:
         config = self._make_config(
             retries=RetryConfig(max_attempts=5, mode=RetryMode.ADAPTIVE),
         )
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         retries = boto_config._user_provided_options["retries"]
         assert retries["total_max_attempts"] == 5
@@ -59,7 +60,7 @@ class TestCreateBotoConfig:
         import boto3
 
         config = self._make_config(retries=RetryConfig(max_attempts=3))
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
         client = boto3.client(
             "dynamodb",
             endpoint_url="http://localhost:1",
@@ -67,12 +68,12 @@ class TestCreateBotoConfig:
             region_name="us-east-1",
         )
 
-        assert client.meta.config.retries["total_max_attempts"] == 3
+        assert cast(Any, client.meta.config).retries["total_max_attempts"] == 3
 
     def test_pool_connections_propagated(self) -> None:
         """max_pool_connections from Config flows into BotoConfig."""
         config = self._make_config(max_pool_connections=42)
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.max_pool_connections == 42
 
@@ -85,7 +86,7 @@ class TestCreateBotoConfig:
                 read_seconds=7.5,
             ),
         )
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.connect_timeout == 2.5
         assert boto_config.read_timeout == 7.5
@@ -93,7 +94,7 @@ class TestCreateBotoConfig:
     def test_default_user_agent_propagated(self) -> None:
         """By default Alternator supplies its own SDK user-agent."""
         config = self._make_config()
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.user_agent == DEFAULT_USER_AGENT
         assert boto_config._user_provided_options["user_agent"] == DEFAULT_USER_AGENT
@@ -103,28 +104,28 @@ class TestCreateBotoConfig:
         current = "Boto3/1.0 Botocore/1.0"
 
         config = self._make_config(user_agent=lambda default: f"{current} {default}")
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.user_agent == f"Boto3/1.0 Botocore/1.0 {DEFAULT_USER_AGENT}"
 
     def test_user_agent_callback_can_wrap_default_value(self) -> None:
         """Callback can place the Alternator identity inside another string."""
         config = self._make_config(user_agent=lambda default: f"service-a ({default})")
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.user_agent == f"service-a ({DEFAULT_USER_AGENT})"
 
     def test_user_agent_callback_can_replace_default_value(self) -> None:
         """Callback can replace the Alternator identity completely."""
         config = self._make_config(user_agent=lambda _default: "orders-service/1.0")
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.user_agent == "orders-service/1.0"
 
     def test_user_agent_string_replaces_default_value(self) -> None:
         """A literal user-agent value replaces the Alternator identity."""
         config = self._make_config(user_agent="orders-service/1.0")
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.user_agent == "orders-service/1.0"
 
@@ -151,7 +152,7 @@ class TestCreateBotoConfig:
                 client_key_path=Path("/path/to/client.key"),
             ),
         )
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.client_cert == (
             "/path/to/client.crt",
@@ -164,7 +165,7 @@ class TestCreateBotoConfig:
             scheme="https",
             tls=TLS(client_cert_path=Path("/path/to/client-combined.pem")),
         )
-        boto_config = _create_boto_config(config, auth_enabled=False)
+        boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.client_cert == "/path/to/client-combined.pem"
 
@@ -194,7 +195,7 @@ class TestCreateAioConfig:
                 read_seconds=11.0,
             ),
         )
-        aio_config = _create_aio_config(config, auth_enabled=False)
+        aio_config: Any = _create_aio_config(config, auth_enabled=False)
 
         retries = aio_config._user_provided_options["retries"]
         assert retries["total_max_attempts"] == 4
@@ -252,4 +253,4 @@ class TestUnsignedRequestNoAuthHeader:
             "port": 9998,
         }
         defaults.update(overrides)
-        return Config(**defaults)  # type: ignore[arg-type]  -- test helper
+        return Config(**cast(Any, defaults))

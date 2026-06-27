@@ -9,7 +9,7 @@ DOCKER_CACHE_FILE := $(DOCKER_CACHE_DIR)/scylla-image.tar
 CERT_CACHE_DIR := $(MAKEFILE_PATH)/.cert-cache
 CERT_DIR := $(MAKEFILE_PATH)/tests/scylla
 
-.PHONY: install verify build compile compile-test compile-demo test-unit test-integration test-integration-only test-demo test-demo-only test-all test lint lint-types lint-fix clean wait-for-alternator scylla-start scylla-stop scylla-kill scylla-rm docker-pull docker-cache-save docker-cache-load cert-cache-save cert-cache-load help
+.PHONY: install verify build compile compile-test compile-demo test-unit test-integration test-integration-only test-demo test-demo-only test-all test lint lint-types typecheck lint-fix clean wait-for-alternator scylla-start scylla-stop scylla-kill scylla-rm docker-pull docker-cache-save docker-cache-load cert-cache-save cert-cache-load help
 
 # Default target
 help:
@@ -27,6 +27,7 @@ help:
 	@echo "  test             - Run all tests"
 	@echo "  lint             - Run linters (ruff + mypy)"
 	@echo "  lint-types       - Enforce type annotations with ruff"
+	@echo "  typecheck        - Run mypy type checks"
 	@echo "  lint-fix         - Auto-fix linting issues with ruff"
 	@echo "  clean            - Remove build artifacts"
 	@echo "  scylla-start     - Start 3-node Scylla cluster via Docker"
@@ -96,11 +97,10 @@ test:
 		--cov=alternator --cov-report=xml --cov-report=term-missing
 
 # Run linters
-lint: lint-types
+lint: lint-types typecheck
 	uv run ruff check alternator/ tests/ examples/
 	uv run ruff format --check alternator/ tests/ examples/
 	$(MAKE) compile-demo
-	uv run mypy alternator/ --strict
 	@# Ensure every noqa/type: ignore has an explanation after it
 	@if grep -rn --include='*.py' -P '#\s*(noqa|type:\s*ignore)(?::\s*\S+)?\s*$$' alternator/ tests/ examples/; then \
 		echo "ERROR: Found noqa/type: ignore comments without explanations. Add ' -- reason' after each."; \
@@ -109,6 +109,9 @@ lint: lint-types
 
 lint-types:
 	uv run ruff check --select ANN alternator/ tests/ examples/
+
+typecheck:
+	uv run mypy alternator/ examples/ tests/unit/ --strict
 
 # Auto-fix linting issues
 lint-fix:
