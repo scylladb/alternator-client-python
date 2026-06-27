@@ -42,18 +42,20 @@ class TestAsyncBasicOperations:
 
     async def test_list_tables(self, config: Config) -> None:
         """Test listing tables asynchronously."""
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             response = await client.list_tables()
             assert "TableNames" in response
             assert isinstance(response["TableNames"], list)
 
     async def test_put_and_get_item(self, config: Config, table_name: str) -> None:
         """Test putting and getting an item asynchronously."""
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table
             await client.create_table(
                 TableName=table_name,
@@ -96,9 +98,10 @@ class TestAsyncConcurrency:
 
     async def test_concurrent_writes(self, config: Config, table_name: str) -> None:
         """Test concurrent write operations."""
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table
             await client.create_table(
                 TableName=table_name,
@@ -146,9 +149,10 @@ class TestAsyncConcurrency:
 
     async def test_high_concurrency(self, config: Config) -> None:
         """Test high concurrency list_tables operations."""
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Run many concurrent requests
             tasks = [client.list_tables() for _ in range(100)]
             responses = await asyncio.gather(*tasks)
@@ -164,7 +168,7 @@ class TestAsyncKeyAffinity:
     async def test_async_rmw_affinity(self, table_name: str) -> None:
         """Test RMW operations use affinity routing with async client."""
         from alternator import AlternatorConfigBuilder, KeyRouteAffinityMode
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
         config = (
             AlternatorConfigBuilder()
@@ -177,7 +181,8 @@ class TestAsyncKeyAffinity:
             .build()
         )
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table
             await client.create_table(
                 TableName=table_name,
@@ -226,7 +231,7 @@ class TestAsyncKeyAffinity:
     async def test_async_any_write_affinity(self, table_name: str) -> None:
         """Test ANY_WRITE mode routes all writes through affinity."""
         from alternator import AlternatorConfigBuilder, KeyRouteAffinityMode
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
         config = (
             AlternatorConfigBuilder()
@@ -239,7 +244,8 @@ class TestAsyncKeyAffinity:
             .build()
         )
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table
             await client.create_table(
                 TableName=table_name,
@@ -288,7 +294,7 @@ class TestAsyncKeyAffinity:
     async def test_async_pk_auto_discovery(self, table_name: str) -> None:
         """Test async auto-discovery of partition key via DescribeTable."""
         from alternator import AlternatorConfigBuilder, KeyRouteAffinityMode
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
         # Configure affinity WITHOUT pre-defined table_pk_map
         config = (
@@ -299,7 +305,8 @@ class TestAsyncKeyAffinity:
             .build()
         )
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table with custom PK name
             await client.create_table(
                 TableName=table_name,
@@ -346,7 +353,7 @@ class TestAsyncCompression:
     ) -> None:
         """Test compression with async client."""
         from alternator import AlternatorConfigBuilder, CompressionAlgorithm
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
         from tests.integration.scylla_version import ScyllaVersion
 
         skip_if_scylla_version_below(
@@ -361,7 +368,8 @@ class TestAsyncCompression:
             .build()
         )
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table
             await client.create_table(
                 TableName=table_name,
@@ -402,7 +410,7 @@ class TestAsyncHeaderOptimization:
     async def test_async_header_optimization(self, table_name: str) -> None:
         """Test header optimization with async client."""
         from alternator import AlternatorConfigBuilder
-        from alternator.async_client import AsyncAlternatorClient
+        from alternator.async_client import AsyncSession
 
         config = (
             AlternatorConfigBuilder()
@@ -412,7 +420,8 @@ class TestAsyncHeaderOptimization:
             .build()
         )
 
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             # Create table
             await client.create_table(
                 TableName=table_name,
