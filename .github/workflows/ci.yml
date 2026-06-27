@@ -4,7 +4,6 @@ on:
   push:
     branches: [main, master]
   pull_request:
-    branches: [main, master]
 
 jobs:
   lint:
@@ -61,9 +60,6 @@ jobs:
 
       - name: Install dependencies
         run: make install
-
-      - name: Start 3-node Scylla cluster with TLS
-        run: make scylla-start
 
       - name: Run integration tests
         run: make test-integration

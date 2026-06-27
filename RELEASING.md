@@ -6,7 +6,8 @@ This document describes how to release a new version of the Alternator Load Bala
 
 1. You must have write access to the repository
 2. The `pypi` environment must be configured in GitHub with PyPI trusted publishing
-3. (Optional) GPG signing keys must be configured for signed releases
+3. GPG signing keys must be configured in GitHub Secrets; the release workflow
+   signs package artifacts, checksums, and tags
 
 ## Creating a Release
 

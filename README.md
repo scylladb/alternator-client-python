@@ -201,13 +201,9 @@ config = Config(
 | `port` | `int` | (required) | Alternator port |
 | `scheme` | `str` | `"http"` | Protocol scheme (`"http"` or `"https"`) |
 | `routing_scope` | `RoutingScope` | `ClusterScope()` | Topology-aware routing |
-| `compression` | `CompressionAlgorithm` | `NONE` | Request compression |
-| `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
-| `gzip_level` | `int` | `9` | gzip compression level, `0` through `9` |
+| `request_compression` | `RequestCompressionConfig` | disabled; 1 KiB threshold, level 9 when enabled | Request gzip settings |
 | `response_compression` | `Sequence[ResponseCompression]` | empty | Accepted response compression encodings |
-| `optimize_headers` | `bool` | `False` | Enable header filtering |
-| `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
-| `header_whitelist_callback` | callable | `None` | Callback for dynamic header whitelist additions |
+| `header_optimization` | `HeaderOptimizationConfig` | disabled | Header filtering settings |
 | `tls` | `TLS` | system default | TLS trust, client certificates, and key logging |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
 | `retries` | `RetryConfig` | standard, 3 attempts | SDK retry behavior |
@@ -215,8 +211,7 @@ config = Config(
 | `timeouts` | `TimeoutConfig` | discovery 5s, connect 5s, read 30s | Discovery and SDK per-attempt timeouts |
 | `aws_region` | `str` | `"us-east-1"` | Region placeholder required by the SDK |
 | `user_agent` | str, callable, or `None` | `alternator-client-python/<version>` | Final User-Agent; `None` omits the wire header |
-| `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
-| `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
+| `node_list_polling` | `NodeListPollingConfig` | active 1s, idle 60s | Node refresh intervals |
 
 ## Authentication
 
@@ -796,7 +791,7 @@ instead.
 ## Production Recommendations
 
 - **Connection pool sizing**: The default `max_pool_connections=200` works for most workloads. Increase if you see connection pool exhaustion warnings under high concurrency.
-- **Refresh intervals**: Default active refresh (1s) is appropriate for dynamic clusters. For stable clusters, increase `active_refresh_interval_ms` to reduce discovery overhead.
+- **Refresh intervals**: Default active refresh (1s) is appropriate for dynamic clusters. For stable clusters, set `node_list_polling=NodeListPollingConfig(active_interval_ms=...)` to reduce discovery overhead.
 - **Timeouts**: Default `TimeoutConfig.discovery_seconds=5.0`, `connect_seconds=5.0`, and `read_seconds=30.0` are conservative. Tune based on your network latency and query complexity.
 - **Monitoring**: Enable `INFO`-level logging for the `alternator` logger to track node discovery events. Use `DEBUG` for detailed routing decisions during troubleshooting.
 - **Seed hosts**: Configure at least 2-3 seed hosts for redundancy in case one seed is temporarily unavailable during startup.
@@ -829,8 +824,8 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 ## Release Notes
 
 See [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) for capability release-note
-guidance covering additive APIs, deprecations, behavior notes, migration steps,
-and versioning expectations.
+guidance covering additive APIs, API notes, behavior notes, review steps, and
+versioning expectations.
 
 ## Development
 

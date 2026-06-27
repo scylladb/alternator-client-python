@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__all__ = ["AlternatorError", "ConfigurationError", "NoNodesAvailableError"]
+
 
 class AlternatorError(Exception):
     """Base exception for all Alternator client errors."""
