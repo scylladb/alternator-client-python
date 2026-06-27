@@ -17,10 +17,10 @@ from alternator.exceptions import ConfigurationError
 
 logger = logging.getLogger("alternator")
 
-SDKClientCert = str | tuple[str, str]
+_SDKClientCert = str | tuple[str, str]
 UserAgentCustomizer = Callable[[str], str]
 UserAgent = str | UserAgentCustomizer
-DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
+_DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
 
 
 class CompressionAlgorithm(Enum):
@@ -73,7 +73,7 @@ class TLS:
             raise ConfigurationError("client_key_path requires client_cert_path")
 
     @property
-    def sdk_client_cert(self) -> SDKClientCert | None:
+    def sdk_client_cert(self) -> _SDKClientCert | None:
         """Return the botocore client_cert value for this TLS config."""
         if self.client_cert_path is None:
             return None
@@ -370,7 +370,7 @@ class Config:
 
     # SDK settings
     aws_region: str = "us-east-1"
-    user_agent: UserAgent | None = DEFAULT_USER_AGENT
+    user_agent: UserAgent | None = _DEFAULT_USER_AGENT
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -395,7 +395,7 @@ class Config:
         )
 
 
-def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
+def _build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
     """Build SDK config kwargs shared by sync and async clients."""
     kwargs: dict[str, Any] = {
         "retries": {
@@ -418,7 +418,7 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
 def _resolve_user_agent(user_agent: UserAgent) -> str:
     """Return the User-Agent produced from the default Alternator identity."""
     resolved = (
-        user_agent if isinstance(user_agent, str) else user_agent(DEFAULT_USER_AGENT)
+        user_agent if isinstance(user_agent, str) else user_agent(_DEFAULT_USER_AGENT)
     )
     if not isinstance(resolved, str) or not resolved:
         raise ConfigurationError(

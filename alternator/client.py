@@ -16,7 +16,7 @@ from botocore.config import Config as BotoConfig
 
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
-from alternator.config import Config, KeyRouteAffinityMode, build_sdk_config_kwargs
+from alternator.config import Config, KeyRouteAffinityMode, _build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import (
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from alternator.config import Auth
 
 logger = logging.getLogger("alternator")
-DEFAULT_PORT = 8000
+_DEFAULT_PORT = 8000
 
 # Registry of active managers for cleanup on exit
 _active_managers: weakref.WeakValueDictionary[int, SyncLiveNodesManager] = (
@@ -157,7 +157,7 @@ def _create_boto_config(config: Config, *, auth_enabled: bool) -> BotoConfig:
     """
     from botocore import UNSIGNED
 
-    kwargs = build_sdk_config_kwargs(config)
+    kwargs = _build_sdk_config_kwargs(config)
     kwargs.pop("signature_version", None)
     if not auth_enabled:
         kwargs["signature_version"] = UNSIGNED
@@ -323,7 +323,7 @@ def _config_from_client_args(
 ) -> Config:
     """Build or validate an Alternator config from boto3-style factory args."""
     if cluster_config is not None:
-        if seeds is not None or port != DEFAULT_PORT or scheme != "http":
+        if seeds is not None or port != _DEFAULT_PORT or scheme != "http":
             raise ConfigurationError(
                 "Do not combine cluster_config with seeds, port, or scheme"
             )
@@ -345,7 +345,7 @@ def client(
     *,
     cluster_config: Config | None = None,
     seeds: Sequence[str] | None = None,
-    port: int = DEFAULT_PORT,
+    port: int = _DEFAULT_PORT,
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
@@ -372,7 +372,7 @@ def resource(
     *,
     cluster_config: Config | None = None,
     seeds: Sequence[str] | None = None,
-    port: int = DEFAULT_PORT,
+    port: int = _DEFAULT_PORT,
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
@@ -509,7 +509,7 @@ class Session:
         cluster_config: Config | None = None,
         *,
         seeds: Sequence[str] | None = None,
-        port: int = DEFAULT_PORT,
+        port: int = _DEFAULT_PORT,
         scheme: Literal["http", "https"] = "http",
         auth: Auth | None = None,
         **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped

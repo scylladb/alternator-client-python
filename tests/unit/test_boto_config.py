@@ -9,7 +9,7 @@ from botocore import UNSIGNED
 
 from alternator.client import _create_boto_config
 from alternator.config import (
-    DEFAULT_USER_AGENT,
+    _DEFAULT_USER_AGENT,
     TLS,
     Config,
     RetryConfig,
@@ -96,8 +96,8 @@ class TestCreateBotoConfig:
         config = self._make_config()
         boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
-        assert boto_config.user_agent == DEFAULT_USER_AGENT
-        assert boto_config._user_provided_options["user_agent"] == DEFAULT_USER_AGENT
+        assert boto_config.user_agent == _DEFAULT_USER_AGENT
+        assert boto_config._user_provided_options["user_agent"] == _DEFAULT_USER_AGENT
 
     def test_user_agent_callback_can_append_to_current_value(self) -> None:
         """Callback can keep the SDK user-agent and add Alternator identity."""
@@ -106,14 +106,14 @@ class TestCreateBotoConfig:
         config = self._make_config(user_agent=lambda default: f"{current} {default}")
         boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
-        assert boto_config.user_agent == f"Boto3/1.0 Botocore/1.0 {DEFAULT_USER_AGENT}"
+        assert boto_config.user_agent == f"Boto3/1.0 Botocore/1.0 {_DEFAULT_USER_AGENT}"
 
     def test_user_agent_callback_can_wrap_default_value(self) -> None:
         """Callback can place the Alternator identity inside another string."""
         config = self._make_config(user_agent=lambda default: f"service-a ({default})")
         boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
-        assert boto_config.user_agent == f"service-a ({DEFAULT_USER_AGENT})"
+        assert boto_config.user_agent == f"service-a ({_DEFAULT_USER_AGENT})"
 
     def test_user_agent_callback_can_replace_default_value(self) -> None:
         """Callback can replace the Alternator identity completely."""
@@ -208,8 +208,8 @@ class TestCreateAioConfig:
             "/path/to/client.crt",
             "/path/to/client.key",
         )
-        assert aio_config.user_agent == DEFAULT_USER_AGENT
-        assert aio_config._user_provided_options["user_agent"] == DEFAULT_USER_AGENT
+        assert aio_config.user_agent == _DEFAULT_USER_AGENT
+        assert aio_config._user_provided_options["user_agent"] == _DEFAULT_USER_AGENT
 
 
 class TestUnsignedRequestNoAuthHeader:

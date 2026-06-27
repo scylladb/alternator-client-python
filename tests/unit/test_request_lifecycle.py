@@ -12,7 +12,7 @@ from botocore.config import Config as BotoConfig
 from botocore.exceptions import EndpointConnectionError
 
 from alternator.config import (
-    DEFAULT_USER_AGENT,
+    _DEFAULT_USER_AGENT,
     CompressionAlgorithm,
     Config,
     HeaderOptimizationConfig,
@@ -138,7 +138,7 @@ def test_configured_user_agent_replaces_sdk_user_agent_before_send() -> None:
         seed_hosts=["seed"],
         port=8000,
         header_optimization=HeaderOptimizationConfig(enabled=True),
-        user_agent=DEFAULT_USER_AGENT,
+        user_agent=_DEFAULT_USER_AGENT,
     )
     client = boto3.client(
         "dynamodb",
@@ -154,7 +154,7 @@ def test_configured_user_agent_replaces_sdk_user_agent_before_send() -> None:
         _StaticManager(("node-b",)),
         config,
         auth_enabled=False,
-        user_agent=DEFAULT_USER_AGENT,
+        user_agent=_DEFAULT_USER_AGENT,
     )
     seen: dict[str, str] = {}
 
@@ -169,7 +169,7 @@ def test_configured_user_agent_replaces_sdk_user_agent_before_send() -> None:
     with pytest.raises(RuntimeError, match="captured"):
         client.list_tables()
 
-    assert seen["user_agent"] == DEFAULT_USER_AGENT
+    assert seen["user_agent"] == _DEFAULT_USER_AGENT
     assert "Boto3" not in seen["user_agent"]
     assert "Botocore" not in seen["user_agent"]
 

@@ -22,11 +22,11 @@ from alternator._http import (
     create_ssl_context,
 )
 from alternator.client import (
-    DEFAULT_PORT,
+    _DEFAULT_PORT,
     _config_from_client_args,
     _validate_service_name,
 )
-from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
+from alternator.config import KeyRouteAffinityMode, _build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import (
@@ -44,7 +44,7 @@ logger = logging.getLogger("alternator")
 _AUTH_UNSET = object()
 
 
-class AsyncPartitionKeyCache:
+class _AsyncPartitionKeyCache:
     """
     Async version of partition key cache for table -> pk name mapping.
 
@@ -207,7 +207,7 @@ class AsyncPartitionKeyCache:
 
 def _create_async_affinity_node_computer(
     config: Config,
-    pk_cache: AsyncPartitionKeyCache | None,
+    pk_cache: _AsyncPartitionKeyCache | None,
 ) -> Callable[[str, dict[str, Any], NodeList], str | None] | None:
     """
     Create a function that selects the preferred key-affinity node.
@@ -318,7 +318,7 @@ def _create_aio_config(config: Config, *, auth_enabled: bool) -> object:
 
     from botocore import UNSIGNED
 
-    kwargs = build_sdk_config_kwargs(config)
+    kwargs = _build_sdk_config_kwargs(config)
     kwargs.pop("signature_version", None)
     if not auth_enabled:
         kwargs["signature_version"] = UNSIGNED
@@ -367,9 +367,9 @@ async def _create_async_client_with_manager(
 
     try:
         # Set up partition key cache if affinity is enabled
-        pk_cache: AsyncPartitionKeyCache | None = None
+        pk_cache: _AsyncPartitionKeyCache | None = None
         if config.key_affinity.mode != KeyRouteAffinityMode.NONE:
-            pk_cache = AsyncPartitionKeyCache(client)
+            pk_cache = _AsyncPartitionKeyCache(client)
             if config.key_affinity.table_pk_attributes:
                 pk_cache.preload(dict(config.key_affinity.table_pk_attributes))
             setattr(client, PK_CACHE_ATTR, pk_cache)
@@ -429,7 +429,7 @@ class AsyncSession:
         cluster_config: Config | None = None,
         *,
         seeds: Sequence[str] | None = None,
-        port: int = DEFAULT_PORT,
+        port: int = _DEFAULT_PORT,
         scheme: Literal["http", "https"] = "http",
         auth: Auth | None = None,
         **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
