@@ -19,28 +19,27 @@ from alternator import (
     Config,
     DatacenterScope,
     HeaderWhitelistContext,
-    Helper,
     KeyRouteAffinityMode,
     RackScope,
     RetryMode,
+    Session,
     TimeoutConfig,
 )
 
 
 def helper_lifecycle_example() -> None:
-    """Use Helper when one object should own clients and topology diagnostics."""
+    """Use Session when one object should own clients and topology diagnostics."""
     config = Config(
         seed_hosts=["node1.example.com", "node2.example.com"],
         port=8000,
     )
 
-    with Helper(config, auth=Auth.disabled()) as helper:
-        client = helper.client()
-        resource = helper.resource()
+    with Session(config, auth=Auth.disabled()) as helper:
+        client = helper.client("dynamodb")
+        resource = helper.resource("dynamodb")
 
-        helper.update_live_nodes()
-        print("nodes:", helper.get_nodes())
-        print("next node:", helper.next_node())
+        helper.refresh_nodes()
+        print("nodes:", helper.nodes)
 
         client.list_tables()
         resource.Table("orders").scan(Limit=1)

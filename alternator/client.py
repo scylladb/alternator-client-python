@@ -337,9 +337,45 @@ def _validate_host_only_seeds(seed_hosts: Sequence[str]) -> None:
         )
 
 
-def client(
-    seeds: Sequence[str] | Config | None = None,
+def _validate_service_name(service_name: str) -> None:
+    """Validate the boto3-style service name accepted by this client."""
+    if service_name != "dynamodb":
+        raise ConfigurationError(
+            f"alternator only supports the 'dynamodb' service, got {service_name!r}"
+        )
+
+
+def _config_from_client_args(
+    cluster_config: Config | None,
     *,
+    seeds: Sequence[str] | None,
+    port: int,
+    scheme: Literal["http", "https"],
+) -> Config:
+    """Build or validate an Alternator config from boto3-style factory args."""
+    if cluster_config is not None:
+        if seeds is not None or port != DEFAULT_PORT or scheme != "http":
+            raise ConfigurationError(
+                "Do not combine cluster_config with seeds, port, or scheme"
+            )
+        config = cluster_config
+    else:
+        if seeds is None:
+            raise ConfigurationError(
+                "seeds is required when cluster_config is not provided"
+            )
+        _validate_host_only_seeds(seeds)
+        config = Config(seed_hosts=tuple(seeds), port=port, scheme=scheme)
+
+    _validate_host_only_seeds(config.seed_hosts)
+    return config
+
+
+def client(
+    service_name: str,
+    *,
+    cluster_config: Config | None = None,
+    seeds: Sequence[str] | None = None,
     port: int = DEFAULT_PORT,
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
@@ -348,23 +384,44 @@ def client(
     """
     Create a context-manager friendly Alternator client.
 
-    This is a convenience alias for the common case. Seeds are host names or
-    IP addresses only; provide the shared Alternator port with ``port``.
+    Mirrors ``boto3.client("dynamodb", ...)`` while adding Alternator cluster
+    discovery options. Seeds are host names or IP addresses only; provide the
+    shared Alternator port with ``port``.
     """
-    if isinstance(seeds, Config):
-        if port != DEFAULT_PORT or scheme != "http":
-            raise ConfigurationError(
-                "Do not combine a Config object with port or scheme overrides"
-            )
-        config = seeds
-    else:
-        if seeds is None:
-            raise ConfigurationError("seeds is required when Config is not provided")
-        _validate_host_only_seeds(seeds)
-        config = Config(seed_hosts=tuple(seeds), port=port, scheme=scheme)
-
-    _validate_host_only_seeds(config.seed_hosts)
+    _validate_service_name(service_name)
+    config = _config_from_client_args(
+        cluster_config,
+        seeds=seeds,
+        port=port,
+        scheme=scheme,
+    )
     return AlternatorClient(config, auth=auth, **boto_kwargs)
+
+
+def resource(
+    service_name: str,
+    *,
+    cluster_config: Config | None = None,
+    seeds: Sequence[str] | None = None,
+    port: int = DEFAULT_PORT,
+    scheme: Literal["http", "https"] = "http",
+    auth: Auth | None = None,
+    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+) -> AlternatorResource:
+    """
+    Create a context-manager friendly Alternator resource.
+
+    Mirrors ``boto3.resource("dynamodb", ...)`` for callers that use boto3's
+    high-level DynamoDB table API.
+    """
+    _validate_service_name(service_name)
+    config = _config_from_client_args(
+        cluster_config,
+        seeds=seeds,
+        port=port,
+        scheme=scheme,
+    )
+    return AlternatorResource(config, auth=auth, **boto_kwargs)
 
 
 def create_resource(
@@ -490,29 +547,37 @@ def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
         service_client_close()
 
 
-class Helper:
+class Session:
     """
-    Public facade for Alternator client lifecycle and diagnostics.
+    Public session for Alternator client lifecycle and diagnostics.
 
-    The helper owns one live-node manager and can create standard boto3
+    The session owns one live-node manager and can create standard boto3
     DynamoDB clients and resources that share that discovery state.
     """
 
     def __init__(
         self,
-        config: Config,
+        cluster_config: Config | None = None,
         *,
+        seeds: Sequence[str] | None = None,
+        port: int = DEFAULT_PORT,
+        scheme: Literal["http", "https"] = "http",
         auth: Auth | None = None,
         **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
     ) -> None:
-        self._config = config
+        self._config = _config_from_client_args(
+            cluster_config,
+            seeds=seeds,
+            port=port,
+            scheme=scheme,
+        )
         self._auth = auth
         self._boto_kwargs = dict(boto_kwargs)
         self._manager: SyncLiveNodesManager | None = None
         self._manager_finalizer: Any | None = None
         self._clients: list[DynamoDBClient | DynamoDBServiceResource] = []
 
-    def __enter__(self) -> Helper:
+    def __enter__(self) -> Session:
         self.start()
         return self
 
@@ -526,28 +591,32 @@ class Helper:
 
     @property
     def config(self) -> Config:
-        """Return this helper's configuration."""
+        """Return this session's configuration."""
         return self._config
 
     def update(
         self,
-        config: Config | None = None,
+        cluster_config: Config | None = None,
         *,
         auth: Auth | None | object = _AUTH_UNSET,
         **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
-    ) -> Helper:
-        """Return a new helper with updated config, auth, or boto kwargs."""
+    ) -> Session:
+        """Return a new session with updated config, auth, or boto kwargs."""
         next_auth = self._auth if auth is _AUTH_UNSET else cast("Auth | None", auth)
         next_kwargs = {**self._boto_kwargs, **boto_kwargs}
-        return type(self)(config or self._config, auth=next_auth, **next_kwargs)
+        return type(self)(
+            cluster_config or self._config,
+            auth=next_auth,
+            **next_kwargs,
+        )
 
-    def start(self) -> Helper:
+    def start(self) -> Session:
         """Start background node discovery."""
         self._ensure_manager().start()
         return self
 
     def stop(self) -> None:
-        """Stop background node discovery and detach helper-created clients."""
+        """Stop background node discovery and detach session-created clients."""
         for created_client in list(self._clients):
             with contextlib.suppress(Exception):
                 close_client(created_client)
@@ -564,9 +633,11 @@ class Helper:
 
     def client(
         self,
+        service_name: str,
         **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
     ) -> DynamoDBClient:
-        """Create a standard boto3 DynamoDB client using this helper."""
+        """Create a standard boto3 DynamoDB client using this session."""
+        _validate_service_name(service_name)
         manager = self._ensure_manager()
         manager.start()
         client = _create_client_with_manager(
@@ -581,9 +652,11 @@ class Helper:
 
     def resource(
         self,
+        service_name: str,
         **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
     ) -> DynamoDBServiceResource:
-        """Create a standard boto3 DynamoDB resource using this helper."""
+        """Create a standard boto3 DynamoDB resource using this session."""
+        _validate_service_name(service_name)
         manager = self._ensure_manager()
         manager.start()
         resource = _create_resource_with_manager(
@@ -596,29 +669,28 @@ class Helper:
         self._clients.append(resource)
         return resource
 
-    def update_live_nodes(self) -> bool:
+    def refresh_nodes(self) -> bool:
         """Refresh the live-node list immediately."""
         return self._ensure_manager().refresh_nodes()
 
-    def next_node(self) -> str | None:
-        """Return the next live node selected for diagnostics."""
-        return self._ensure_manager().next_node()
-
-    def get_nodes(self) -> list[str]:
+    @property
+    def nodes(self) -> list[str]:
         """Return the current live-node hostnames."""
         if self._manager is None:
             return []
         return list(self._manager.nodes.nodes)
 
-    def get_active_nodes(self) -> list[str]:
+    @property
+    def active_nodes(self) -> list[str]:
         """Return active nodes; currently this is the live-node list."""
-        return self.get_nodes()
+        return self.nodes
 
-    def get_quarantined_nodes(self) -> list[str]:
+    @property
+    def quarantined_nodes(self) -> list[str]:
         """Return quarantined nodes; node quarantine is not implemented."""
         return []
 
-    def check_rack_and_datacenter_set_correctly(self) -> bool:
+    def validate_scope(self) -> bool:
         """Return whether the configured rack/datacenter scope is complete."""
         manager = self._manager
         if manager is not None:
@@ -630,7 +702,7 @@ class Helper:
         finally:
             manager.stop()
 
-    def check_rack_datacenter_feature_supported(self) -> bool:
+    def supports_topology_filters(self) -> bool:
         """Return whether this client supports rack/datacenter scoped discovery."""
         manager = self._manager
         if manager is not None:
@@ -642,7 +714,7 @@ class Helper:
         finally:
             manager.stop()
 
-    def get_partition_key_name(self, table_name: str) -> str | None:
+    def partition_key_for(self, table_name: str) -> str | None:
         """Return a known partition key name for diagnostics."""
         configured = self._config.key_affinity.table_pk_attributes.get(table_name)
         if configured is not None:

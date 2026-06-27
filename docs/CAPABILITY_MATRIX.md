@@ -5,9 +5,9 @@ and intentionally deferred behavior.
 
 | Capability | Status | Tracking | Notes |
 | --- | --- | --- | --- |
-| Sync DynamoDB client | Supported | Existing API | `create_client`, `AlternatorClient`, and `alternator.client(...)` return standard boto3 clients. |
-| DynamoDB resource | Supported | Existing API | `create_resource` and `AlternatorResource` wrap boto3 resource usage. |
-| Async DynamoDB client | Supported | Existing API | `create_async_client` and `AsyncAlternatorClient` use aioboto3. |
+| Sync DynamoDB client | Supported | Existing API | `alternator.client("dynamodb", ...)` and `Session.client("dynamodb")` return standard boto3 clients. |
+| DynamoDB resource | Supported | Existing API | `alternator.resource("dynamodb", ...)` and `Session.resource("dynamodb")` wrap boto3 resource usage. |
+| Async DynamoDB client | Supported | Existing API | `AsyncSession.client("dynamodb")` uses aioboto3. |
 | Host-only seeds with one shared port | Supported | Existing API | Seeds must not include ports; one port applies to all nodes. |
 | Node discovery | Supported | Existing API | `/localnodes` refresh updates the live node list. `ClusterScope` combines results from all configured seeds, so multi-DC routing requires at least one reachable seed from each datacenter. |
 | Routing scopes | Supported | [#35](https://github.com/scylladb/alternator-client-python/issues/35) | Cluster, datacenter, and rack scopes support explicit fallback chains and scoped validation helpers. |
@@ -22,7 +22,7 @@ and intentionally deferred behavior.
 | TLS key log file | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file paths are applied to SSL contexts when supported by the runtime. |
 | Transport and SDK config knobs | Supported | [#34](https://github.com/scylladb/alternator-client-python/issues/34), [#89](https://github.com/scylladb/alternator-client-python/issues/89) | Retry, pool, connect/read timeout, region, TLS client certificates, and User-Agent settings have typed Alternator config fields. The client does not expose raw SDK config mutation. |
 | Key route affinity | Supported | [#23](https://github.com/scylladb/alternator-client-python/issues/23) | RMW detection, single-write affinity, and BatchWriteItem preferred-node voting are implemented with fallback on missing or ambiguous routing data. |
-| Helper lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Helper` and `AsyncHelper` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
+| Session lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Session` and `AsyncSession` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
 | Compatibility and release decisions | Supported | [#39](https://github.com/scylladb/alternator-client-python/issues/39) | Decision record lives in [docs/COMPATIBILITY_AND_RELEASE.md](COMPATIBILITY_AND_RELEASE.md). |
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
 | Vector search extension | Supported | Existing API | Python client enables ScyllaDB Alternator vector extensions. |

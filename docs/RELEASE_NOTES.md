@@ -9,7 +9,7 @@ authority for compatibility decisions.
 
 ### Additive APIs
 
-- Added `Helper` and `AsyncHelper` lifecycle facades for callers that need one
+- Added `Session` and `AsyncSession` lifecycle facades for callers that need one
   owner for clients/resources plus topology diagnostics.
 - Added explicit routing fallback controls with `fallback=...` and
   `without_fallback(...)`.

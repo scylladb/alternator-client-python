@@ -97,6 +97,7 @@ def main() -> None:
         auth = Auth.static_credentials(args.alternator_key_id, args.alternator_secret)
 
     with alternator.client(
+        "dynamodb",
         seeds=args.seed,
         port=args.port,
         auth=auth,
