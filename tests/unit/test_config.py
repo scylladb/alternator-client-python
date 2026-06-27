@@ -93,6 +93,7 @@ class TestAlternatorConfig:
         assert config.node_list_polling.active_interval_ms == 1000
         assert config.node_list_polling.idle_interval_ms == 60000
         assert config.aws_region == "us-east-1"
+        assert config.user_agent.startswith("alternator-client-python/")
         assert config.sdk_config_customizer is None
         assert isinstance(config.routing_scope, ClusterScope)
 
@@ -130,6 +131,8 @@ class TestDeprecatedConfigNames:
         assert alternator.Auth is not None
         assert alternator.Config is Config
         assert alternator.TLS is TLS
+        assert alternator.UserAgent is not None
+        assert alternator.UserAgentCustomizer is not None
 
 
 class TestAlternatorConfigBuilder:
@@ -397,11 +400,48 @@ class TestAlternatorConfigBuilder:
         )
         assert config.aws_region == "us-west-2"
 
+    def test_build_with_user_agent(self) -> None:
+        """Test building config with user-agent callback."""
+
+        def customize(default: str) -> str:
+            return f"service-a {default}"
+
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_user_agent(customize)
+            .build()
+        )
+        assert config.user_agent is customize
+
+    def test_build_with_user_agent_string(self) -> None:
+        """Test building config with literal user-agent replacement."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_user_agent("service-a/1.0")
+            .build()
+        )
+        assert config.user_agent == "service-a/1.0"
+
+    def test_build_with_user_agent_none(self) -> None:
+        """Test building config with explicit user-agent suppression."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_port(8000)
+            .with_user_agent(None)
+            .build()
+        )
+        assert config.user_agent is None
+
     def test_build_with_sdk_config_customizer(self) -> None:
         """Test building config with SDK config customizer."""
 
         def customize(kwargs: dict[str, object]) -> None:
-            kwargs["user_agent_extra"] = "test"
+            kwargs["user_agent"] = "test"
 
         config = (
             AlternatorConfigBuilder()

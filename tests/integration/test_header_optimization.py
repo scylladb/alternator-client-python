@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from alternator import AlternatorConfigBuilder, Auth, close_client, create_client
@@ -22,14 +20,11 @@ pytestmark = [
 
 
 def _user_agent_config(user_agent_label: str) -> object:
-    def customize_sdk(kwargs: dict[str, Any]) -> None:
-        kwargs["user_agent_extra"] = user_agent_label
-
     return (
         AlternatorConfigBuilder()
         .with_seeds(SCYLLA_HOST)
         .with_port(SCYLLA_PORT)
-        .with_sdk_config_customizer(customize_sdk)
+        .with_user_agent(user_agent_label)
         .build()
     )
 
@@ -43,20 +38,17 @@ class TestHeaderOptimization:
             captured = capture_prepared_requests(client)
             client.list_tables()
             request = latest_request(captured)
-            assert "alternator-unfiltered" in (request.header("user-agent") or "")
+            assert request.header("user-agent") == "alternator-unfiltered"
         finally:
             close_client(client)
 
     def test_filters_wire_headers_and_preserves_auth(self) -> None:
-        def customize_sdk(kwargs: dict[str, Any]) -> None:
-            kwargs["user_agent_extra"] = "alternator-filtered"
-
         config = (
             AlternatorConfigBuilder()
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_PORT)
             .with_header_optimization(whitelist={"X-Keep-Me"})
-            .with_sdk_config_customizer(customize_sdk)
+            .with_user_agent("alternator-filtered")
             .build()
         )
         client = create_client(
@@ -73,7 +65,7 @@ class TestHeaderOptimization:
             assert request.header("x-drop-me") is None
             assert request.header("authorization") is not None
             assert request.header("x-amz-date") is not None
-            assert request.header("user-agent") is None
+            assert request.header("user-agent") == "alternator-filtered"
         finally:
             close_client(client)
 

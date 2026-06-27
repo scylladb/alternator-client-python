@@ -7,7 +7,10 @@ from typing import TYPE_CHECKING, Any
 
 from botocore.awsrequest import AWSPreparedRequest
 
-from alternator.config import HeaderWhitelistCallback, HeaderWhitelistContext
+from alternator.config import (
+    HeaderWhitelistCallback,
+    HeaderWhitelistContext,
+)
 
 if TYPE_CHECKING:
     from alternator.config import Config
@@ -118,3 +121,25 @@ def create_header_filter_handler(
             del request.headers[key]
 
     return filter_headers
+
+
+def create_user_agent_header_handler(user_agent: str | None) -> Callable[..., None]:
+    """
+    Create a botocore event handler for the final wire User-Agent header.
+
+    Botocore appends its own product token even when Config.user_agent is set.
+    When the Alternator user-agent is unset, remove the SDK-generated header.
+    """
+
+    def set_user_agent(request: AWSPreparedRequest, **kwargs: Any) -> None:  # noqa: ANN401 -- botocore event handler signature
+        """Set or remove the final User-Agent header value."""
+        if not hasattr(request, "headers"):
+            return
+        if user_agent is None:
+            for key in list(request.headers):
+                if key.lower() == "user-agent":
+                    del request.headers[key]
+            return
+        request.headers["User-Agent"] = user_agent
+
+    return set_user_agent

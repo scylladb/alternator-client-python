@@ -110,6 +110,8 @@ from alternator.config import (
     TimeoutConfig,
     TlsConfig,
     TlsSessionCacheConfig,
+    UserAgent,
+    UserAgentCustomizer,
 )
 from alternator.core.routing_scope import (
     ClusterScope,
@@ -162,6 +164,8 @@ __all__ = [
     "TimeoutConfig",
     "TlsConfig",
     "TlsSessionCacheConfig",
+    "UserAgent",
+    "UserAgentCustomizer",
     # Exceptions
     "AlternatorError",
     "ConfigurationError",

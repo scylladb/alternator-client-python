@@ -16,6 +16,7 @@ and intentionally deferred behavior.
 | Request compression | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Gzip request compression supports threshold and compression-level configuration. |
 | Response compression | Supported | [#65](https://github.com/scylladb/alternator-client-python/issues/65) | Gzip and deflate response decoding is disabled by default and enabled with `with_response_compression(...)`. |
 | Header optimization | Supported | [#37](https://github.com/scylladb/alternator-client-python/issues/37) | Required headers are preserved, with static and callback-computed whitelist additions. |
+| User-Agent replacement | Supported | [#61](https://github.com/scylladb/alternator-client-python/issues/61) | Requests do not preserve boto3/botocore user-agent tokens. By default, requests send the Alternator Python client identity; `Config.user_agent=None` removes the wire header; a string sets the final value; a callback can wrap/add to the default identity. |
 | TLS server trust | Supported | Existing API | System CA, custom CA, hostname verification, and trust-all mode exist. |
 | TLS client certificates | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | mTLS certificate/key paths are loaded into discovery SSL contexts and SDK `client_cert` config. |
 | TLS key log file | Supported | [#38](https://github.com/scylladb/alternator-client-python/issues/38) | Debug-only key log file paths are applied to SSL contexts when supported by the runtime. |

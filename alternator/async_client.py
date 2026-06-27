@@ -345,6 +345,7 @@ async def _create_async_client_with_manager(
 
     auth_enabled = apply_auth(auth, boto_kwargs)
     boto_config = _create_aio_config(config, auth_enabled=auth_enabled)
+    user_agent = getattr(boto_config, "user_agent", None)
 
     # Create aioboto3 session and client
     # Alternator doesn't use AWS regions, but boto3 requires one;
@@ -375,6 +376,7 @@ async def _create_async_client_with_manager(
             config,
             _create_async_affinity_node_computer(config, pk_cache),
             auth_enabled=auth_enabled,
+            user_agent=user_agent,
         )
 
         # Attach manager for cleanup reference

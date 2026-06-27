@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.hooks import BaseEventHooks
 
-from alternator.config import CompressionAlgorithm
+from alternator.config import DEFAULT_USER_AGENT, CompressionAlgorithm
 from alternator.core.compression import (
     create_compression_handler,
     create_response_compression_decode_handler,
@@ -20,6 +20,7 @@ from alternator.core.compression import (
 from alternator.core.headers import (
     compute_header_whitelist,
     create_header_filter_handler,
+    create_user_agent_header_handler,
 )
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_operation_name, extract_request_params
@@ -52,6 +53,7 @@ def _register_alternator_handlers(
     | None = None,
     *,
     auth_enabled: bool = False,
+    user_agent: str | None = DEFAULT_USER_AGENT,
 ) -> None:
     """
     Register all Alternator event handlers on a boto3/aioboto3 client.
@@ -63,6 +65,7 @@ def _register_alternator_handlers(
         manager: Object with a ``nodes`` property returning a ``NodeList``
         config: Alternator configuration
         compute_affinity_node: Optional function to select a preferred affinity node
+        user_agent: Final Alternator User-Agent header value, or None to remove it
     """
     scheme = config.scheme
     port = config.port
@@ -210,6 +213,9 @@ def _register_alternator_handlers(
         )
         header_filter = create_header_filter_handler(whitelist)
         events.register("before-send.dynamodb.*", header_filter)
+
+    user_agent_handler = create_user_agent_header_handler(user_agent)
+    events.register_last("before-send.dynamodb.*", user_agent_handler)
 
 
 def _stable_seed(value: str) -> int:

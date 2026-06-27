@@ -16,6 +16,10 @@ authority for compatibility decisions.
 - Added topology validation helpers for configured datacenter/rack scopes.
 - Added transport configuration for SDK retries, connect/read timeouts,
   connection pool size, region placeholder, and SDK config customization.
+- Added Alternator-specific `User-Agent` control with `Config.user_agent`.
+  By default, requests send the Alternator Python client identity; callers can
+  pass `None` to remove the wire header, a string to set a final value, or a
+  callback to wrap/add to the default identity.
 - Added TLS client certificate, client key, and key log file settings.
 - Added configurable gzip compression level and callback-based header whitelist
   additions.
