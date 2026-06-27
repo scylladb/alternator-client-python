@@ -73,11 +73,11 @@ class TestSyncLiveNodesManager:
             manager.next_node_uri()
 
     def test_fallback_chain_on_empty(self, config: Config) -> None:
-        """Test fallback chain is used when scope returns empty."""
+        """Test explicit fallback chain is used when scope returns empty."""
         dc_config = Config(
             seed_hosts=["192.168.1.1"],
             port=8000,
-            routing_scope=DatacenterScope(datacenter="dc1"),
+            routing_scope=DatacenterScope("dc1", fallback=ClusterScope()),
         )
 
         calls: list[str] = []

@@ -43,18 +43,16 @@ kwargs in the same release as the capability work.
 
 ### Routing Scope Fallback
 
-Keep existing fallback behavior for default routing-scope constructors:
+Default routing-scope constructors stay constrained to their requested scope:
 
-- `DatacenterScope("dc1")` falls back to `ClusterScope()`.
-- `RackScope("dc1", "rack1")` falls back to `DatacenterScope("dc1")` and then
-  `ClusterScope()`.
+- `DatacenterScope("dc1")` has no fallback.
+- `RackScope("dc1", "rack1")` has no fallback.
 
-New code should prefer explicit fallback configuration with `fallback=...`,
-`with_default_fallback(...)`, or `without_fallback(...)`.
+Callers that need broader routing should configure it explicitly with
+`fallback=...`.
 
-Changing default fallback behavior requires a warning period and a major
-release. Release notes must include migration examples for callers that need
-cluster fallback, datacenter fallback, or no fallback.
+This is a default behavior change. Release notes must include migration examples
+for callers that need cluster fallback or datacenter fallback.
 
 ### Node Health
 

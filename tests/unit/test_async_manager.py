@@ -73,7 +73,7 @@ class TestAsyncLiveNodesManager:
 
     @pytest.mark.asyncio
     async def test_fallback_chain_on_empty(self) -> None:
-        """Test fallback to broader scope when narrow scope returns empty."""
+        """Test explicit fallback to broader scope when narrow scope returns empty."""
         call_urls: list[str] = []
 
         async def mock_fetch(url: str) -> list[str]:
@@ -86,7 +86,7 @@ class TestAsyncLiveNodesManager:
         config = Config(
             seed_hosts=["192.168.1.1"],
             port=8000,
-            routing_scope=DatacenterScope(datacenter="dc1"),
+            routing_scope=DatacenterScope("dc1", fallback=ClusterScope()),
         )
 
         manager = AsyncLiveNodesManager(config, mock_fetch)

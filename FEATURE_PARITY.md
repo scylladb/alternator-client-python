@@ -59,8 +59,8 @@ and recorded in
   explicitly changes it.
 - Keep deprecated names such as `AlternatorConfig` and `TlsConfig` working while
   capability changes land.
-- Treat routing fallback changes as compatibility-sensitive and document a
-  migration path before changing constructor behavior.
+- Align routing fallback defaults: datacenter and rack constructors stay
+  constrained unless fallback is configured explicitly.
 - Keep node health default behavior unchanged; any future node health behavior
   should start opt-in, and default-enabled behavior requires a major release.
 - Use a minor release for additive compatible APIs, and reserve major releases

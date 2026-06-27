@@ -489,8 +489,7 @@ class TestRoutingScopes:
     def test_datacenter_scope_works(self) -> None:
         """Test datacenter-scoped routing.
 
-        Note: This test may fall back to cluster scope if the specified
-        datacenter doesn't exist. It verifies the fallback mechanism works.
+        The default Scylla docker-compose uses 'datacenter1'.
         """
         from alternator import DatacenterScope
 
@@ -506,31 +505,31 @@ class TestRoutingScopes:
         assert isinstance(config.routing_scope, DatacenterScope)
 
         with AlternatorClient(config) as client:
-            # Should work (may fall back to cluster scope)
             response = client.list_tables()
             assert "TableNames" in response
 
     def test_rack_scope_works(self) -> None:
         """Test rack-scoped routing.
 
-        Note: This test may fall back to datacenter or cluster scope
-        if the specified rack doesn't exist.
+        This test uses an explicit fallback chain because the local fixture may
+        not expose rack1.
         """
-        from alternator import RackScope
+        from alternator import ClusterScope, DatacenterScope, RackScope
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_rack("datacenter1", "rack1")  # Common default names
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=RackScope(
+                "datacenter1",
+                "rack1",
+                fallback=DatacenterScope("datacenter1", fallback=ClusterScope()),
+            ),
         )
 
         # Verify the config has the correct scope
         assert isinstance(config.routing_scope, RackScope)
 
         with AlternatorClient(config) as client:
-            # Should work (may fall back to broader scope)
             response = client.list_tables()
             assert "TableNames" in response
 

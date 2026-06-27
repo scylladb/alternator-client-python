@@ -188,6 +188,7 @@ class TestAlternatorConfigBuilder:
         )
         assert isinstance(config.routing_scope, DatacenterScope)
         assert config.routing_scope.datacenter == "us-east-1"
+        assert config.routing_scope.fallback is None
 
     def test_build_with_compression(self) -> None:
         """Test building config with compression."""
