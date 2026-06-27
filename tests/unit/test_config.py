@@ -18,7 +18,6 @@ from alternator.config import (
     ResponseCompression,
     RetryConfig,
     TimeoutConfig,
-    TlsSessionCacheConfig,
 )
 from alternator.core.routing_scope import ClusterScope, DatacenterScope
 from alternator.exceptions import ConfigurationError
@@ -381,24 +380,10 @@ class TestTLS:
         assert len(tls.custom_ca_cert_paths) == 2
         assert Path("/etc/ssl/ca1.pem") in tls.custom_ca_cert_paths
 
-    def test_default_session_cache(self) -> None:
-        """Test default session cache configuration."""
+    def test_default_session_tickets(self) -> None:
+        """Test default session ticket configuration."""
         tls = TLS()
-        assert tls.session_cache.enabled is True
-
-
-class TestTlsSessionCacheConfig:
-    """Tests for TlsSessionCacheConfig."""
-
-    def test_default_values(self) -> None:
-        """Test default values."""
-        cache = TlsSessionCacheConfig()
-        assert cache.enabled is True
-
-    def test_custom_values(self) -> None:
-        """Test custom values."""
-        cache = TlsSessionCacheConfig(enabled=False)
-        assert cache.enabled is False
+        assert tls.session_tickets_enabled is True
 
 
 class TestKeyRouteAffinityConfig:

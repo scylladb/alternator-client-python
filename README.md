@@ -389,7 +389,7 @@ key values, no active nodes, no votes, or tied votes fall back to normal routing
 ## TLS Configuration
 
 ```python
-from alternator import TLS, TlsSessionCacheConfig
+from alternator import TLS
 from pathlib import Path
 
 # Use system CA certificates (default)
@@ -425,7 +425,7 @@ tls = TLS(
     custom_ca_cert_paths=[Path("/path/to/ca.pem")],
     trust_system_ca_certs=True,
     verify_hostname=True,
-    session_cache=TlsSessionCacheConfig(enabled=True),
+    session_tickets_enabled=True,
     client_cert_path=Path("/path/to/client.crt"),
     client_key_path=Path("/path/to/client.key"),
     key_log_file_path=Path("/secure/tmp/alternator-tls.keys"),
@@ -812,7 +812,7 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 - **Request Compression**: Gzip request compression requires ScyllaDB 2026.1.0+.
 - **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `Config.response_compression`.
 - **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
-- **TLS Session Cache Settings**: `TlsSessionCacheConfig.enabled` controls session ticket behavior. Python's `ssl` module does not expose direct cache size or timeout controls.
+- **TLS Session Tickets**: `TLS.session_tickets_enabled` controls session ticket behavior. Python's `ssl` module does not expose direct cache size or timeout controls.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
 - **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading `KeyRouteAffinityConfig.table_pk_attributes` avoids this initial miss.

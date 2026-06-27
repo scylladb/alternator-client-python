@@ -46,20 +46,6 @@ class KeyRouteAffinityMode(Enum):
 
 
 @dataclass(frozen=True)
-class TlsSessionCacheConfig:
-    """
-    TLS session cache settings for connection reuse.
-
-    Note:
-        Python's ``ssl`` module exposes session ticket control through
-        ``OP_NO_TICKET``. This flag controls whether session tickets are enabled
-        or disabled for TLS connection reuse.
-    """
-
-    enabled: bool = True
-
-
-@dataclass(frozen=True)
 class TLS:
     """TLS/SSL configuration for HTTPS connections."""
 
@@ -71,8 +57,8 @@ class TLS:
     # Verification settings
     verify_hostname: bool = True
 
-    # Session caching
-    session_cache: TlsSessionCacheConfig = field(default_factory=TlsSessionCacheConfig)
+    # TLS session tickets
+    session_tickets_enabled: bool = True
 
     # Client certificate authentication
     client_cert_path: Path | None = None

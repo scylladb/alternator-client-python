@@ -1,6 +1,6 @@
 """Integration tests for TLS configuration.
 
-Tests TLS session caching for both ALN (node discovery) and DynamoDB API requests,
+Tests TLS session tickets for both ALN (node discovery) and DynamoDB API requests,
 and SSLKEYLOGFILE support.
 
 These tests require a running Scylla cluster with Alternator HTTPS enabled.
@@ -22,7 +22,6 @@ from alternator import (
 from alternator import (
     client as alternator_client,
 )
-from alternator.config import TlsSessionCacheConfig
 from tests.integration import SCYLLA_HOST, SCYLLA_HTTPS_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -46,38 +45,38 @@ def table_name() -> str:
     return f"test_tls_{uuid.uuid4().hex[:8]}"
 
 
-class TestTlsSessionCacheAln:
-    """Test TLS session cache for ALN (node discovery) requests."""
+class TestTlsSessionTicketsAln:
+    """Test TLS session tickets for ALN (node discovery) requests."""
 
-    def test_session_cache_enabled_for_aln(self, ca_path: Path) -> None:
-        """Test that TLS session caching works for /localnodes discovery."""
+    def test_session_tickets_enabled_for_aln(self, ca_path: Path) -> None:
+        """Test that TLS session tickets work for /localnodes discovery."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_HTTPS_PORT,
             scheme="https",
             tls=TLS(
                 custom_ca_cert_paths=(ca_path,),
-                session_cache=TlsSessionCacheConfig(enabled=True),
+                session_tickets_enabled=True,
             ),
         )
 
         with alternator_client(
             "dynamodb", cluster_config=config, verify=str(ca_path)
         ) as client:
-            # Multiple requests should benefit from session caching
+            # Multiple requests should work with session tickets enabled.
             for _ in range(10):
                 response = client.list_tables()
                 assert "TableNames" in response
 
-    def test_session_cache_disabled_for_aln(self, ca_path: Path) -> None:
-        """Test that disabling TLS session cache still works for ALN requests."""
+    def test_session_tickets_disabled_for_aln(self, ca_path: Path) -> None:
+        """Test disabling TLS session tickets still works for ALN requests."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_HTTPS_PORT,
             scheme="https",
             tls=TLS(
                 custom_ca_cert_paths=(ca_path,),
-                session_cache=TlsSessionCacheConfig(enabled=False),
+                session_tickets_enabled=False,
             ),
         )
 
@@ -89,20 +88,20 @@ class TestTlsSessionCacheAln:
                 assert "TableNames" in response
 
 
-class TestTlsSessionCacheDynamoDbApi:
-    """Test TLS session cache for DynamoDB API requests."""
+class TestTlsSessionTicketsDynamoDbApi:
+    """Test TLS session tickets for DynamoDB API requests."""
 
-    def test_session_cache_enabled_for_api(
+    def test_session_tickets_enabled_for_api(
         self, ca_path: Path, table_name: str
     ) -> None:
-        """Test session caching with DynamoDB API operations over HTTPS."""
+        """Test session tickets with DynamoDB API operations over HTTPS."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_HTTPS_PORT,
             scheme="https",
             tls=TLS(
                 custom_ca_cert_paths=(ca_path,),
-                session_cache=TlsSessionCacheConfig(enabled=True),
+                session_tickets_enabled=True,
             ),
         )
 
@@ -119,7 +118,7 @@ class TestTlsSessionCacheDynamoDbApi:
             waiter.wait(TableName=table_name)
 
             try:
-                # Multiple CRUD operations over HTTPS with session cache
+                # Multiple CRUD operations over HTTPS with session tickets
                 for i in range(5):
                     client.put_item(
                         TableName=table_name,
@@ -135,17 +134,17 @@ class TestTlsSessionCacheDynamoDbApi:
             finally:
                 client.delete_table(TableName=table_name)
 
-    def test_session_cache_disabled_for_api(
+    def test_session_tickets_disabled_for_api(
         self, ca_path: Path, table_name: str
     ) -> None:
-        """Test DynamoDB API operations over HTTPS without session cache."""
+        """Test DynamoDB API operations over HTTPS without session tickets."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_HTTPS_PORT,
             scheme="https",
             tls=TLS(
                 custom_ca_cert_paths=(ca_path,),
-                session_cache=TlsSessionCacheConfig(enabled=False),
+                session_tickets_enabled=False,
             ),
         )
 
@@ -263,17 +262,17 @@ class TestSslKeyLogFile:
             os.unlink(keylog_path)
 
 
-class TestTlsSessionCacheConfig:
-    """Test that TLS session cache configuration values are applied correctly."""
+class TestTlsSessionTickets:
+    """Test that TLS session ticket configuration values are applied correctly."""
 
-    def test_session_cache_context_options(self, ca_path: Path) -> None:
+    def test_session_ticket_context_options(self, ca_path: Path) -> None:
         """Verify SSL context has correct session ticket settings."""
         from alternator.core.tls import create_ssl_context
 
         # Enabled
         tls_enabled = TLS(
             custom_ca_cert_paths=(ca_path,),
-            session_cache=TlsSessionCacheConfig(enabled=True),
+            session_tickets_enabled=True,
         )
         ctx_enabled = create_ssl_context(tls_enabled)
         assert not (ctx_enabled.options & ssl.OP_NO_TICKET)
@@ -281,7 +280,7 @@ class TestTlsSessionCacheConfig:
         # Disabled
         tls_disabled = TLS(
             custom_ca_cert_paths=(ca_path,),
-            session_cache=TlsSessionCacheConfig(enabled=False),
+            session_tickets_enabled=False,
         )
         ctx_disabled = create_ssl_context(tls_disabled)
         assert ctx_disabled.options & ssl.OP_NO_TICKET

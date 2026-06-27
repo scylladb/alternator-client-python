@@ -98,7 +98,6 @@ from alternator.config import (
     RetryConfig,
     RetryMode,
     TimeoutConfig,
-    TlsSessionCacheConfig,
     UserAgent,
     UserAgentCustomizer,
 )
@@ -140,7 +139,6 @@ __all__ = [
     "RetryConfig",
     "RetryMode",
     "TimeoutConfig",
-    "TlsSessionCacheConfig",
     "UserAgent",
     "UserAgentCustomizer",
     # Exceptions
