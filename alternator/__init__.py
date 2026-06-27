@@ -54,7 +54,6 @@ Key Classes
 - ``resource("dynamodb", ...)``: Sync context manager for DynamoDB resources
 - ``Session``: Sync lifecycle and diagnostics facade
 - ``AsyncSession``: Async lifecycle and diagnostics facade
-- ``AsyncAlternatorClient``: Async context manager for load-balanced connections
 - ``Config``: Main configuration dataclass
 - ``Auth``: Explicit disabled/static-credentials auth settings
 - ``AlternatorConfigBuilder``: Fluent builder for configuration
@@ -142,7 +141,6 @@ __all__ = [
     "resource",
     # Async Client (requires [async] extra)
     "AsyncSession",
-    "AsyncAlternatorClient",
     "close_async_client",
     "create_async_client",
     # Config
@@ -185,7 +183,6 @@ def __getattr__(name: str) -> object:
     """Lazy import async client components to avoid requiring async dependencies."""
     if name in (
         "AsyncSession",
-        "AsyncAlternatorClient",
         "close_async_client",
         "create_async_client",
     ):
