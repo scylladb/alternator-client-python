@@ -11,10 +11,11 @@ This document describes how to release a new version of the Alternator Load Bala
 
 ## Creating a Release
 
-### API And Release Notes Gate
+### API Gate
 
-Before choosing the next version, review the public API and release-note source
-in [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md).
+Before choosing the next version, review the public API exported by
+`alternator.__all__`, the direct import modules documented in the README, and
+the examples.
 
 Release notes for capability work should call out auth defaults, routing
 fallback behavior, key-affinity behavior, and whether node health remains

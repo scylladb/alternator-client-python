@@ -4,6 +4,5 @@ include RELEASING.md
 include Makefile
 include docker-compose.yml
 include renovate.json
-recursive-include docs *.md
 recursive-include examples *.py
 recursive-include tests *.py *.yaml

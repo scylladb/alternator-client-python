@@ -818,12 +818,6 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 - `examples/compare_aws_sdk.py`: Alternator client setup compared with a regular AWS SDK DynamoDB client
 - `examples/capability_configuration.py`: session lifecycle, explicit routing fallback, static auth, timeouts/retries, mTLS, compression/header optimization, and key affinity configuration recipes
 
-## Release Notes
-
-See [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) for capability release-note
-guidance covering additive APIs, API notes, behavior notes, review steps, and
-versioning expectations.
-
 ## Development
 
 ```bash
