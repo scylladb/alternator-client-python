@@ -15,7 +15,8 @@ from typing import Any, cast
 
 from botocore.exceptions import ClientError
 
-from alternator import AlternatorClient, Config, NoNodesAvailableError
+import alternator
+from alternator import Config, NoNodesAvailableError
 
 # Enable logging to see load balancing in action
 logging.basicConfig(
@@ -35,7 +36,7 @@ def main() -> None:
 
     try:
         # Use the context manager for automatic cleanup
-        with AlternatorClient(config) as client:
+        with alternator.client("dynamodb", cluster_config=config) as client:
             # List existing tables
             print("Listing tables...")
             list_response = client.list_tables()

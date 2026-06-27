@@ -21,7 +21,7 @@ DynamoDB Resource interface automatically converts :class:`Vector` instances
 to the ``FLOAT32VECTOR`` wire format and back.
 
 :func:`enable_vector_support` is called automatically by
-:func:`~alternator.create_client`, :func:`~alternator.create_resource`, and
+:func:`~alternator.client`, :func:`~alternator.resource`, and
 :func:`~alternator.async_client.create_async_client`, so users of the
 Alternator client library do not need to call it manually.
 
@@ -30,32 +30,33 @@ Usage::
     import alternator
 
     config = alternator.Config(seed_hosts=["192.168.1.1"], port=8000)
-    client = alternator.create_client(config)  # vector support enabled automatically
+    with alternator.client("dynamodb", cluster_config=config) as client:
+        # vector support enabled automatically
 
-    # Create a table with a vector index
-    client.create_table(
-        TableName="embeddings",
-        KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
-        AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
-        BillingMode="PAY_PER_REQUEST",
-        VectorIndexes=[{
-            "IndexName": "embedding_index",
-            "VectorAttribute": {"AttributeName": "embedding", "Dimensions": 4},
-            "SimilarityFunction": "COSINE",
-        }],
-    )
+        # Create a table with a vector index
+        client.create_table(
+            TableName="embeddings",
+            KeySchema=[{"AttributeName": "id", "KeyType": "HASH"}],
+            AttributeDefinitions=[{"AttributeName": "id", "AttributeType": "S"}],
+            BillingMode="PAY_PER_REQUEST",
+            VectorIndexes=[{
+                "IndexName": "embedding_index",
+                "VectorAttribute": {"AttributeName": "embedding", "Dimensions": 4},
+                "SimilarityFunction": "COSINE",
+            }],
+        )
 
-    # Store a vector using the low-level client interface
-    client.put_item(
-        TableName="embeddings",
-        Item={"id": {"S": "item1"}, "embedding": {"FLOAT32VECTOR": [0.1, 0.2, 0.3, 0.4]}},
-    )
+        # Store a vector using the low-level client interface
+        client.put_item(
+            TableName="embeddings",
+            Item={"id": {"S": "item1"}, "embedding": {"FLOAT32VECTOR": [0.1, 0.2, 0.3, 0.4]}},
+        )
 
-    # Query by vector similarity
-    result = client.query(
-        TableName="embeddings",
-        VectorSearch={"QueryVector": {"FLOAT32VECTOR": [0.1, 0.2, 0.3, 0.4]}},
-    )
+        # Query by vector similarity
+        result = client.query(
+            TableName="embeddings",
+            VectorSearch={"QueryVector": {"FLOAT32VECTOR": [0.1, 0.2, 0.3, 0.4]}},
+        )
 
 With the high-level Resource interface, use :class:`Vector` directly::
 
@@ -63,14 +64,15 @@ With the high-level Resource interface, use :class:`Vector` directly::
     from alternator.vector import Vector
 
     config = alternator.Config(seed_hosts=["192.168.1.1"], port=8000)
-    resource = alternator.create_resource(config)  # vector support enabled automatically
+    resource_ctx = alternator.resource("dynamodb", cluster_config=config)
 
-    table = resource.Table("embeddings")
-    table.put_item(Item={"id": "item1", "embedding": Vector([0.1, 0.2, 0.3, 0.4])})
-    response = table.query(
-        VectorSearch={"QueryVector": Vector([0.1, 0.2, 0.3, 0.4])},
-    )
-    # response["Items"][0]["embedding"] will be a Vector instance
+    with resource_ctx as resource:  # vector support enabled automatically
+        table = resource.Table("embeddings")
+        table.put_item(Item={"id": "item1", "embedding": Vector([0.1, 0.2, 0.3, 0.4])})
+        response = table.query(
+            VectorSearch={"QueryVector": Vector([0.1, 0.2, 0.3, 0.4])},
+        )
+        # response["Items"][0]["embedding"] will be a Vector instance
 """
 
 from __future__ import annotations
@@ -231,9 +233,9 @@ def enable_vector_support(client_or_resource: Any) -> None:  # noqa: ANN401 -- a
 
     Args:
         client_or_resource: A boto3 DynamoDB *client* (e.g. returned by
-            :func:`~alternator.create_client` or ``boto3.client("dynamodb")``)
+            :func:`~alternator.client` or ``boto3.client("dynamodb")``)
             or a DynamoDB *resource* (e.g. returned by
-            :func:`~alternator.create_resource` or
+            :func:`~alternator.resource` or
             ``boto3.resource("dynamodb")``).
     """
     # Resolve to the underlying boto3 low-level client

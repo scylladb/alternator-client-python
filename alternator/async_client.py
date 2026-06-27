@@ -6,9 +6,9 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from types import TracebackType
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from alternator._constants import (
     MANAGER_ATTR,
@@ -20,6 +20,11 @@ from alternator._http import (
     AsyncNodeFetcher,
     create_async_http_fetcher,
     create_ssl_context,
+)
+from alternator.client import (
+    DEFAULT_PORT,
+    _config_from_client_args,
+    _validate_service_name,
 )
 from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
@@ -469,28 +474,36 @@ async def close_async_client(client: AsyncDynamoDBClient) -> None:
         await client.__aexit__(None, None, None)
 
 
-class AsyncHelper:
+class AsyncSession:
     """
-    Async facade for Alternator client lifecycle and diagnostics.
+    Async session for Alternator client lifecycle and diagnostics.
 
-    The helper owns one async live-node manager and can create standard
+    The session owns one async live-node manager and can create standard
     aioboto3 DynamoDB clients that share that discovery state.
     """
 
     def __init__(
         self,
-        config: Config,
+        cluster_config: Config | None = None,
         *,
+        seeds: Sequence[str] | None = None,
+        port: int = DEFAULT_PORT,
+        scheme: Literal["http", "https"] = "http",
         auth: Auth | None = None,
         **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
     ) -> None:
-        self._config = config
+        self._config = _config_from_client_args(
+            cluster_config,
+            seeds=seeds,
+            port=port,
+            scheme=scheme,
+        )
         self._auth = auth
         self._boto_kwargs = dict(boto_kwargs)
         self._manager: AsyncLiveNodesManager | None = None
         self._clients: list[AsyncDynamoDBClient] = []
 
-    async def __aenter__(self) -> AsyncHelper:
+    async def __aenter__(self) -> AsyncSession:
         await self.start()
         return self
 
@@ -504,28 +517,32 @@ class AsyncHelper:
 
     @property
     def config(self) -> Config:
-        """Return this helper's configuration."""
+        """Return this session's configuration."""
         return self._config
 
     def update(
         self,
-        config: Config | None = None,
+        cluster_config: Config | None = None,
         *,
         auth: Auth | None | object = _AUTH_UNSET,
         **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
-    ) -> AsyncHelper:
-        """Return a new async helper with updated config, auth, or boto kwargs."""
+    ) -> AsyncSession:
+        """Return a new async session with updated config, auth, or boto kwargs."""
         next_auth = self._auth if auth is _AUTH_UNSET else cast("Auth | None", auth)
         next_kwargs = {**self._boto_kwargs, **boto_kwargs}
-        return type(self)(config or self._config, auth=next_auth, **next_kwargs)
+        return type(self)(
+            cluster_config or self._config,
+            auth=next_auth,
+            **next_kwargs,
+        )
 
-    async def start(self) -> AsyncHelper:
+    async def start(self) -> AsyncSession:
         """Start background node discovery."""
         await (await self._ensure_manager()).start()
         return self
 
     async def stop(self) -> None:
-        """Stop background node discovery and close helper-created clients."""
+        """Stop background node discovery and close session-created clients."""
         for created_client in list(self._clients):
             with contextlib.suppress(Exception):
                 await close_async_client(created_client)
@@ -537,9 +554,11 @@ class AsyncHelper:
 
     async def client(
         self,
+        service_name: str,
         **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
     ) -> AsyncDynamoDBClient:
-        """Create a standard aioboto3 DynamoDB client using this helper."""
+        """Create a standard aioboto3 DynamoDB client using this session."""
+        _validate_service_name(service_name)
         manager = await self._ensure_manager()
         await manager.start()
         client = await _create_async_client_with_manager(
@@ -552,29 +571,28 @@ class AsyncHelper:
         self._clients.append(client)
         return client
 
-    async def update_live_nodes(self) -> bool:
+    async def refresh_nodes(self) -> bool:
         """Refresh the live-node list immediately."""
         return await (await self._ensure_manager()).refresh_nodes()
 
-    async def next_node(self) -> str | None:
-        """Return the next live node selected for diagnostics."""
-        return (await self._ensure_manager()).next_node()
-
-    def get_nodes(self) -> list[str]:
+    @property
+    def nodes(self) -> list[str]:
         """Return the current live-node hostnames."""
         if self._manager is None:
             return []
         return list(self._manager.nodes.nodes)
 
-    def get_active_nodes(self) -> list[str]:
+    @property
+    def active_nodes(self) -> list[str]:
         """Return active nodes; currently this is the live-node list."""
-        return self.get_nodes()
+        return self.nodes
 
-    def get_quarantined_nodes(self) -> list[str]:
+    @property
+    def quarantined_nodes(self) -> list[str]:
         """Return quarantined nodes; node quarantine is not implemented."""
         return []
 
-    async def check_rack_and_datacenter_set_correctly(self) -> bool:
+    async def validate_scope(self) -> bool:
         """Validate configured rack/datacenter scope without changing state."""
         manager = self._manager
         if manager is not None:
@@ -586,7 +604,7 @@ class AsyncHelper:
         finally:
             await _close_async_manager(manager)
 
-    async def check_rack_datacenter_feature_supported(self) -> bool:
+    async def supports_topology_filters(self) -> bool:
         """Report whether scoped rack/datacenter discovery appears supported."""
         manager = self._manager
         if manager is not None:
@@ -598,7 +616,7 @@ class AsyncHelper:
         finally:
             await _close_async_manager(manager)
 
-    async def get_partition_key_name(self, table_name: str) -> str | None:
+    async def partition_key_for(self, table_name: str) -> str | None:
         """Return a known partition key name for diagnostics."""
         configured = self._config.key_affinity.table_pk_attributes.get(table_name)
         if configured is not None:

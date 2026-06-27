@@ -17,7 +17,7 @@ from typing import Any, cast
 from botocore.exceptions import ClientError
 
 from alternator import Config, NoNodesAvailableError
-from alternator.async_client import AsyncAlternatorClient
+from alternator.async_client import AsyncSession
 
 # Enable logging to see load balancing in action
 logging.basicConfig(
@@ -37,7 +37,9 @@ async def main() -> None:
 
     try:
         # Use the async context manager for automatic cleanup
-        async with AsyncAlternatorClient(config) as client:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
+
             # List existing tables
             print("Listing tables...")
             list_response = await client.list_tables()

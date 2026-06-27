@@ -33,14 +33,13 @@ pip install alternator-client[async]
 
 ### Which API Should I Use?
 
-Use `alternator.client(...)` for the common synchronous case where a context
-manager can own the SDK client and background node refresh.
+Use `alternator.client("dynamodb", ...)` for the common synchronous case where
+a context manager can own the SDK client and background node refresh.
 
-Use `create_client` / `close_client` when the SDK client must be created in one
-place and closed elsewhere. Use `create_resource` / `close_resource` for the
-boto3 table-oriented resource interface.
+Use `alternator.resource("dynamodb", ...)` for the boto3 table-oriented
+resource interface.
 
-Use `Helper` or `AsyncHelper` when one object should own client/resource
+Use `Session` or `AsyncSession` when one object should own client/resource
 lifecycle and expose topology diagnostics such as node refresh, node inspection,
 routing validation, and partition-key cache inspection.
 
@@ -54,6 +53,7 @@ port.
 import alternator
 
 with alternator.client(
+    "dynamodb",
     seeds=["192.168.1.1", "192.168.1.2"],
     port=8000,
 ) as client:
@@ -62,7 +62,8 @@ with alternator.client(
 ```
 
 ```python
-from alternator import Config, AlternatorClient
+import alternator
+from alternator import Config
 
 # Configure the client
 config = Config(
@@ -70,8 +71,7 @@ config = Config(
     port=8000,
 )
 
-# Use as a context manager (recommended)
-with AlternatorClient(config) as client:
+with alternator.client("dynamodb", cluster_config=config) as client:
     # Use like a normal boto3 DynamoDB client
     response = client.list_tables()
     print(response["TableNames"])
@@ -91,7 +91,7 @@ with AlternatorClient(config) as client:
 ```python
 import asyncio
 from alternator import Config
-from alternator.async_client import AsyncAlternatorClient
+from alternator.async_client import AsyncSession
 
 async def main():
     config = Config(
@@ -99,7 +99,9 @@ async def main():
         port=8000,
     )
 
-    async with AsyncAlternatorClient(config) as client:
+    async with AsyncSession(config) as session:
+        client = await session.client("dynamodb")
+
         # Use like a normal aioboto3 DynamoDB client
         response = await client.list_tables()
         print(response["TableNames"])
@@ -107,45 +109,44 @@ async def main():
 asyncio.run(main())
 ```
 
-### Helper Facade
+### Session Facade
 
-Use `Helper` when you need explicit lifecycle control or diagnostics in addition
+Use `Session` when you need explicit lifecycle control or diagnostics in addition
 to standard boto3 clients and resources.
 
 ```python
-from alternator import Config, Helper
+from alternator import Config, Session
 
 config = Config(seed_hosts=["192.168.1.1", "192.168.1.2"], port=8000)
 
-with Helper(config) as helper:
-    client = helper.client()
-    resource = helper.resource()
+with Session(config) as session:
+    client = session.client("dynamodb")
+    resource = session.resource("dynamodb")
 
-    helper.update_live_nodes()
-    print(helper.get_nodes())
-    print(helper.next_node())
+    session.refresh_nodes()
+    print(session.nodes)
 
     client.list_tables()
     resource.Table("my_table").get_item(Key={"pk": "user123"})
 ```
 
-Async code can use `AsyncHelper`:
+Async code can use `AsyncSession`:
 
 ```python
 from alternator import Config
-from alternator.async_client import AsyncHelper
+from alternator.async_client import AsyncSession
 
 config = Config(seed_hosts=["192.168.1.1"], port=8000)
 
-async with AsyncHelper(config) as helper:
-    client = await helper.client()
-    await helper.update_live_nodes()
-    print(helper.get_nodes())
+async with AsyncSession(config) as session:
+    client = await session.client("dynamodb")
+    await session.refresh_nodes()
+    print(session.nodes)
     await client.list_tables()
 ```
 
-`get_active_nodes()` currently returns the live-node list, and
-`get_quarantined_nodes()` returns an empty list because node health and
+`active_nodes` currently returns the live-node list, and
+`quarantined_nodes` returns an empty list because node health and
 quarantine behavior are intentionally deferred.
 
 ## Configuration
@@ -224,17 +225,23 @@ supports static credentials only; AWS SDK environment, profile, and provider-cha
 credentials are not used for Alternator auth.
 
 ```python
-from alternator import Auth, AlternatorClient, Config
+import alternator
+from alternator import Auth, Config
 
 config = Config(seed_hosts=["node1"], port=8000)
 
 # Default: unsigned requests
-with AlternatorClient(config, auth=Auth.disabled()) as client:
+with alternator.client(
+    "dynamodb",
+    cluster_config=config,
+    auth=Auth.disabled(),
+) as client:
     client.list_tables()
 
 # Signed requests with static Alternator credentials
-with AlternatorClient(
-    config,
+with alternator.client(
+    "dynamodb",
+    cluster_config=config,
     auth=Auth.static_credentials("alternator", "secret"),
 ) as client:
     client.list_tables()
@@ -254,6 +261,7 @@ import boto3
 import alternator
 
 with alternator.client(
+    "dynamodb",
     seeds=["node1.example.com", "node2.example.com"],
     port=8000,
 ) as alternator_client:
@@ -331,10 +339,10 @@ rack_then_datacenter_then_cluster = RackScope(
 )
 ```
 
-`Helper.check_rack_and_datacenter_set_correctly()` validates the configured
+`Session.validate_scope()` validates the configured
 scope by querying `/localnodes` with the configured datacenter and rack filters
 without replacing the helper's current live-node list.
-`AsyncHelper` exposes the same validation methods as awaitable methods.
+`AsyncSession` exposes the same validation methods as awaitable methods.
 
 ## Key Affinity (LWT Optimization)
 
@@ -514,8 +522,8 @@ headers exposed in `context.required_headers`.
 ## Error Handling
 
 ```python
+import alternator
 from alternator import (
-    AlternatorClient,
     Config,
     AlternatorError,
     NoNodesAvailableError,
@@ -528,7 +536,7 @@ except ConfigurationError as e:
     print(f"Invalid configuration: {e}")
 
 try:
-    with AlternatorClient(config) as client:
+    with alternator.client("dynamodb", cluster_config=config) as client:
         client.list_tables()
 except NoNodesAvailableError as e:
     print(f"No nodes available: {e}")
@@ -556,32 +564,32 @@ Log levels:
 
 ## DynamoDB Resource Interface
 
-For table-oriented operations, use `AlternatorResource` which wraps boto3's DynamoDB resource:
+For table-oriented operations, use `alternator.resource("dynamodb", ...)` which wraps boto3's DynamoDB resource:
 
 ```python
-from alternator import Config, AlternatorResource
+import alternator
+from alternator import Config
 
 config = Config(seed_hosts=["192.168.1.1"], port=8000)
 
-with AlternatorResource(config) as resource:
+with alternator.resource("dynamodb", cluster_config=config) as resource:
     table = resource.Table("my_table")
     table.put_item(Item={"pk": "user123", "data": "hello"})
     response = table.get_item(Key={"pk": "user123"})
 ```
 
-You can also use the factory function:
+You can also use `Session` when one object should own both lifecycle and
+diagnostics:
 
 ```python
-from alternator import create_resource, close_resource, Config
+from alternator import Config, Session
 
 config = Config(seed_hosts=["node1"], port=8000)
-resource = create_resource(config)
 
-try:
+with Session(config) as session:
+    resource = session.resource("dynamodb")
     table = resource.Table("my_table")
     table.scan()
-finally:
-    close_resource(resource)
 ```
 
 ## Vector Search (ScyllaDB Extension)
@@ -686,30 +694,32 @@ for item in result["Items"]:
 If you prefer not to use context managers:
 
 ```python
-from alternator import create_client, close_client, Config
+from alternator import Config, Session
 
 config = Config(seed_hosts=["node1"], port=8000)
-client = create_client(config)
 
+session = Session(config)
 try:
+    client = session.client("dynamodb")
     client.list_tables()
 finally:
-    close_client(client)  # Stop background refresh thread
+    session.stop()  # Stop background refresh thread and close created clients
 ```
 
 Async equivalent:
 
 ```python
 from alternator import Config
-from alternator.async_client import create_async_client, close_async_client
+from alternator.async_client import AsyncSession
 
 config = Config(seed_hosts=["node1"], port=8000)
-client = await create_async_client(config)
 
+session = AsyncSession(config)
 try:
+    client = await session.client("dynamodb")
     await client.list_tables()
 finally:
-    await close_async_client(client)
+    await session.stop()
 ```
 
 ## Transport Configuration
@@ -744,14 +754,16 @@ By default, Alternator sends `alternator-client-python/<version>` as the final
 wire `User-Agent` header. Pass `None` to omit the header:
 
 ```python
-from alternator import Config, create_client
+import alternator
+from alternator import Config
 
 config = Config(
     seed_hosts=["node1", "node2"],
     port=8000,
     user_agent=None,
 )
-client = create_client(config)
+with alternator.client("dynamodb", cluster_config=config) as client:
+    client.list_tables()
 ```
 
 Pass a string to `user_agent` when you need to set a final value:
@@ -762,7 +774,8 @@ config = Config(
     port=8000,
     user_agent="orders-service/1.0",
 )
-client = create_client(config)
+with alternator.client("dynamodb", cluster_config=config) as client:
+    client.list_tables()
 ```
 
 Pass a callback when you need to wrap or add to the default
@@ -774,7 +787,8 @@ config = Config(
     port=8000,
     user_agent=lambda default: f"orders-service {default}",
 )
-client = create_client(config)
+with alternator.client("dynamodb", cluster_config=config) as client:
+    client.list_tables()
 ```
 
 The client still owns the SDK config object, endpoint routing, and the final
@@ -796,9 +810,9 @@ instead.
 
 ## Thread Safety
 
-Sync clients created by `create_client` / `AlternatorClient` are thread-safe: the underlying node selection, round-robin counter, and node list updates are all protected by locks. You can safely share a single client across multiple threads.
+Sync clients created by `alternator.client("dynamodb", ...)` or `Session.client("dynamodb")` are thread-safe: the underlying node selection, round-robin counter, and node list updates are all protected by locks. You can safely share a single client across multiple threads.
 
-Async clients created by `create_async_client` / `AsyncAlternatorClient` are safe to use from multiple concurrent coroutines within the same event loop. Do not share an async client across different event loops.
+Async clients created by `AsyncSession.client("dynamodb")` are safe to use from multiple concurrent coroutines within the same event loop. Do not share an async client across different event loops.
 
 ## Known Limitations
 
@@ -810,7 +824,7 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
 - **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
 - **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Ties, missing partition-key metadata, unsupported key values, no active nodes, or no eligible votes fall back to normal routing. Batches are not split by affinity target.
-- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `get_quarantined_nodes()` returns an empty list until a future implementation is explicitly added.
+- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `Session.quarantined_nodes` returns an empty list until a future implementation is explicitly added.
 
 ## Examples
 

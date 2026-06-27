@@ -1,4 +1,4 @@
-"""Tests for public Helper facades."""
+"""Tests for public Session facades."""
 
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ from urllib.parse import urlsplit
 import pytest
 
 import alternator
-from alternator import Auth, Config, Helper, close_client, create_client
+from alternator import Auth, Config, Session, close_client, create_client
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR
-from alternator.async_client import AsyncHelper
+from alternator.async_client import AsyncSession
 from alternator.config import KeyRouteAffinityConfig
 from alternator.core.routing_scope import (
     ClusterScope,
@@ -42,31 +42,38 @@ def _config_for_server(
 
 
 def test_helper_is_exported() -> None:
-    """Helper is available from the top-level package."""
-    assert alternator.Helper is Helper
-    assert alternator.AsyncHelper is AsyncHelper
+    """Session is available from the top-level package."""
+    assert alternator.Session is Session
+    assert alternator.AsyncSession is AsyncSession
+
+
+def test_session_accepts_seed_keywords() -> None:
+    """Session can be configured directly without a prebuilt Config."""
+    session = Session(seeds=["node1", "node2"], port=8042, scheme="https")
+
+    assert session.config.seed_hosts == ("node1", "node2")
+    assert session.config.port == 8042
+    assert session.config.scheme == "https"
 
 
 def test_helper_lifecycle_and_node_diagnostics(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
-    """Helper exposes explicit lifecycle and live-node inspection."""
+    """Session exposes explicit lifecycle and live-node inspection."""
     fake_alternator_server.set_localnodes(["node2", "node1"])
-    helper = Helper(_config_for_server(fake_alternator_server))
+    helper = Session(_config_for_server(fake_alternator_server))
 
-    assert helper.get_nodes() == []
-    assert helper.update_live_nodes() is True
-    assert helper.get_nodes() == ["node1", "node2"]
-    assert helper.get_active_nodes() == ["node1", "node2"]
-    assert helper.get_quarantined_nodes() == []
-    assert helper.next_node() == "node1"
-    assert helper.next_node() == "node2"
+    assert helper.nodes == []
+    assert helper.refresh_nodes() is True
+    assert helper.nodes == ["node1", "node2"]
+    assert helper.active_nodes == ["node1", "node2"]
+    assert helper.quarantined_nodes == []
 
     helper.start()
     helper.start()
     helper.stop()
     helper.stop()
-    assert helper.get_nodes() == []
+    assert helper.nodes == []
 
 
 def test_helper_created_clients_borrow_helper_manager(
@@ -75,9 +82,9 @@ def test_helper_created_clients_borrow_helper_manager(
     """Closing a helper-created client does not stop the helper manager."""
     fake_alternator_server.set_localnodes(["node1"])
 
-    with Helper(_config_for_server(fake_alternator_server)) as helper:
-        client = helper.client()
-        resource = helper.resource()
+    with Session(_config_for_server(fake_alternator_server)) as helper:
+        client = helper.client("dynamodb")
+        resource = helper.resource("dynamodb")
 
         assert getattr(client, MANAGER_ATTR) is helper._manager
         assert getattr(resource, MANAGER_ATTR) is helper._manager
@@ -85,7 +92,7 @@ def test_helper_created_clients_borrow_helper_manager(
         assert getattr(resource, MANAGER_OWNS_ATTR) is False
 
         close_client(client)
-        assert helper.update_live_nodes() is True
+        assert helper.refresh_nodes() is True
 
 
 def test_helper_update_returns_new_helper(
@@ -93,7 +100,7 @@ def test_helper_update_returns_new_helper(
 ) -> None:
     """update returns a fresh helper with merged settings."""
     config = _config_for_server(fake_alternator_server)
-    helper = Helper(config, auth=Auth.disabled(), region_name="us-west-2")
+    helper = Session(config, auth=Auth.disabled(), region_name="us-west-2")
     updated = helper.update(region_name="us-east-1")
 
     assert updated is not helper
@@ -103,51 +110,51 @@ def test_helper_update_returns_new_helper(
 
 
 def test_helper_topology_checks(fake_alternator_server: FakeAlternatorServer) -> None:
-    """Helper exposes lightweight topology configuration checks."""
+    """Session exposes lightweight topology configuration checks."""
     fake_alternator_server.set_localnodes(["node1"], query="dc=dc1")
     fake_alternator_server.set_localnodes(["node1"], query="dc=dc1&rack=rack1")
 
-    assert Helper(
+    assert Session(
         _config_for_server(fake_alternator_server, routing_scope=ClusterScope())
-    ).check_rack_and_datacenter_set_correctly()
-    assert Helper(
+    ).validate_scope()
+    assert Session(
         _config_for_server(
             fake_alternator_server,
             routing_scope=DatacenterScope(datacenter="dc1"),
         )
-    ).check_rack_and_datacenter_set_correctly()
+    ).validate_scope()
 
-    invalid_helper = Helper(
+    invalid_helper = Session(
         _config_for_server(
             fake_alternator_server,
             routing_scope=RackScope(datacenter="dc1", rack=""),
         )
     )
-    assert not invalid_helper.check_rack_datacenter_feature_supported()
+    assert not invalid_helper.supports_topology_filters()
     with pytest.raises(ConfigurationError, match="non-empty"):
-        invalid_helper.check_rack_and_datacenter_set_correctly()
+        invalid_helper.validate_scope()
 
-    assert Helper(
+    assert Session(
         _config_for_server(
             fake_alternator_server,
             routing_scope=RackScope(datacenter="dc1", rack="rack1"),
         )
-    ).check_rack_datacenter_feature_supported()
+    ).supports_topology_filters()
 
 
 def test_helper_partition_key_diagnostics_from_config(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
     """Configured partition-key mappings are exposed without private access."""
-    helper = Helper(
+    helper = Session(
         _config_for_server(
             fake_alternator_server,
             key_affinity=KeyRouteAffinityConfig(table_pk_attributes={"tbl": "pk"}),
         )
     )
 
-    assert helper.get_partition_key_name("tbl") == "pk"
-    assert helper.get_partition_key_name("missing") is None
+    assert helper.partition_key_for("tbl") == "pk"
+    assert helper.partition_key_for("missing") is None
 
 
 def test_no_fallback_scope_does_not_use_seed_hosts(
@@ -213,19 +220,18 @@ def test_close_resource_closes_underlying_boto_client() -> None:
 async def test_async_helper_lifecycle_and_node_diagnostics(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
-    """AsyncHelper exposes async lifecycle and live-node inspection."""
+    """AsyncSession exposes async lifecycle and live-node inspection."""
     fake_alternator_server.set_localnodes(["node2", "node1"])
-    helper = AsyncHelper(_config_for_server(fake_alternator_server))
+    helper = AsyncSession(_config_for_server(fake_alternator_server))
 
-    assert helper.get_nodes() == []
-    assert await helper.update_live_nodes() is True
-    assert helper.get_nodes() == ["node1", "node2"]
-    assert helper.get_active_nodes() == ["node1", "node2"]
-    assert helper.get_quarantined_nodes() == []
-    assert await helper.next_node() == "node1"
+    assert helper.nodes == []
+    assert await helper.refresh_nodes() is True
+    assert helper.nodes == ["node1", "node2"]
+    assert helper.active_nodes == ["node1", "node2"]
+    assert helper.quarantined_nodes == []
 
     await helper.start()
     await helper.start()
     await helper.stop()
     await helper.stop()
-    assert helper.get_nodes() == []
+    assert helper.nodes == []

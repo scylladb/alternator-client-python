@@ -8,14 +8,13 @@ Quick Start
 -----------
 Synchronous usage::
 
-    from alternator import Config, AlternatorClient
+    import alternator
 
-    config = Config(
-        seed_hosts=["192.168.1.1", "192.168.1.2"],
+    with alternator.client(
+        "dynamodb",
+        seeds=["192.168.1.1", "192.168.1.2"],
         port=8000,
-    )
-
-    with AlternatorClient(config) as client:
+    ) as client:
         response = client.list_tables()
         client.put_item(
             TableName="my_table",
@@ -25,11 +24,12 @@ Synchronous usage::
 Asynchronous usage::
 
     from alternator import Config
-    from alternator.async_client import AsyncAlternatorClient
+    from alternator.async_client import AsyncSession
 
     config = Config(seed_hosts=["192.168.1.1"], port=8000)
 
-    async with AsyncAlternatorClient(config) as client:
+    async with AsyncSession(config) as session:
+        client = await session.client("dynamodb")
         response = await client.list_tables()
 
 Configuration
@@ -50,9 +50,10 @@ for a fluent builder pattern::
 
 Key Classes
 -----------
-- ``AlternatorClient``: Sync context manager for load-balanced connections
-- ``Helper``: Sync lifecycle and diagnostics facade
-- ``AsyncHelper``: Async lifecycle and diagnostics facade
+- ``client("dynamodb", ...)``: Sync context manager for load-balanced connections
+- ``resource("dynamodb", ...)``: Sync context manager for DynamoDB resources
+- ``Session``: Sync lifecycle and diagnostics facade
+- ``AsyncSession``: Async lifecycle and diagnostics facade
 - ``AsyncAlternatorClient``: Async context manager for load-balanced connections
 - ``Config``: Main configuration dataclass
 - ``Auth``: Explicit disabled/static-credentials auth settings
@@ -82,12 +83,13 @@ from alternator._version import __version__
 from alternator.client import (
     AlternatorClient,
     AlternatorResource,
-    Helper,
+    Session,
     client,
     close_client,
     close_resource,
     create_client,
     create_resource,
+    resource,
 )
 from alternator.config import (
     TLS,
@@ -131,14 +133,15 @@ __all__ = [
     # Sync Client
     "AlternatorClient",
     "AlternatorResource",
-    "Helper",
+    "Session",
     "client",
     "close_client",
     "close_resource",
     "create_client",
     "create_resource",
+    "resource",
     # Async Client (requires [async] extra)
-    "AsyncHelper",
+    "AsyncSession",
     "AsyncAlternatorClient",
     "close_async_client",
     "create_async_client",
@@ -181,7 +184,7 @@ __all__ = [
 def __getattr__(name: str) -> object:
     """Lazy import async client components to avoid requiring async dependencies."""
     if name in (
-        "AsyncHelper",
+        "AsyncSession",
         "AsyncAlternatorClient",
         "close_async_client",
         "create_async_client",

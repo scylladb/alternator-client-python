@@ -15,9 +15,9 @@ from alternator import (
     ClusterScope,
     Config,
     DatacenterScope,
-    Helper,
     NoNodesAvailableError,
     RackScope,
+    Session,
 )
 from alternator.exceptions import ConfigurationError
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
@@ -189,17 +189,17 @@ class TestRackDatacenterFeatureSupport:
             assert "TableNames" in response
 
     def test_helper_validates_correct_datacenter(self) -> None:
-        """Helper validation succeeds for a known datacenter."""
+        """Session validation succeeds for a known datacenter."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
             routing_scope=DatacenterScope("datacenter1", fallback=None),
         )
 
-        assert Helper(config).check_rack_and_datacenter_set_correctly()
+        assert Session(config).validate_scope()
 
     def test_helper_validation_rejects_wrong_datacenter(self) -> None:
-        """Helper validation raises a clear error for an absent datacenter."""
+        """Session validation raises a clear error for an absent datacenter."""
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
@@ -207,4 +207,4 @@ class TestRackDatacenterFeatureSupport:
         )
 
         with pytest.raises(ConfigurationError, match="No nodes found"):
-            Helper(config).check_rack_and_datacenter_set_correctly()
+            Session(config).validate_scope()
