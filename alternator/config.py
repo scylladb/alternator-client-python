@@ -17,7 +17,6 @@ from alternator.exceptions import ConfigurationError
 
 logger = logging.getLogger("alternator")
 
-SDKConfigCustomizer = Callable[[dict[str, Any]], None]
 SDKClientCert = str | tuple[str, str]
 UserAgentCustomizer = Callable[[str], str]
 UserAgent = str | UserAgentCustomizer
@@ -403,7 +402,6 @@ class Config:
     # SDK settings
     aws_region: str = "us-east-1"
     user_agent: UserAgent | None = DEFAULT_USER_AGENT
-    sdk_config_customizer: SDKConfigCustomizer | None = None
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -473,7 +471,6 @@ class AlternatorConfigBuilder:
         self._timeouts = TimeoutConfig()
         self._aws_region = "us-east-1"
         self._user_agent: UserAgent | None = DEFAULT_USER_AGENT
-        self._sdk_config_customizer: SDKConfigCustomizer | None = None
 
     def with_seeds(self, *hosts: str) -> AlternatorConfigBuilder:
         """Add seed hosts for node discovery."""
@@ -628,14 +625,6 @@ class AlternatorConfigBuilder:
         self._user_agent = user_agent
         return self
 
-    def with_sdk_config_customizer(
-        self,
-        customizer: SDKConfigCustomizer | None,
-    ) -> AlternatorConfigBuilder:
-        """Set a callback that can adjust generated SDK config kwargs."""
-        self._sdk_config_customizer = customizer
-        return self
-
     def build(self) -> Config:
         """Build the configuration object."""
         from alternator.core.routing_scope import ClusterScope
@@ -656,7 +645,6 @@ class AlternatorConfigBuilder:
             timeouts=self._timeouts,
             aws_region=self._aws_region,
             user_agent=self._user_agent,
-            sdk_config_customizer=self._sdk_config_customizer,
         )
 
 
@@ -673,8 +661,6 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
     }
     if config.scheme == "https" and config.tls.sdk_client_cert is not None:
         kwargs["client_cert"] = config.tls.sdk_client_cert
-    if config.sdk_config_customizer is not None:
-        config.sdk_config_customizer(kwargs)
     if config.user_agent is not None:
         kwargs["user_agent"] = _resolve_user_agent(config.user_agent)
     else:

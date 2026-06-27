@@ -15,7 +15,8 @@ authority for compatibility decisions.
   `without_fallback(...)`.
 - Added topology validation helpers for configured datacenter/rack scopes.
 - Added transport configuration for SDK retries, connect/read timeouts,
-  connection pool size, region placeholder, and SDK config customization.
+  connection pool size, region placeholder, TLS client certificates, and
+  User-Agent customization.
 - Added Alternator-specific `User-Agent` control with `Config.user_agent`.
   By default, requests send the Alternator Python client identity; callers can
   pass `None` to remove the wire header, a string to set a final value, or a
@@ -51,8 +52,9 @@ authority for compatibility decisions.
   For `BatchWriteItem`, valid put/delete entries vote for their preferred node.
   Tied votes, missing partition-key metadata, unsupported key values, no active
   nodes, or no eligible votes fall back to normal routing.
-- `sdk_config_customizer` can adjust supported SDK config kwargs, but the client
-  still owns endpoint routing and reapplies auth-managed signature settings.
+- The client owns the SDK config object, endpoint routing, auth-managed
+  signature settings, TLS client certificate settings, retries, timeouts, and
+  final wire `User-Agent` handling.
 - TLS key logs contain traffic decryption material and should only be used in
   protected debugging environments.
 

@@ -214,7 +214,6 @@ config = (
 | `timeouts` | `TimeoutConfig` | discovery 5s, connect 5s, read 30s | Discovery and SDK per-attempt timeouts |
 | `aws_region` | `str` | `"us-east-1"` | Region placeholder required by the SDK |
 | `user_agent` | str, callable, or `None` | `alternator-client-python/<version>` | Final User-Agent; `None` omits the wire header |
-| `sdk_config_customizer` | callable | `None` | Callback for safe SDK config kwargs adjustments |
 | `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
 | `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
 
@@ -779,9 +778,13 @@ client = create_client(config)
 ```
 
 The client still owns the SDK config object, endpoint routing, and the final
-wire `User-Agent` header. Python botocore does not expose direct knobs for max
-idle connections, max idle connections per host, or idle connection timeout;
-tune `max_pool_connections`, retries, and timeouts instead.
+wire `User-Agent` header. Use typed Alternator config fields for SDK transport
+settings: `RetryConfig` for retry behavior, `TimeoutConfig` for connect/read
+timeouts, `max_pool_connections` for pool sizing, `aws_region` for the SDK
+region placeholder, and `TLS` for client certificates. Python botocore does not
+expose direct knobs for max idle connections, max idle connections per host, or
+idle connection timeout; tune `max_pool_connections`, retries, and timeouts
+instead.
 
 ## Production Recommendations
 
