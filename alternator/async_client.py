@@ -22,18 +22,18 @@ from alternator._http import (
     create_ssl_context,
 )
 from alternator.client import (
-    DEFAULT_PORT,
+    _DEFAULT_PORT,
     _config_from_client_args,
     _validate_service_name,
 )
-from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
+from alternator.config import KeyRouteAffinityMode, _build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import (
     select_affinity_node,
 )
 from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
-from alternator.vector import enable_vector_support
+from alternator.vector import _enable_vector_support
 
 if TYPE_CHECKING:
     from types_aiobotocore_dynamodb import DynamoDBClient as AsyncDynamoDBClient
@@ -42,9 +42,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("alternator")
 _AUTH_UNSET = object()
+__all__ = ["AsyncSession"]
 
 
-class AsyncPartitionKeyCache:
+class _AsyncPartitionKeyCache:
     """
     Async version of partition key cache for table -> pk name mapping.
 
@@ -192,7 +193,7 @@ class AsyncPartitionKeyCache:
         async with self._lock:
             self._cache.clear()
 
-    def preload(self, table_pk_map: dict[str, str]) -> None:
+    def preload(self, table_pk_attributes: dict[str, str]) -> None:
         """
         Preload cache with known table -> pk mappings.
 
@@ -200,14 +201,14 @@ class AsyncPartitionKeyCache:
         before concurrent access begins.
 
         Args:
-            table_pk_map: Mapping of table name to partition key name
+            table_pk_attributes: Mapping of table name to partition key name
         """
-        self._cache.update(table_pk_map)
+        self._cache.update(table_pk_attributes)
 
 
 def _create_async_affinity_node_computer(
     config: Config,
-    pk_cache: AsyncPartitionKeyCache | None,
+    pk_cache: _AsyncPartitionKeyCache | None,
 ) -> Callable[[str, dict[str, Any], NodeList], str | None] | None:
     """
     Create a function that selects the preferred key-affinity node.
@@ -318,7 +319,7 @@ def _create_aio_config(config: Config, *, auth_enabled: bool) -> object:
 
     from botocore import UNSIGNED
 
-    kwargs = build_sdk_config_kwargs(config)
+    kwargs = _build_sdk_config_kwargs(config)
     kwargs.pop("signature_version", None)
     if not auth_enabled:
         kwargs["signature_version"] = UNSIGNED
@@ -367,9 +368,9 @@ async def _create_async_client_with_manager(
 
     try:
         # Set up partition key cache if affinity is enabled
-        pk_cache: AsyncPartitionKeyCache | None = None
+        pk_cache: _AsyncPartitionKeyCache | None = None
         if config.key_affinity.mode != KeyRouteAffinityMode.NONE:
-            pk_cache = AsyncPartitionKeyCache(client)
+            pk_cache = _AsyncPartitionKeyCache(client)
             if config.key_affinity.table_pk_attributes:
                 pk_cache.preload(dict(config.key_affinity.table_pk_attributes))
             setattr(client, PK_CACHE_ATTR, pk_cache)
@@ -389,7 +390,7 @@ async def _create_async_client_with_manager(
         setattr(client, MANAGER_OWNS_ATTR, owns_manager)
 
         # Enable Alternator vector search extensions
-        enable_vector_support(client)
+        _enable_vector_support(client)
     except Exception:
         await client_ctx.__aexit__(None, None, None)
         raise
@@ -429,7 +430,7 @@ class AsyncSession:
         cluster_config: Config | None = None,
         *,
         seeds: Sequence[str] | None = None,
-        port: int = DEFAULT_PORT,
+        port: int = _DEFAULT_PORT,
         scheme: Literal["http", "https"] = "http",
         auth: Auth | None = None,
         **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
@@ -523,16 +524,6 @@ class AsyncSession:
         if self._manager is None:
             return []
         return list(self._manager.nodes.nodes)
-
-    @property
-    def active_nodes(self) -> list[str]:
-        """Return active nodes; currently this is the live-node list."""
-        return self.nodes
-
-    @property
-    def quarantined_nodes(self) -> list[str]:
-        """Return quarantined nodes; node quarantine is not implemented."""
-        return []
 
     async def validate_scope(self) -> bool:
         """Validate configured rack/datacenter scope without changing state."""

@@ -16,7 +16,6 @@ import pytest
 
 from alternator import (
     TLS,
-    AlternatorConfigBuilder,
     Config,
 )
 from alternator import (
@@ -51,12 +50,11 @@ def https_config() -> Config | None:
     ca_path = Path(__file__).resolve().parents[1] / "scylla" / "db.crt"
     if not ca_path.exists():
         pytest.skip("Self-signed certificate not found (run 'make scylla-start')")
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_HTTPS_PORT)
-        .with_https(TLS.with_custom_ca(ca_path))
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_HTTPS_PORT,
+        scheme="https",
+        tls=TLS.with_custom_ca(ca_path),
     )
 
 

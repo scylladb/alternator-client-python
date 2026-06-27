@@ -6,6 +6,13 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from urllib.parse import quote
 
+__all__ = [
+    "ClusterScope",
+    "DatacenterScope",
+    "RackScope",
+    "RoutingScope",
+]
+
 
 class RoutingScope(ABC):
     """Base class for topology-aware routing scopes."""

@@ -7,24 +7,23 @@ import pytest
 
 from alternator.config import (
     TLS,
-    AlternatorConfig,
-    AlternatorConfigBuilder,
     CompressionAlgorithm,
     Config,
+    HeaderOptimizationConfig,
     HeaderWhitelistContext,
     KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
+    NodeListPollingConfig,
     RequestCompressionConfig,
     ResponseCompression,
     RetryConfig,
-    TlsConfig,
-    TlsSessionCacheConfig,
+    TimeoutConfig,
 )
 from alternator.core.routing_scope import ClusterScope, DatacenterScope
 from alternator.exceptions import ConfigurationError
 
 
-class TestAlternatorConfig:
+class TestConfig:
     """Tests for Config validation."""
 
     def test_valid_config(self) -> None:
@@ -45,7 +44,7 @@ class TestAlternatorConfig:
             Config(seed_hosts=[], port=8000)
 
     def test_missing_seeds_also_raises_value_error(self) -> None:
-        """Test backward compat: ConfigurationError is also a ValueError."""
+        """ConfigurationError is also a ValueError for callers using either base."""
         with pytest.raises(ValueError, match="At least one seed host is required"):
             Config(seed_hosts=[], port=8000)
 
@@ -99,140 +98,87 @@ class TestAlternatorConfig:
         assert isinstance(config.routing_scope, ClusterScope)
 
 
-class TestDeprecatedConfigNames:
-    """Tests for deprecated compatibility names."""
-
-    def test_alternator_config_warns_and_builds_config(self) -> None:
-        """Test deprecated AlternatorConfig compatibility name."""
-        with pytest.warns(DeprecationWarning, match="AlternatorConfig"):
-            config = AlternatorConfig(seed_hosts=["localhost"], port=8000)
-
-        assert isinstance(config, Config)
-        assert config.seed_hosts == ["localhost"]
-
-    def test_tls_config_warns_and_builds_tls(self) -> None:
-        """Test deprecated TlsConfig compatibility name."""
-        with pytest.warns(DeprecationWarning, match="TlsConfig"):
-            tls = TlsConfig()
-
-        assert isinstance(tls, TLS)
-        assert tls.trust_system_ca_certs is True
-
-    def test_deprecated_tls_factory_warns(self) -> None:
-        """Test deprecated TlsConfig factory methods remain usable."""
-        with pytest.warns(DeprecationWarning, match="TlsConfig"):
-            tls = TlsConfig.system_default()
-
-        assert isinstance(tls, TLS)
-
-    def test_top_level_preferred_exports(self) -> None:
-        """Test top-level package exports preferred names."""
-        import alternator
-
-        assert alternator.Auth is not None
-        assert alternator.Config is Config
-        assert alternator.TLS is TLS
-        assert alternator.UserAgent is not None
-        assert alternator.UserAgentCustomizer is not None
-
-
-class TestAlternatorConfigBuilder:
-    """Tests for AlternatorConfigBuilder."""
+class TestConfigConstruction:
+    """Tests for direct Config construction of optional settings."""
 
     def test_build_minimal_config(self) -> None:
-        """Test building a minimal configuration."""
-        config = (
-            AlternatorConfigBuilder().with_seeds("localhost").with_port(8000).build()
-        )
+        """Test a minimal configuration."""
+        config = Config(seed_hosts=("localhost",), port=8000)
         assert config.seed_hosts == ("localhost",)
         assert config.port == 8000
         assert config.scheme == "http"
 
     def test_build_with_multiple_seeds(self) -> None:
-        """Test building config with multiple seed hosts."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("host1", "host2")
-            .with_seeds("host3")
-            .with_port(8000)
-            .build()
-        )
+        """Test config with multiple seed hosts."""
+        config = Config(seed_hosts=("host1", "host2", "host3"), port=8000)
         assert config.seed_hosts == ("host1", "host2", "host3")
 
     def test_build_with_https(self) -> None:
-        """Test building config with HTTPS."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8443)
-            .with_https()
-            .build()
-        )
+        """Test config with HTTPS."""
+        config = Config(seed_hosts=("localhost",), port=8443, scheme="https")
         assert config.scheme == "https"
 
     def test_build_with_https_and_tls_config(self) -> None:
-        """Test building config with HTTPS and custom TLS."""
+        """Test config with HTTPS and custom TLS."""
         tls = TLS.trust_all()
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8443)
-            .with_https(tls)
-            .build()
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8443,
+            scheme="https",
+            tls=tls,
         )
         assert config.scheme == "https"
         assert config.tls.trust_all_certificates is True
 
     def test_build_with_datacenter(self) -> None:
-        """Test building config with datacenter scope."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_datacenter("us-east-1")
-            .build()
+        """Test config with datacenter scope."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            routing_scope=DatacenterScope("us-east-1"),
         )
         assert isinstance(config.routing_scope, DatacenterScope)
         assert config.routing_scope.datacenter == "us-east-1"
         assert config.routing_scope.fallback is None
 
     def test_build_with_compression(self) -> None:
-        """Test building config with compression."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_compression(CompressionAlgorithm.GZIP, min_size=2048)
-            .build()
+        """Test config with compression."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            request_compression=RequestCompressionConfig(
+                algorithm=CompressionAlgorithm.GZIP,
+                min_size_bytes=2048,
+            ),
         )
         assert config.request_compression.algorithm == CompressionAlgorithm.GZIP
         assert config.request_compression.min_size_bytes == 2048
         assert config.request_compression.gzip_level == 9
 
     def test_build_with_compression_level(self) -> None:
-        """Test building config with a custom gzip compression level."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_compression(CompressionAlgorithm.GZIP, min_size=2048, gzip_level=1)
-            .build()
+        """Test config with a custom gzip compression level."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            request_compression=RequestCompressionConfig(
+                algorithm=CompressionAlgorithm.GZIP,
+                min_size_bytes=2048,
+                gzip_level=1,
+            ),
         )
         assert config.request_compression.algorithm == CompressionAlgorithm.GZIP
         assert config.request_compression.min_size_bytes == 2048
         assert config.request_compression.gzip_level == 1
 
-    def test_build_with_response_compression(self) -> None:
-        """Test building config with response compression."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_response_compression(
+    def test_response_compression(self) -> None:
+        """Test config with response compression."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            response_compression=(
                 ResponseCompression.GZIP,
                 ResponseCompression.DEFLATE,
-            )
-            .build()
+            ),
         )
         assert config.response_compression == (
             ResponseCompression.GZIP,
@@ -240,25 +186,22 @@ class TestAlternatorConfigBuilder:
         )
 
     def test_without_response_compression(self) -> None:
-        """Test disabling response compression."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_response_compression(ResponseCompression.GZIP)
-            .without_response_compression()
-            .build()
-        )
+        """Test response compression is disabled by default."""
+        config = Config(seed_hosts=("localhost",), port=8000)
         assert config.response_compression == ()
 
-    def test_with_response_compression_rejects_invalid_encoding(self) -> None:
-        """Test enabling response compression rejects invalid encodings."""
+    def test_response_compression_rejects_invalid_encoding(self) -> None:
+        """Test direct response compression rejects invalid encodings."""
         with pytest.raises(
             ConfigurationError,
             match="unsupported response compression encoding",
         ):
-            AlternatorConfigBuilder().with_response_compression(
-                None,  # type: ignore[arg-type] # validate runtime input
+            Config(
+                seed_hosts=("localhost",),
+                port=8000,
+                response_compression=(
+                    None,  # type: ignore[arg-type] # validate runtime input
+                ),
             )
 
     def test_invalid_response_compression_raises(self) -> None:
@@ -283,13 +226,14 @@ class TestAlternatorConfigBuilder:
             )
 
     def test_build_with_header_optimization(self) -> None:
-        """Test building config with header optimization."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_header_optimization(whitelist={"Host", "Content-Type"})
-            .build()
+        """Test config with header optimization."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            header_optimization=HeaderOptimizationConfig(
+                enabled=True,
+                whitelist=frozenset({"Host", "Content-Type"}),
+            ),
         )
         assert config.header_optimization.enabled is True
         assert config.header_optimization.whitelist == frozenset(
@@ -298,148 +242,120 @@ class TestAlternatorConfigBuilder:
         assert config.header_optimization.whitelist_callback is None
 
     def test_build_with_header_whitelist_callback(self) -> None:
-        """Test building config with a dynamic header whitelist callback."""
+        """Test config with a dynamic header whitelist callback."""
 
         def whitelist_callback(context: HeaderWhitelistContext) -> set[str]:
             assert context.config.port == 8000
             return {"X-Dynamic-Header"}
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_header_optimization(whitelist_callback=whitelist_callback)
-            .build()
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            header_optimization=HeaderOptimizationConfig(
+                enabled=True,
+                whitelist_callback=whitelist_callback,
+            ),
         )
         assert config.header_optimization.enabled is True
         assert config.header_optimization.whitelist is None
         assert config.header_optimization.whitelist_callback is whitelist_callback
 
     def test_build_with_key_affinity(self) -> None:
-        """Test building config with key affinity."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_key_affinity(
+        """Test config with key affinity."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            key_affinity=KeyRouteAffinityConfig(
                 KeyRouteAffinityMode.RMW,
-                table_pk_map={"users": "user_id"},
-            )
-            .build()
+                table_pk_attributes={"users": "user_id"},
+            ),
         )
         assert config.key_affinity.mode == KeyRouteAffinityMode.RMW
         assert config.key_affinity.table_pk_attributes == {"users": "user_id"}
 
     def test_build_with_refresh_intervals(self) -> None:
-        """Test building config with custom refresh intervals."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_refresh_intervals(active_ms=500, idle_ms=30000)
-            .build()
+        """Test config with custom refresh intervals."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            node_list_polling=NodeListPollingConfig(
+                active_interval_ms=500,
+                idle_interval_ms=30000,
+            ),
         )
         assert config.node_list_polling.active_interval_ms == 500
         assert config.node_list_polling.idle_interval_ms == 30000
 
     def test_build_with_timeouts(self) -> None:
-        """Test building config with custom timeout values."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_timeouts(
+        """Test config with custom timeout values."""
+        config = Config(
+            seed_hosts=("localhost",),
+            port=8000,
+            timeouts=TimeoutConfig(
                 discovery_seconds=10.0,
                 connect_seconds=3.0,
                 read_seconds=60.0,
-            )
-            .build()
+            ),
         )
         assert config.timeouts.discovery_seconds == 10.0
         assert config.timeouts.connect_seconds == 3.0
         assert config.timeouts.read_seconds == 60.0
 
     def test_build_with_timeouts_default_values(self) -> None:
-        """Test that with_timeouts preserves defaults when not overridden."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_timeouts()
-            .build()
-        )
+        """Test timeout defaults."""
+        config = Config(seed_hosts=("localhost",), port=8000)
         assert config.timeouts.discovery_seconds == 5.0
         assert config.timeouts.connect_seconds == 5.0
         assert config.timeouts.read_seconds == 30.0
 
     def test_build_with_pool_connections(self) -> None:
-        """Test building config with custom pool connections."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_pool_connections(500)
-            .build()
-        )
+        """Test config with custom pool connections."""
+        config = Config(seed_hosts=("localhost",), port=8000, max_pool_connections=500)
         assert config.max_pool_connections == 500
 
     def test_build_default_pool_connections(self) -> None:
         """Test default pool connections value."""
-        config = (
-            AlternatorConfigBuilder().with_seeds("localhost").with_port(8000).build()
-        )
+        config = Config(seed_hosts=("localhost",), port=8000)
         assert config.max_pool_connections == 200
 
     def test_build_with_aws_region(self) -> None:
-        """Test building config with custom SDK region placeholder."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_aws_region("us-west-2")
-            .build()
-        )
+        """Test config with custom SDK region placeholder."""
+        config = Config(seed_hosts=("localhost",), port=8000, aws_region="us-west-2")
         assert config.aws_region == "us-west-2"
 
     def test_build_with_user_agent(self) -> None:
-        """Test building config with user-agent callback."""
+        """Test config with user-agent callback."""
 
         def customize(default: str) -> str:
             return f"service-a {default}"
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_user_agent(customize)
-            .build()
-        )
+        config = Config(seed_hosts=("localhost",), port=8000, user_agent=customize)
         assert config.user_agent is customize
 
     def test_build_with_user_agent_string(self) -> None:
-        """Test building config with literal user-agent replacement."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_user_agent("service-a/1.0")
-            .build()
+        """Test config with literal user-agent replacement."""
+        config = Config(
+            seed_hosts=("localhost",), port=8000, user_agent="service-a/1.0"
         )
         assert config.user_agent == "service-a/1.0"
 
     def test_build_with_user_agent_none(self) -> None:
-        """Test building config with explicit user-agent suppression."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("localhost")
-            .with_port(8000)
-            .with_user_agent(None)
-            .build()
-        )
+        """Test config with explicit user-agent suppression."""
+        config = Config(seed_hosts=("localhost",), port=8000, user_agent=None)
         assert config.user_agent is None
 
+    def test_top_level_exports_config_names(self) -> None:
+        """Top-level package exports the current config names."""
+        import alternator
 
-class TestTlsConfig:
+        assert alternator.Auth is not None
+        assert alternator.Config is Config
+        assert alternator.TLS is TLS
+        assert alternator.UserAgent is not None
+        assert alternator.UserAgentCustomizer is not None
+
+
+class TestTLS:
     """Tests for TLS factory methods."""
 
     def test_trust_all(self) -> None:
@@ -464,34 +380,10 @@ class TestTlsConfig:
         assert len(tls.custom_ca_cert_paths) == 2
         assert Path("/etc/ssl/ca1.pem") in tls.custom_ca_cert_paths
 
-    def test_default_session_cache(self) -> None:
-        """Test default session cache configuration."""
+    def test_default_session_tickets(self) -> None:
+        """Test default session ticket configuration."""
         tls = TLS()
-        assert tls.session_cache.enabled is True
-        assert tls.session_cache.cache_size == 1024
-        assert tls.session_cache.timeout_seconds == 86400
-
-
-class TestTlsSessionCacheConfig:
-    """Tests for TlsSessionCacheConfig."""
-
-    def test_default_values(self) -> None:
-        """Test default values."""
-        cache = TlsSessionCacheConfig()
-        assert cache.enabled is True
-        assert cache.cache_size == 1024
-        assert cache.timeout_seconds == 86400
-
-    def test_custom_values(self) -> None:
-        """Test custom values."""
-        cache = TlsSessionCacheConfig(
-            enabled=False,
-            cache_size=512,
-            timeout_seconds=3600,
-        )
-        assert cache.enabled is False
-        assert cache.cache_size == 512
-        assert cache.timeout_seconds == 3600
+        assert tls.session_tickets_enabled is True
 
 
 class TestKeyRouteAffinityConfig:

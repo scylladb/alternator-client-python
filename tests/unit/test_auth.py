@@ -73,20 +73,17 @@ class TestApplyAuth:
         assert boto_kwargs["aws_secret_access_key"] == "secret"
         assert boto_kwargs["region_name"] == "us-east-1"
 
-    def test_legacy_boto_credentials_warn_and_enable_auth(self) -> None:
-        """Raw boto credential kwargs still work but are deprecated."""
+    def test_raw_boto_credentials_enable_auth(self) -> None:
+        """Raw boto credential kwargs enable request signing."""
         boto_kwargs: dict[str, object] = {
             "aws_access_key_id": "alternator",
             "aws_secret_access_key": "secret",
         }
 
-        with pytest.warns(DeprecationWarning, match="raw boto credential kwargs"):
-            auth_enabled = apply_auth(None, boto_kwargs)
-
-        assert auth_enabled is True
+        assert apply_auth(None, boto_kwargs) is True
         assert boto_kwargs["aws_access_key_id"] == "alternator"
 
-    def test_rejects_auth_with_legacy_boto_credentials(self) -> None:
+    def test_rejects_auth_with_raw_boto_credentials(self) -> None:
         """Explicit auth cannot be mixed with raw boto credential kwargs."""
         boto_kwargs: dict[str, object] = {
             "aws_access_key_id": "alternator",

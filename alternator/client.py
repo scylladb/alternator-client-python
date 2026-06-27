@@ -16,7 +16,7 @@ from botocore.config import Config as BotoConfig
 
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
-from alternator.config import Config, KeyRouteAffinityMode, build_sdk_config_kwargs
+from alternator.config import Config, KeyRouteAffinityMode, _build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import (
@@ -25,7 +25,7 @@ from alternator.core.key_affinity import (
 )
 from alternator.core.live_nodes import NodeList, SyncLiveNodesManager
 from alternator.exceptions import ConfigurationError
-from alternator.vector import enable_vector_support
+from alternator.vector import _enable_vector_support
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
@@ -34,7 +34,8 @@ if TYPE_CHECKING:
     from alternator.config import Auth
 
 logger = logging.getLogger("alternator")
-DEFAULT_PORT = 8000
+_DEFAULT_PORT = 8000
+__all__ = ["Session", "client", "resource"]
 
 # Registry of active managers for cleanup on exit
 _active_managers: weakref.WeakValueDictionary[int, SyncLiveNodesManager] = (
@@ -157,7 +158,7 @@ def _create_boto_config(config: Config, *, auth_enabled: bool) -> BotoConfig:
     """
     from botocore import UNSIGNED
 
-    kwargs = build_sdk_config_kwargs(config)
+    kwargs = _build_sdk_config_kwargs(config)
     kwargs.pop("signature_version", None)
     if not auth_enabled:
         kwargs["signature_version"] = UNSIGNED
@@ -255,7 +256,7 @@ def _create_client_with_manager(
     setattr(client, MANAGER_OWNS_ATTR, owns_manager)
 
     # Enable Alternator vector search extensions before registering finalizers.
-    enable_vector_support(client)
+    _enable_vector_support(client)
 
     if owns_manager:
         _register_manager(manager, client)
@@ -323,7 +324,7 @@ def _config_from_client_args(
 ) -> Config:
     """Build or validate an Alternator config from boto3-style factory args."""
     if cluster_config is not None:
-        if seeds is not None or port != DEFAULT_PORT or scheme != "http":
+        if seeds is not None or port != _DEFAULT_PORT or scheme != "http":
             raise ConfigurationError(
                 "Do not combine cluster_config with seeds, port, or scheme"
             )
@@ -345,7 +346,7 @@ def client(
     *,
     cluster_config: Config | None = None,
     seeds: Sequence[str] | None = None,
-    port: int = DEFAULT_PORT,
+    port: int = _DEFAULT_PORT,
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
@@ -372,7 +373,7 @@ def resource(
     *,
     cluster_config: Config | None = None,
     seeds: Sequence[str] | None = None,
-    port: int = DEFAULT_PORT,
+    port: int = _DEFAULT_PORT,
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
@@ -459,7 +460,7 @@ def _create_resource_with_manager(
     setattr(resource, MANAGER_OWNS_ATTR, owns_manager)
 
     # Enable Alternator vector search extensions before registering finalizers.
-    enable_vector_support(resource)
+    _enable_vector_support(resource)
 
     if owns_manager:
         _register_manager(manager, resource)
@@ -509,7 +510,7 @@ class Session:
         cluster_config: Config | None = None,
         *,
         seeds: Sequence[str] | None = None,
-        port: int = DEFAULT_PORT,
+        port: int = _DEFAULT_PORT,
         scheme: Literal["http", "https"] = "http",
         auth: Auth | None = None,
         **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
@@ -628,16 +629,6 @@ class Session:
         if self._manager is None:
             return []
         return list(self._manager.nodes.nodes)
-
-    @property
-    def active_nodes(self) -> list[str]:
-        """Return active nodes; currently this is the live-node list."""
-        return self.nodes
-
-    @property
-    def quarantined_nodes(self) -> list[str]:
-        """Return quarantined nodes; node quarantine is not implemented."""
-        return []
 
     def validate_scope(self) -> bool:
         """Return whether the configured rack/datacenter scope is complete."""

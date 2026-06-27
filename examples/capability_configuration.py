@@ -12,34 +12,37 @@ from pathlib import Path
 
 from alternator import (
     TLS,
-    AlternatorConfigBuilder,
     Auth,
     ClusterScope,
     CompressionAlgorithm,
     Config,
     DatacenterScope,
+    HeaderOptimizationConfig,
     HeaderWhitelistContext,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
     RackScope,
+    RequestCompressionConfig,
+    RetryConfig,
     RetryMode,
     Session,
     TimeoutConfig,
 )
 
 
-def helper_lifecycle_example() -> None:
+def session_lifecycle_example() -> None:
     """Use Session when one object should own clients and topology diagnostics."""
     config = Config(
         seed_hosts=["node1.example.com", "node2.example.com"],
         port=8000,
     )
 
-    with Session(config, auth=Auth.disabled()) as helper:
-        client = helper.client("dynamodb")
-        resource = helper.resource("dynamodb")
+    with Session(config, auth=Auth.disabled()) as session:
+        client = session.client("dynamodb")
+        resource = session.resource("dynamodb")
 
-        helper.refresh_nodes()
-        print("nodes:", helper.nodes)
+        session.refresh_nodes()
+        print("nodes:", session.nodes)
 
         client.list_tables()
         resource.Table("orders").scan(Limit=1)
@@ -74,20 +77,18 @@ def datacenter_only_config() -> Config:
 
 def transport_config() -> Config:
     """Configure retries, per-attempt timeouts, pool size, and User-Agent."""
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds("node1.example.com", "node2.example.com")
-        .with_port(8000)
-        .with_retries(max_attempts=4, mode=RetryMode.STANDARD)
-        .with_timeouts(
+    return Config(
+        seed_hosts=["node1.example.com", "node2.example.com"],
+        port=8000,
+        retries=RetryConfig(max_attempts=4, mode=RetryMode.STANDARD),
+        timeouts=TimeoutConfig(
             discovery_seconds=3.0,
             connect_seconds=2.0,
             read_seconds=10.0,
-        )
-        .with_pool_connections(300)
-        .with_aws_region("us-east-1")
-        .with_user_agent(lambda default: f"orders-service {default}")
-        .build()
+        ),
+        max_pool_connections=300,
+        aws_region="us-east-1",
+        user_agent=lambda default: f"orders-service {default}",
     )
 
 
@@ -119,34 +120,31 @@ def extra_headers(context: HeaderWhitelistContext) -> set[str]:
 
 def compression_and_header_config() -> Config:
     """Enable gzip request compression and dynamic header optimization."""
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds("node1.example.com")
-        .with_port(8000)
-        .with_compression(
-            CompressionAlgorithm.GZIP,
-            min_size=1024,
+    return Config(
+        seed_hosts=["node1.example.com"],
+        port=8000,
+        request_compression=RequestCompressionConfig(
+            algorithm=CompressionAlgorithm.GZIP,
+            min_size_bytes=1024,
             gzip_level=6,
-        )
-        .with_header_optimization(
-            whitelist={"X-Request-Id"},
+        ),
+        header_optimization=HeaderOptimizationConfig(
+            enabled=True,
+            whitelist=frozenset({"X-Request-Id"}),
             whitelist_callback=extra_headers,
-        )
-        .build()
+        ),
     )
 
 
 def key_affinity_config() -> Config:
     """Enable write affinity with preloaded partition-key metadata."""
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds("node1.example.com", "node2.example.com")
-        .with_port(8000)
-        .with_key_affinity(
-            KeyRouteAffinityMode.ANY_WRITE,
-            table_pk_map={"orders": "order_id", "customers": "customer_id"},
-        )
-        .build()
+    return Config(
+        seed_hosts=["node1.example.com", "node2.example.com"],
+        port=8000,
+        key_affinity=KeyRouteAffinityConfig(
+            mode=KeyRouteAffinityMode.ANY_WRITE,
+            table_pk_attributes={"orders": "order_id", "customers": "customer_id"},
+        ),
     )
 
 

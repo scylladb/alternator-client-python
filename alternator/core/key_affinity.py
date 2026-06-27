@@ -535,12 +535,12 @@ class PartitionKeyCache:
         with self._lock:
             self._cache.clear()
 
-    def preload(self, table_pk_map: dict[str, str]) -> None:
+    def preload(self, table_pk_attributes: dict[str, str]) -> None:
         """
         Preload cache with known table -> pk mappings.
 
         Args:
-            table_pk_map: Mapping of table name to partition key name
+            table_pk_attributes: Mapping of table name to partition key name
         """
         with self._lock:
-            self._cache.update(table_pk_map)
+            self._cache.update(table_pk_attributes)

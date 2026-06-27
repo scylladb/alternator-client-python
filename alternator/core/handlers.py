@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.hooks import BaseEventHooks
 
-from alternator.config import DEFAULT_USER_AGENT, CompressionAlgorithm
+from alternator.config import _DEFAULT_USER_AGENT, CompressionAlgorithm
 from alternator.core.compression import (
     create_compression_handler,
     create_response_compression_decode_handler,
@@ -53,7 +53,7 @@ def _register_alternator_handlers(
     | None = None,
     *,
     auth_enabled: bool = False,
-    user_agent: str | None = DEFAULT_USER_AGENT,
+    user_agent: str | None = _DEFAULT_USER_AGENT,
 ) -> None:
     """
     Register all Alternator event handlers on a boto3/aioboto3 client.

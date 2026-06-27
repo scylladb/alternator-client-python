@@ -17,10 +17,30 @@ from alternator.exceptions import ConfigurationError
 
 logger = logging.getLogger("alternator")
 
-SDKClientCert = str | tuple[str, str]
+_SDKClientCert = str | tuple[str, str]
 UserAgentCustomizer = Callable[[str], str]
 UserAgent = str | UserAgentCustomizer
-DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
+_DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
+
+__all__ = [
+    "Auth",
+    "CompressionAlgorithm",
+    "Config",
+    "HeaderOptimizationConfig",
+    "HeaderWhitelistCallback",
+    "HeaderWhitelistContext",
+    "KeyRouteAffinityConfig",
+    "KeyRouteAffinityMode",
+    "NodeListPollingConfig",
+    "RequestCompressionConfig",
+    "ResponseCompression",
+    "RetryConfig",
+    "RetryMode",
+    "TLS",
+    "TimeoutConfig",
+    "UserAgent",
+    "UserAgentCustomizer",
+]
 
 
 class CompressionAlgorithm(Enum):
@@ -46,24 +66,6 @@ class KeyRouteAffinityMode(Enum):
 
 
 @dataclass(frozen=True)
-class TlsSessionCacheConfig:
-    """
-    TLS session cache settings for connection reuse.
-
-    Note:
-        Python's ``ssl`` module does not expose direct control over session
-        cache size or timeout. Only the ``enabled`` flag is effective, controlling
-        whether session tickets (OP_NO_TICKET) are enabled or disabled.
-        The ``cache_size`` and ``timeout_seconds`` parameters are reserved for
-        future use with custom implementations or alternative TLS backends.
-    """
-
-    enabled: bool = True
-    cache_size: int = 1024  # Reserved for future use
-    timeout_seconds: int = 86400  # Reserved for future use (24 hours)
-
-
-@dataclass(frozen=True)
 class TLS:
     """TLS/SSL configuration for HTTPS connections."""
 
@@ -75,8 +77,8 @@ class TLS:
     # Verification settings
     verify_hostname: bool = True
 
-    # Session caching
-    session_cache: TlsSessionCacheConfig = field(default_factory=TlsSessionCacheConfig)
+    # TLS session tickets
+    session_tickets_enabled: bool = True
 
     # Client certificate authentication
     client_cert_path: Path | None = None
@@ -91,7 +93,7 @@ class TLS:
             raise ConfigurationError("client_key_path requires client_cert_path")
 
     @property
-    def sdk_client_cert(self) -> SDKClientCert | None:
+    def sdk_client_cert(self) -> _SDKClientCert | None:
         """Return the botocore client_cert value for this TLS config."""
         if self.client_cert_path is None:
             return None
@@ -139,19 +141,6 @@ class TLS:
     def with_custom_ca(cls, *cert_paths: Path) -> TLS:
         """Create config with custom CA certificates."""
         return cls(custom_ca_cert_paths=tuple(cert_paths))
-
-
-@dataclass(frozen=True)
-class TlsConfig(TLS):
-    """Deprecated compatibility name for :class:`TLS`."""
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        warnings.warn(
-            "TlsConfig is deprecated; use TLS instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
 
 @dataclass(frozen=True)
@@ -401,7 +390,7 @@ class Config:
 
     # SDK settings
     aws_region: str = "us-east-1"
-    user_agent: UserAgent | None = DEFAULT_USER_AGENT
+    user_agent: UserAgent | None = _DEFAULT_USER_AGENT
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -426,229 +415,7 @@ class Config:
         )
 
 
-@dataclass(frozen=True)
-class AlternatorConfig(Config):
-    """Deprecated compatibility name for :class:`Config`."""
-
-    def __post_init__(self) -> None:
-        warnings.warn(
-            "AlternatorConfig is deprecated; use Config instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        super().__post_init__()
-
-
-class AlternatorConfigBuilder:
-    """
-    Fluent builder for Config.
-
-    Example:
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds("192.168.1.1", "192.168.1.2")
-            .with_port(8000)
-            .with_https()
-            .with_datacenter("dc1")
-            .with_compression(CompressionAlgorithm.GZIP)
-            .build()
-        )
-    """
-
-    def __init__(self) -> None:
-        self._seed_hosts: list[str] = []
-        self._port: int = 8000
-        self._scheme: Literal["http", "https"] = "http"
-        self._routing_scope: RoutingScope | None = None
-        self._request_compression = RequestCompressionConfig()
-        self._response_compression: tuple[ResponseCompression, ...] = ()
-        self._header_optimization = HeaderOptimizationConfig()
-        self._tls = TLS.system_default()
-        self._key_affinity = KeyRouteAffinityConfig()
-        self._retries = RetryConfig()
-        self._max_pool_connections = 200
-        self._node_list_polling = NodeListPollingConfig()
-        self._timeouts = TimeoutConfig()
-        self._aws_region = "us-east-1"
-        self._user_agent: UserAgent | None = DEFAULT_USER_AGENT
-
-    def with_seeds(self, *hosts: str) -> AlternatorConfigBuilder:
-        """Add seed hosts for node discovery."""
-        self._seed_hosts.extend(hosts)
-        return self
-
-    def with_port(self, port: int) -> AlternatorConfigBuilder:
-        """Set the Alternator port."""
-        self._port = port
-        return self
-
-    def with_http(self) -> AlternatorConfigBuilder:
-        """Use HTTP scheme (default)."""
-        self._scheme = "http"
-        return self
-
-    def with_https(self, tls_config: TLS | None = None) -> AlternatorConfigBuilder:
-        """Use HTTPS scheme with optional TLS configuration."""
-        self._scheme = "https"
-        if tls_config:
-            self._tls = tls_config
-        return self
-
-    def with_cluster_scope(self) -> AlternatorConfigBuilder:
-        """Route to any node in the cluster (default)."""
-        from alternator.core.routing_scope import ClusterScope
-
-        self._routing_scope = ClusterScope()
-        return self
-
-    def with_datacenter(self, dc: str) -> AlternatorConfigBuilder:
-        """Route to nodes in a specific datacenter."""
-        from alternator.core.routing_scope import DatacenterScope
-
-        self._routing_scope = DatacenterScope(datacenter=dc)
-        return self
-
-    def with_rack(self, dc: str, rack: str) -> AlternatorConfigBuilder:
-        """Route to nodes in a specific rack within a datacenter."""
-        from alternator.core.routing_scope import RackScope
-
-        self._routing_scope = RackScope(datacenter=dc, rack=rack)
-        return self
-
-    def with_compression(
-        self,
-        algorithm: CompressionAlgorithm,
-        min_size: int = 1024,
-        gzip_level: int = 9,
-    ) -> AlternatorConfigBuilder:
-        """Enable request compression."""
-        self._request_compression = RequestCompressionConfig(
-            algorithm=algorithm,
-            min_size_bytes=min_size,
-            gzip_level=gzip_level,
-        )
-        return self
-
-    def with_response_compression(
-        self,
-        encoding: ResponseCompression,
-        *additional_encodings: ResponseCompression,
-    ) -> AlternatorConfigBuilder:
-        """Enable response compression for the accepted encodings."""
-        encodings = (encoding, *additional_encodings)
-        self._response_compression = _normalize_response_compression(encodings)
-        return self
-
-    def without_response_compression(self) -> AlternatorConfigBuilder:
-        """Disable response compression."""
-        self._response_compression = ()
-        return self
-
-    def with_header_optimization(
-        self,
-        whitelist: frozenset[str] | set[str] | None = None,
-        whitelist_callback: HeaderWhitelistCallback | None = None,
-    ) -> AlternatorConfigBuilder:
-        """Enable header optimization (filtering).
-
-        When enabled, non-essential HTTP headers are stripped from requests
-        to reduce bandwidth. Authentication headers (Authorization,
-        X-Amz-Date, X-Amz-Security-Token) are preserved when explicit
-        static credentials are passed with ``auth=Auth.static_credentials(...)``.
-        """
-        self._header_optimization = HeaderOptimizationConfig(
-            enabled=True,
-            whitelist=frozenset(whitelist) if whitelist is not None else None,
-            whitelist_callback=whitelist_callback,
-        )
-        return self
-
-    def with_key_affinity(
-        self,
-        mode: KeyRouteAffinityMode,
-        table_pk_map: Mapping[str, str] | None = None,
-    ) -> AlternatorConfigBuilder:
-        """Enable key-based routing affinity for LWT optimization."""
-        self._key_affinity = KeyRouteAffinityConfig(
-            mode=mode,
-            table_pk_attributes=table_pk_map or {},
-        )
-        return self
-
-    def with_refresh_intervals(
-        self, active_ms: int = 1000, idle_ms: int = 60000
-    ) -> AlternatorConfigBuilder:
-        """Set node refresh intervals."""
-        self._node_list_polling = NodeListPollingConfig(
-            active_interval_ms=active_ms, idle_interval_ms=idle_ms
-        )
-        return self
-
-    def with_retries(
-        self,
-        max_attempts: int = 3,
-        mode: RetryMode = RetryMode.STANDARD,
-    ) -> AlternatorConfigBuilder:
-        """Set retry configuration for DynamoDB operations."""
-        self._retries = RetryConfig(max_attempts=max_attempts, mode=mode)
-        return self
-
-    def with_pool_connections(self, max_connections: int) -> AlternatorConfigBuilder:
-        """Set maximum pool connections per host."""
-        self._max_pool_connections = max_connections
-        return self
-
-    def with_timeouts(
-        self,
-        discovery_seconds: float = 5.0,
-        connect_seconds: float = 5.0,
-        read_seconds: float = 30.0,
-    ) -> AlternatorConfigBuilder:
-        """Set timeout values for discovery and operations."""
-        self._timeouts = TimeoutConfig(
-            discovery_seconds=discovery_seconds,
-            connect_seconds=connect_seconds,
-            read_seconds=read_seconds,
-        )
-        return self
-
-    def with_aws_region(self, region_name: str) -> AlternatorConfigBuilder:
-        """Set the AWS region placeholder passed to the SDK client."""
-        self._aws_region = region_name
-        return self
-
-    def with_user_agent(
-        self,
-        user_agent: UserAgent | None,
-    ) -> AlternatorConfigBuilder:
-        """Set a literal or callback-built Alternator User-Agent value."""
-        self._user_agent = user_agent
-        return self
-
-    def build(self) -> Config:
-        """Build the configuration object."""
-        from alternator.core.routing_scope import ClusterScope
-
-        return Config(
-            seed_hosts=tuple(self._seed_hosts),
-            port=self._port,
-            scheme=self._scheme,
-            routing_scope=self._routing_scope or ClusterScope(),
-            request_compression=self._request_compression,
-            response_compression=self._response_compression,
-            header_optimization=self._header_optimization,
-            tls=self._tls,
-            key_affinity=self._key_affinity,
-            retries=self._retries,
-            max_pool_connections=self._max_pool_connections,
-            node_list_polling=self._node_list_polling,
-            timeouts=self._timeouts,
-            aws_region=self._aws_region,
-            user_agent=self._user_agent,
-        )
-
-
-def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
+def _build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
     """Build SDK config kwargs shared by sync and async clients."""
     kwargs: dict[str, Any] = {
         "retries": {
@@ -671,7 +438,7 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
 def _resolve_user_agent(user_agent: UserAgent) -> str:
     """Return the User-Agent produced from the default Alternator identity."""
     resolved = (
-        user_agent if isinstance(user_agent, str) else user_agent(DEFAULT_USER_AGENT)
+        user_agent if isinstance(user_agent, str) else user_agent(_DEFAULT_USER_AGENT)
     )
     if not isinstance(resolved, str) or not resolved:
         raise ConfigurationError(

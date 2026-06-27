@@ -6,24 +6,22 @@ This document describes how to release a new version of the Alternator Load Bala
 
 1. You must have write access to the repository
 2. The `pypi` environment must be configured in GitHub with PyPI trusted publishing
-3. (Optional) GPG signing keys must be configured for signed releases
+3. GPG signing keys must be configured in GitHub Secrets; the release workflow
+   signs package artifacts, checksums, and tags
 
 ## Creating a Release
 
-### Compatibility Decision Gate
+### API Gate
 
-Before choosing the next version, review
-[docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md).
-
-Use a minor release for additive compatible APIs and opt-in capabilities. Use a
-major release for changed defaults, removed deprecated names, removed legacy
-credential kwargs, changed default routing fallback, changed default auth, or
-default-enabled node health/quarantine behavior.
+Before choosing the next version, review the public API exported by
+`alternator.__all__`, the direct import modules documented in the README, and
+the examples.
 
 Release notes for capability work should call out auth defaults, routing
-fallback behavior, deprecated-name migration, key-affinity behavior, and whether
-node health remains planning-only. Use
-[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) as the release-note source.
+fallback behavior, key-affinity behavior, and whether node health remains
+planning-only. Future changes that remove public names, change defaults, change
+auth behavior, or default-enable node health/quarantine behavior should be
+treated as breaking changes.
 
 ### 1. Update Version
 

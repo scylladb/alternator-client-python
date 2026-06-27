@@ -11,7 +11,7 @@ from unittest.mock import patch
 import pytest
 
 from alternator._http import create_ssl_context, create_sync_http_fetcher
-from alternator.config import TLS, TlsSessionCacheConfig
+from alternator.config import TLS
 
 
 class MockHTTPHandler(BaseHTTPRequestHandler):
@@ -200,32 +200,26 @@ class TestCreateSslContext:
 
         assert context.check_hostname is False
 
-    def test_session_cache_enabled_by_default(self) -> None:
-        """Test session caching is enabled by default."""
+    def test_session_tickets_enabled_by_default(self) -> None:
+        """Test session tickets are enabled by default."""
         tls_config = TLS.system_default()
         context = create_ssl_context(tls_config)
 
-        # OP_NO_TICKET should NOT be set when session cache is enabled
+        # OP_NO_TICKET should NOT be set when session tickets are enabled
         assert not (context.options & ssl.OP_NO_TICKET)
 
-    def test_session_cache_custom_config(self) -> None:
-        """Test custom session cache configuration."""
-        cache_config = TlsSessionCacheConfig(
-            enabled=True,
-            cache_size=512,
-            timeout_seconds=3600,
-        )
-        tls_config = TLS(session_cache=cache_config)
+    def test_session_tickets_custom_config(self) -> None:
+        """Test custom session ticket configuration."""
+        tls_config = TLS(session_tickets_enabled=True)
         context = create_ssl_context(tls_config)
 
         # Should not raise and should have reasonable settings
         assert context is not None
 
-    def test_session_cache_disabled(self) -> None:
-        """Test session caching can be disabled."""
-        cache_config = TlsSessionCacheConfig(enabled=False)
-        tls_config = TLS(session_cache=cache_config)
+    def test_session_tickets_disabled(self) -> None:
+        """Test session tickets can be disabled."""
+        tls_config = TLS(session_tickets_enabled=False)
         context = create_ssl_context(tls_config)
 
-        # OP_NO_TICKET should be set when session cache is disabled
+        # OP_NO_TICKET should be set when session tickets are disabled
         assert context.options & ssl.OP_NO_TICKET

@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from alternator.config import (
-    DEFAULT_USER_AGENT,
+    _DEFAULT_USER_AGENT,
     CompressionAlgorithm,
     Config,
     HeaderOptimizationConfig,
@@ -236,13 +236,13 @@ class TestUserAgentHeaderHandler:
 
     def test_replaces_existing_user_agent(self) -> None:
         """Test the Alternator user-agent replaces an SDK-generated value."""
-        handler = create_user_agent_header_handler(DEFAULT_USER_AGENT)
+        handler = create_user_agent_header_handler(_DEFAULT_USER_AGENT)
         request = MagicMock()
         request.headers = {"User-Agent": "Boto3/1.0 Botocore/1.0"}
 
         handler(request)
 
-        assert request.headers["User-Agent"] == DEFAULT_USER_AGENT
+        assert request.headers["User-Agent"] == _DEFAULT_USER_AGENT
 
     def test_removes_existing_user_agent_when_unset(self) -> None:
         """Test an unset Alternator user-agent removes SDK-generated values."""
@@ -256,7 +256,7 @@ class TestUserAgentHeaderHandler:
 
     def test_handles_missing_headers_attribute(self) -> None:
         """Test handler handles request without headers attribute."""
-        handler = create_user_agent_header_handler(DEFAULT_USER_AGENT)
+        handler = create_user_agent_header_handler(_DEFAULT_USER_AGENT)
         request = MagicMock(spec=[])
 
         handler(request)
@@ -488,7 +488,7 @@ class TestHeaderFilterWithHandlerRegistration:
         assert "User-Agent" not in request.headers
 
         final_handlers["set_user_agent"](request)
-        assert request.headers["User-Agent"] == DEFAULT_USER_AGENT
+        assert request.headers["User-Agent"] == _DEFAULT_USER_AGENT
 
     def test_user_agent_remains_absent_after_header_filter_when_unset(self) -> None:
         """Test final User-Agent is absent when Alternator user-agent is None."""

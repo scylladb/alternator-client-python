@@ -4,7 +4,7 @@ import pytest
 
 import alternator
 from alternator import Auth, Config
-from alternator.client import DEFAULT_PORT, client, resource
+from alternator.client import _DEFAULT_PORT, client, resource
 from alternator.exceptions import ConfigurationError
 
 
@@ -16,7 +16,7 @@ class TestClientAlias:
         ctx = client("dynamodb", seeds=["node1", "node2"])
 
         assert ctx._config.seed_hosts == ("node1", "node2")
-        assert ctx._config.port == DEFAULT_PORT
+        assert ctx._config.port == _DEFAULT_PORT
         assert ctx._config.scheme == "http"
 
     def test_accepts_service_name_and_connection_options(self) -> None:

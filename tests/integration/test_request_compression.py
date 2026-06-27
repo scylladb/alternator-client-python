@@ -10,9 +10,11 @@ import pytest
 from botocore.exceptions import ClientError
 
 from alternator import (
-    AlternatorConfigBuilder,
     Auth,
     CompressionAlgorithm,
+    Config,
+    HeaderOptimizationConfig,
+    RequestCompressionConfig,
 )
 from alternator import (
     client as alternator_client,
@@ -36,12 +38,13 @@ def _large_item_payload() -> str:
 
 
 def _gzip_config(min_size: int = 100) -> object:
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_PORT)
-        .with_compression(CompressionAlgorithm.GZIP, min_size=min_size)
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_PORT,
+        request_compression=RequestCompressionConfig(
+            algorithm=CompressionAlgorithm.GZIP,
+            min_size_bytes=min_size,
+        ),
     )
 
 
@@ -93,13 +96,17 @@ class TestRequestCompression:
             ScyllaVersion(2026, 1, 0), "gzip request compression"
         )
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_compression(CompressionAlgorithm.GZIP, min_size=100)
-            .with_header_optimization(whitelist={"X-Keep-Me"})
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            request_compression=RequestCompressionConfig(
+                algorithm=CompressionAlgorithm.GZIP,
+                min_size_bytes=100,
+            ),
+            header_optimization=HeaderOptimizationConfig(
+                enabled=True,
+                whitelist=frozenset({"X-Keep-Me"}),
+            ),
         )
         with alternator_client(
             "dynamodb",

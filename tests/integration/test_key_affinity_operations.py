@@ -13,8 +13,8 @@ from typing import Any
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     Config,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
 )
 from alternator import (
@@ -48,29 +48,25 @@ def _create_table(client: Any, table_name: str) -> None:  # noqa: ANN401 -- gene
 
 def _make_rmw_config(table_name: str) -> Config:
     """Create config with RMW affinity mode."""
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_PORT)
-        .with_key_affinity(
-            KeyRouteAffinityMode.RMW,
-            table_pk_map={table_name: "pk"},
-        )
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_PORT,
+        key_affinity=KeyRouteAffinityConfig(
+            mode=KeyRouteAffinityMode.RMW,
+            table_pk_attributes={table_name: "pk"},
+        ),
     )
 
 
 def _make_any_write_config(table_name: str) -> Config:
     """Create config with ANY_WRITE affinity mode."""
-    return (
-        AlternatorConfigBuilder()
-        .with_seeds(SCYLLA_HOST)
-        .with_port(SCYLLA_PORT)
-        .with_key_affinity(
-            KeyRouteAffinityMode.ANY_WRITE,
-            table_pk_map={table_name: "pk"},
-        )
-        .build()
+    return Config(
+        seed_hosts=[SCYLLA_HOST],
+        port=SCYLLA_PORT,
+        key_affinity=KeyRouteAffinityConfig(
+            mode=KeyRouteAffinityMode.ANY_WRITE,
+            table_pk_attributes={table_name: "pk"},
+        ),
     )
 
 

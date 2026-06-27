@@ -14,9 +14,6 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 - **TLS Support**: Full TLS/SSL support with custom CA certificates
 - **Async Support**: Full async/await support via aioboto3
 
-See [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md) for the current
-capability matrix and planned follow-up work.
-
 ## Installation
 
 ```bash
@@ -145,10 +142,6 @@ async with AsyncSession(config) as session:
     await client.list_tables()
 ```
 
-`active_nodes` currently returns the live-node list, and
-`quarantined_nodes` returns an empty list because node health and
-quarantine behavior are intentionally deferred.
-
 ## Configuration
 
 ### Basic Configuration
@@ -163,33 +156,37 @@ config = Config(
 )
 ```
 
-> **Compatibility:** `AlternatorConfig` and `TlsConfig` remain available for
-> existing callers, but are deprecated. Prefer `Config` and `TLS` for new code.
-> See [docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md)
-> for compatibility and versioning decisions.
-
-### Using the Builder Pattern
+### Composed Configuration
 
 ```python
 from alternator import (
-    AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
+    DatacenterScope,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
+    NodeListPollingConfig,
+    RequestCompressionConfig,
     ResponseCompression,
     TLS,
 )
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1.example.com", "node2.example.com")
-    .with_port(8000)
-    .with_https(TLS.system_default())
-    .with_datacenter("us-east-1")
-    .with_compression(CompressionAlgorithm.GZIP, min_size=1024)
-    .with_response_compression(ResponseCompression.GZIP)
-    .with_key_affinity(KeyRouteAffinityMode.RMW)
-    .with_refresh_intervals(active_ms=1000, idle_ms=60000)
-    .build()
+config = Config(
+    seed_hosts=["node1.example.com", "node2.example.com"],
+    port=8000,
+    scheme="https",
+    tls=TLS.system_default(),
+    routing_scope=DatacenterScope("us-east-1"),
+    request_compression=RequestCompressionConfig(
+        algorithm=CompressionAlgorithm.GZIP,
+        min_size_bytes=1024,
+    ),
+    response_compression=(ResponseCompression.GZIP,),
+    key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+    node_list_polling=NodeListPollingConfig(
+        active_interval_ms=1000,
+        idle_interval_ms=60000,
+    ),
 )
 ```
 
@@ -201,13 +198,9 @@ config = (
 | `port` | `int` | (required) | Alternator port |
 | `scheme` | `str` | `"http"` | Protocol scheme (`"http"` or `"https"`) |
 | `routing_scope` | `RoutingScope` | `ClusterScope()` | Topology-aware routing |
-| `compression` | `CompressionAlgorithm` | `NONE` | Request compression |
-| `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
-| `gzip_level` | `int` | `9` | gzip compression level, `0` through `9` |
+| `request_compression` | `RequestCompressionConfig` | disabled; 1 KiB threshold, level 9 when enabled | Request gzip settings |
 | `response_compression` | `Sequence[ResponseCompression]` | empty | Accepted response compression encodings |
-| `optimize_headers` | `bool` | `False` | Enable header filtering |
-| `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
-| `header_whitelist_callback` | callable | `None` | Callback for dynamic header whitelist additions |
+| `header_optimization` | `HeaderOptimizationConfig` | disabled | Header filtering settings |
 | `tls` | `TLS` | system default | TLS trust, client certificates, and key logging |
 | `key_affinity` | `KeyRouteAffinityConfig` | `NONE` | Key-based routing |
 | `retries` | `RetryConfig` | standard, 3 attempts | SDK retry behavior |
@@ -215,8 +208,7 @@ config = (
 | `timeouts` | `TimeoutConfig` | discovery 5s, connect 5s, read 30s | Discovery and SDK per-attempt timeouts |
 | `aws_region` | `str` | `"us-east-1"` | Region placeholder required by the SDK |
 | `user_agent` | str, callable, or `None` | `alternator-client-python/<version>` | Final User-Agent; `None` omits the wire header |
-| `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
-| `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
+| `node_list_polling` | `NodeListPollingConfig` | active 1s, idle 60s | Node refresh intervals |
 
 ## Authentication
 
@@ -247,8 +239,9 @@ with alternator.client(
     client.list_tables()
 ```
 
-Passing raw boto credential kwargs such as `aws_access_key_id` still works for
-compatibility, but is deprecated. Prefer `auth=Auth.static_credentials(...)`.
+You can also pass boto-style credential kwargs such as `aws_access_key_id`.
+Prefer `auth=Auth.static_credentials(...)` when you want the authentication
+choice to be explicit in Alternator code.
 
 ## Comparing with a Regular AWS SDK Client
 
@@ -341,7 +334,7 @@ rack_then_datacenter_then_cluster = RackScope(
 
 `Session.validate_scope()` validates the configured
 scope by querying `/localnodes` with the configured datacenter and rack filters
-without replacing the helper's current live-node list.
+without replacing the session's current live-node list.
 `AsyncSession` exposes the same validation methods as awaitable methods.
 
 ## Key Affinity (LWT Optimization)
@@ -350,19 +343,18 @@ For Lightweight Transactions (conditional writes), routing requests for the same
 
 ```python
 from alternator import (
-    AlternatorConfigBuilder,
+    Config,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
 )
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1")
-    .with_port(8000)
-    .with_key_affinity(
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    key_affinity=KeyRouteAffinityConfig(
         mode=KeyRouteAffinityMode.RMW,  # Only for read-modify-write ops
-        table_pk_map={"my_table": "pk"},  # Optional: preload PK names
-    )
-    .build()
+        table_pk_attributes={"my_table": "pk"},  # Optional: preload PK names
+    ),
 )
 ```
 
@@ -389,7 +381,7 @@ key values, no active nodes, no votes, or tied votes fall back to normal routing
 ## TLS Configuration
 
 ```python
-from alternator import TLS, TlsSessionCacheConfig
+from alternator import TLS
 from pathlib import Path
 
 # Use system CA certificates (default)
@@ -425,11 +417,7 @@ tls = TLS(
     custom_ca_cert_paths=[Path("/path/to/ca.pem")],
     trust_system_ca_certs=True,
     verify_hostname=True,
-    session_cache=TlsSessionCacheConfig(
-        enabled=True,
-        cache_size=1024,
-        timeout_seconds=86400,
-    ),
+    session_tickets_enabled=True,
     client_cert_path=Path("/path/to/client.crt"),
     client_key_path=Path("/path/to/client.key"),
     key_log_file_path=Path("/secure/tmp/alternator-tls.keys"),
@@ -455,25 +443,24 @@ Enable gzip compression for large request bodies:
 
 ```python
 from alternator import (
-    AlternatorConfigBuilder,
     CompressionAlgorithm,
+    Config,
+    RequestCompressionConfig,
     ResponseCompression,
 )
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1")
-    .with_port(8000)
-    .with_compression(
-        CompressionAlgorithm.GZIP,
-        min_size=1024,  # Only compress bodies >= 1KB
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    request_compression=RequestCompressionConfig(
+        algorithm=CompressionAlgorithm.GZIP,
+        min_size_bytes=1024,  # Only compress bodies >= 1KB
         gzip_level=6,   # Python gzip level 0-9; default is 9
-    )
-    .with_response_compression(
+    ),
+    response_compression=(
         ResponseCompression.GZIP,
         ResponseCompression.DEFLATE,
-    )
-    .build()
+    ),
 )
 ```
 
@@ -486,8 +473,7 @@ payload.
 Response compression is disabled by default. When enabled, the client sends
 `Accept-Encoding` with the configured encodings and decodes `Content-Encoding:
 gzip` or `Content-Encoding: deflate` responses before boto3/aioboto3 parses the
-DynamoDB JSON body. Use `.without_response_compression()` to disable it again in
-builder chains.
+DynamoDB JSON body.
 
 ## Header Optimization
 
@@ -497,22 +483,21 @@ headers are preserved automatically. Use `whitelist` for static additions and
 state:
 
 ```python
-from alternator import AlternatorConfigBuilder, HeaderWhitelistContext
+from alternator import Config, HeaderOptimizationConfig, HeaderWhitelistContext
 
 def extra_headers(context: HeaderWhitelistContext) -> set[str]:
     if context.auth_enabled:
         return {"X-Service-Trace"}
     return {"X-Anonymous-Trace"}
 
-config = (
-    AlternatorConfigBuilder()
-    .with_seeds("node1")
-    .with_port(8000)
-    .with_header_optimization(
-        whitelist={"X-Static-Header"},
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    header_optimization=HeaderOptimizationConfig(
+        enabled=True,
+        whitelist=frozenset({"X-Static-Header"}),
         whitelist_callback=extra_headers,
-    )
-    .build()
+    ),
 )
 ```
 
@@ -803,7 +788,7 @@ instead.
 ## Production Recommendations
 
 - **Connection pool sizing**: The default `max_pool_connections=200` works for most workloads. Increase if you see connection pool exhaustion warnings under high concurrency.
-- **Refresh intervals**: Default active refresh (1s) is appropriate for dynamic clusters. For stable clusters, increase `active_refresh_interval_ms` to reduce discovery overhead.
+- **Refresh intervals**: Default active refresh (1s) is appropriate for dynamic clusters. For stable clusters, set `node_list_polling=NodeListPollingConfig(active_interval_ms=...)` to reduce discovery overhead.
 - **Timeouts**: Default `TimeoutConfig.discovery_seconds=5.0`, `connect_seconds=5.0`, and `read_seconds=30.0` are conservative. Tune based on your network latency and query complexity.
 - **Monitoring**: Enable `INFO`-level logging for the `alternator` logger to track node discovery events. Use `DEBUG` for detailed routing decisions during troubleshooting.
 - **Seed hosts**: Configure at least 2-3 seed hosts for redundancy in case one seed is temporarily unavailable during startup.
@@ -817,27 +802,21 @@ Async clients created by `AsyncSession.client("dynamodb")` are safe to use from 
 ## Known Limitations
 
 - **Request Compression**: Gzip request compression requires ScyllaDB 2026.1.0+.
-- **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `with_response_compression(...)`.
+- **Response Compression**: Response gzip/deflate decoding requires an Alternator build that includes `scylladb/scylladb#27454` and must be enabled explicitly with `Config.response_compression`.
 - **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
-- **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
+- **TLS Session Tickets**: `TLS.session_tickets_enabled` controls session ticket behavior. Python's `ssl` module does not expose direct cache size or timeout controls.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
-- **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
+- **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading `KeyRouteAffinityConfig.table_pk_attributes` avoids this initial miss.
 - **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Ties, missing partition-key metadata, unsupported key values, no active nodes, or no eligible votes fall back to normal routing. Batches are not split by affinity target.
-- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `Session.quarantined_nodes` returns an empty list until a future implementation is explicitly added.
+- **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only.
 
 ## Examples
 
 - `examples/sync_demo.py`: synchronous client lifecycle and basic operations
 - `examples/async_demo.py`: async client lifecycle and concurrent operations
 - `examples/compare_aws_sdk.py`: Alternator client setup compared with a regular AWS SDK DynamoDB client
-- `examples/capability_configuration.py`: helper lifecycle, explicit routing fallback, static auth, timeouts/retries, mTLS, compression/header optimization, and key affinity configuration recipes
-
-## Release Notes
-
-See [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) for capability release-note
-guidance covering additive APIs, deprecations, behavior notes, migration steps,
-and versioning expectations.
+- `examples/capability_configuration.py`: session lifecycle, explicit routing fallback, static auth, timeouts/retries, mTLS, compression/header optimization, and key affinity configuration recipes
 
 ## Development
 

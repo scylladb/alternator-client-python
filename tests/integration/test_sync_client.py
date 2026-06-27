@@ -11,11 +11,13 @@ from collections.abc import Callable
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     Auth,
     CompressionAlgorithm,
     Config,
+    HeaderOptimizationConfig,
+    KeyRouteAffinityConfig,
     KeyRouteAffinityMode,
+    RequestCompressionConfig,
 )
 from alternator import (
     client as alternator_client,
@@ -151,12 +153,13 @@ class TestCompression:
             ScyllaVersion(2026, 1, 0), "gzip request compression"
         )
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_compression(CompressionAlgorithm.GZIP, min_size=100)
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            request_compression=RequestCompressionConfig(
+                algorithm=CompressionAlgorithm.GZIP,
+                min_size_bytes=100,
+            ),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -195,15 +198,13 @@ class TestKeyAffinity:
 
     def test_rmw_affinity(self, table_name: str) -> None:
         """Test RMW operations use affinity routing."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(
-                KeyRouteAffinityMode.RMW,
-                table_pk_map={table_name: "pk"},
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(
+                mode=KeyRouteAffinityMode.RMW,
+                table_pk_attributes={table_name: "pk"},
+            ),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -283,15 +284,13 @@ class TestKeyAffinityDistribution:
         This test verifies that the affinity routing actually uses the key
         for node selection, not just round-robin.
         """
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(
-                KeyRouteAffinityMode.ANY_WRITE,
-                table_pk_map={table_name: "pk"},
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(
+                mode=KeyRouteAffinityMode.ANY_WRITE,
+                table_pk_attributes={table_name: "pk"},
+            ),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -333,14 +332,12 @@ class TestPartitionKeyAutoDiscovery:
 
     def test_auto_discover_pk_name(self, table_name: str) -> None:
         """Test that partition key name is auto-discovered via DescribeTable."""
-        # Configure affinity WITHOUT pre-defined table_pk_map
-        # The client should discover the PK name automatically
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(KeyRouteAffinityMode.ANY_WRITE)
-            .build()
+        # Configure affinity without preloaded partition-key attributes.
+        # The client should discover the PK name automatically.
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.ANY_WRITE),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -396,12 +393,10 @@ class TestHeaderOptimization:
 
     def test_header_optimized_requests_work(self, table_name: str) -> None:
         """Test that requests with header optimization work correctly."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_header_optimization()
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            header_optimization=HeaderOptimizationConfig(enabled=True),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -449,12 +444,13 @@ class TestHeaderOptimization:
 
     def test_header_optimization_with_custom_whitelist(self, table_name: str) -> None:
         """Test header optimization with custom whitelist."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_header_optimization(whitelist={"X-Custom-Header"})
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            header_optimization=HeaderOptimizationConfig(
+                enabled=True,
+                whitelist=frozenset({"X-Custom-Header"}),
+            ),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -464,12 +460,10 @@ class TestHeaderOptimization:
 
     def test_with_credentials_and_header_optimization(self) -> None:
         """Test header optimization keeps auth headers when credentials are provided."""
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_header_optimization()
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            header_optimization=HeaderOptimizationConfig(enabled=True),
         )
 
         with alternator_client(
@@ -492,12 +486,10 @@ class TestRoutingScopes:
         """
         from alternator import DatacenterScope
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_datacenter("datacenter1")  # Common default DC name
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            routing_scope=DatacenterScope("datacenter1"),
         )
 
         # Verify the config has the correct scope
@@ -555,12 +547,11 @@ class TestTLSConfiguration:
         if not ca_path.exists():
             pytest.skip("Self-signed certificate not found (run 'make scylla-start')")
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(TLS.with_custom_ca(ca_path))
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS.with_custom_ca(ca_path),
         )
 
         with alternator_client(
@@ -578,12 +569,11 @@ class TestTLSConfiguration:
         """
         from alternator import TLS
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(TLS.trust_all())
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS.trust_all(),
         )
 
         with alternator_client(
@@ -601,12 +591,11 @@ class TestTLSConfiguration:
 
         from alternator import TLS
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_HTTPS_PORT)
-            .with_https(TLS.system_default())
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_HTTPS_PORT,
+            scheme="https",
+            tls=TLS.system_default(),
         )
 
         with (

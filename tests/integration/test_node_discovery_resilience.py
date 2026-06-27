@@ -1,8 +1,7 @@
-"""Integration tests for node health tracking behavior.
+"""Integration tests for node discovery and retry resilience.
 
-Tests verify node discovery, node list refresh, and behavior when nodes
-become unavailable or recover. These tests exercise the current node
-management capabilities.
+Tests verify node discovery, node list refresh, retry settings, and concurrent
+request handling with the current round-robin routing behavior.
 
 These tests require a running Scylla cluster with Alternator enabled.
 Start a local cluster with: make scylla-start
@@ -13,8 +12,8 @@ import time
 import pytest
 
 from alternator import (
-    AlternatorConfigBuilder,
     Config,
+    RetryConfig,
 )
 from alternator import (
     client as alternator_client,
@@ -66,10 +65,10 @@ class TestNodeDiscovery:
             assert "TableNames" in response
 
 
-class TestNodeRecoveryDetection:
-    """Test that the client detects when nodes recover via periodic refresh."""
+class TestPeriodicRefresh:
+    """Test that periodic refresh keeps operations working."""
 
-    def test_continuous_operations_after_recovery(self, config: Config) -> None:
+    def test_continuous_operations_after_refresh(self, config: Config) -> None:
         """Test that operations continue to work after the node list refreshes.
 
         This simulates the background refresh cycle by making requests
@@ -83,18 +82,12 @@ class TestNodeRecoveryDetection:
                 time.sleep(0.1)
 
 
-class TestActiveVsQuarantinedNodeTracking:
-    """Test tracking of active node status.
+class TestDiscoveredNodeRequests:
+    """Test request behavior with discovered nodes."""
 
-    Note: The Python client currently uses round-robin with periodic
-    refresh rather than explicit quarantine. These tests verify the
-    current behavior of node list management.
-    """
-
-    def test_all_nodes_active_after_startup(self, config: Config) -> None:
-        """Test that all discovered nodes are active after client startup."""
+    def test_requests_succeed_after_startup(self, config: Config) -> None:
+        """Test that requests succeed after node discovery."""
         with alternator_client("dynamodb", cluster_config=config) as client:
-            # Multiple requests should succeed, indicating active nodes
             success_count = 0
             for _ in range(50):
                 try:
@@ -104,7 +97,6 @@ class TestActiveVsQuarantinedNodeTracking:
                 except Exception:
                     pass
 
-            # All requests should succeed when all nodes are healthy
             assert success_count == 50
 
     def test_node_list_refreshed_periodically(self, config: Config) -> None:
@@ -123,25 +115,19 @@ class TestActiveVsQuarantinedNodeTracking:
                 assert "TableNames" in response
 
 
-class TestQuarantineAndRelease:
-    """Test quarantine and release behavior.
-
-    Note: The Python client doesn't yet implement explicit quarantine/release.
-    These tests verify the retry behavior which provides similar resilience.
-    """
+class TestRetryAndSeedFallback:
+    """Test retry settings and seed fallback behavior."""
 
     def test_requests_retry_on_temporary_failure(self) -> None:
         """Test that requests succeed even with retries enabled.
 
-        The client's retry mechanism provides resilience similar to
-        quarantine by automatically retrying failed requests on other nodes.
+        The client's retry mechanism automatically retries failed requests on
+        other nodes.
         """
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_retries(max_attempts=3)
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            retries=RetryConfig(max_attempts=3),
         )
 
         with alternator_client("dynamodb", cluster_config=config) as client:
@@ -166,7 +152,7 @@ class TestQuarantineAndRelease:
             assert "TableNames" in response
 
 
-class TestQuarantineReleaseConcurrency:
+class TestRefreshConcurrency:
     """Test concurrent request handling with node management.
 
     Note: Tests verify that concurrent requests work correctly with

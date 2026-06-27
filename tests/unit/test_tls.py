@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from alternator.config import TLS, TlsSessionCacheConfig
+from alternator.config import TLS
 from alternator.core.tls import create_ssl_context
 from alternator.exceptions import ConfigurationError
 
@@ -46,17 +46,17 @@ class TestCreateSslContext:
 
         assert ctx.check_hostname is True
 
-    def test_session_cache_enabled(self) -> None:
-        """Test session tickets enabled when session cache is enabled."""
-        tls_config = TLS(session_cache=TlsSessionCacheConfig(enabled=True))
+    def test_session_tickets_enabled(self) -> None:
+        """Test session tickets enabled when configured."""
+        tls_config = TLS(session_tickets_enabled=True)
         ctx = create_ssl_context(tls_config)
 
         # OP_NO_TICKET should NOT be set (tickets enabled)
         assert not (ctx.options & ssl.OP_NO_TICKET)
 
-    def test_session_cache_disabled(self) -> None:
-        """Test session tickets disabled when session cache is disabled."""
-        tls_config = TLS(session_cache=TlsSessionCacheConfig(enabled=False))
+    def test_session_tickets_disabled(self) -> None:
+        """Test session tickets disabled when configured."""
+        tls_config = TLS(session_tickets_enabled=False)
         ctx = create_ssl_context(tls_config)
 
         # OP_NO_TICKET should be set (tickets disabled)
@@ -173,7 +173,7 @@ class TestCreateSslContext:
             assert key_log_path.parent == tmp_path
 
 
-class TestTlsConfig:
+class TestTLS:
     """Tests for TLS class."""
 
     def test_default_values(self) -> None:
@@ -184,7 +184,7 @@ class TestTlsConfig:
         assert config.trust_system_ca_certs is True
         assert config.trust_all_certificates is False
         assert config.verify_hostname is True
-        assert config.session_cache.enabled is True
+        assert config.session_tickets_enabled is True
         assert config.client_cert_path is None
         assert config.client_key_path is None
         assert config.key_log_file_path is None
@@ -234,34 +234,3 @@ class TestTlsConfig:
         config = TLS(client_cert_path=Path("/path/to/client-combined.pem"))
 
         assert config.sdk_client_cert == "/path/to/client-combined.pem"
-
-
-class TestTlsSessionCacheConfig:
-    """Tests for TlsSessionCacheConfig class."""
-
-    def test_default_values(self) -> None:
-        """Test TlsSessionCacheConfig default values."""
-        config = TlsSessionCacheConfig()
-
-        assert config.enabled is True
-        assert config.cache_size == 1024
-        assert config.timeout_seconds == 86400  # 24 hours
-
-    def test_custom_values(self) -> None:
-        """Test TlsSessionCacheConfig with custom values."""
-        config = TlsSessionCacheConfig(
-            enabled=False,
-            cache_size=2048,
-            timeout_seconds=3600,
-        )
-
-        assert config.enabled is False
-        assert config.cache_size == 2048
-        assert config.timeout_seconds == 3600
-
-    def test_immutable(self) -> None:
-        """Test TlsSessionCacheConfig is immutable (frozen)."""
-        config = TlsSessionCacheConfig()
-
-        with pytest.raises(AttributeError):
-            config.enabled = False  # type: ignore[misc] # testing frozen dataclass immutability

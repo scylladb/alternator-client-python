@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+__all__ = ["AlternatorError", "ConfigurationError", "NoNodesAvailableError"]
+
 
 class AlternatorError(Exception):
     """Base exception for all Alternator client errors."""
@@ -73,8 +75,8 @@ class ConfigurationError(AlternatorError, ValueError):
     - Configuration values are invalid
     - Conflicting configuration options are specified
 
-    Inherits from both ``AlternatorError`` and ``ValueError`` for backward
-    compatibility with code that catches ``ValueError`` from config validation.
+    Inherits from both ``AlternatorError`` and ``ValueError`` so callers can
+    catch either the package-specific base or the standard validation base.
 
     Troubleshooting:
     - Verify all required fields are provided

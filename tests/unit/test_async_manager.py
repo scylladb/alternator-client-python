@@ -1,4 +1,4 @@
-"""Tests for AsyncLiveNodesManager and AsyncPartitionKeyCache."""
+"""Tests for AsyncLiveNodesManager and async partition-key cache."""
 
 import asyncio
 from typing import Any, cast
@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from alternator.async_client import AsyncPartitionKeyCache
+from alternator.async_client import _AsyncPartitionKeyCache
 from alternator.config import Config
 from alternator.core.live_nodes import AsyncLiveNodesManager, NoNodesAvailableError
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
@@ -297,13 +297,13 @@ class TestAsyncLiveNodesManager:
 
 
 class TestAsyncPartitionKeyCache:
-    """Tests for AsyncPartitionKeyCache."""
+    """Tests for async partition-key cache."""
 
     @pytest.mark.asyncio
     async def test_preload_returns_cached_value(self) -> None:
         """Test that preloaded values are returned without fetch."""
         client = MagicMock()
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
 
         cache.preload({"my_table": "pk"})
 
@@ -325,7 +325,7 @@ class TestAsyncPartitionKeyCache:
             }
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
 
         # First call should fetch
         result = await cache.get_pk_name("test_table")
@@ -344,7 +344,7 @@ class TestAsyncPartitionKeyCache:
         client = AsyncMock()
         client.describe_table.side_effect = Exception("Network error")
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
 
         result = await cache.get_pk_name("test_table")
         assert result is None
@@ -361,7 +361,7 @@ class TestAsyncPartitionKeyCache:
             }
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
 
         result = await cache.get_pk_name("test_table")
         assert result is None
@@ -374,7 +374,7 @@ class TestAsyncPartitionKeyCache:
             "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
         cache.preload({"table1": "pk1", "table2": "pk2"})
 
         await cache.clear()
@@ -402,7 +402,7 @@ class TestAsyncPartitionKeyCache:
         client = AsyncMock()
         client.describe_table = slow_describe_table
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
 
         # Launch multiple concurrent requests
         tasks = [asyncio.create_task(cache.get_pk_name("test_table")) for _ in range(5)]
@@ -423,7 +423,7 @@ class TestAsyncPartitionKeyCache:
             "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = _AsyncPartitionKeyCache(client)
 
         await cache.get_pk_name("table1")
         await cache.get_pk_name("table2")

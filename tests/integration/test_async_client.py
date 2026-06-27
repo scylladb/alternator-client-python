@@ -11,7 +11,14 @@ from collections.abc import Callable
 
 import pytest
 
-from alternator import Config
+from alternator import (
+    CompressionAlgorithm,
+    Config,
+    HeaderOptimizationConfig,
+    KeyRouteAffinityConfig,
+    KeyRouteAffinityMode,
+    RequestCompressionConfig,
+)
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -167,18 +174,15 @@ class TestAsyncKeyAffinity:
 
     async def test_async_rmw_affinity(self, table_name: str) -> None:
         """Test RMW operations use affinity routing with async client."""
-        from alternator import AlternatorConfigBuilder, KeyRouteAffinityMode
         from alternator.async_client import AsyncSession
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(
-                KeyRouteAffinityMode.RMW,
-                table_pk_map={table_name: "pk"},
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(
+                mode=KeyRouteAffinityMode.RMW,
+                table_pk_attributes={table_name: "pk"},
+            ),
         )
 
         async with AsyncSession(config) as session:
@@ -230,18 +234,15 @@ class TestAsyncKeyAffinity:
 
     async def test_async_any_write_affinity(self, table_name: str) -> None:
         """Test ANY_WRITE mode routes all writes through affinity."""
-        from alternator import AlternatorConfigBuilder, KeyRouteAffinityMode
         from alternator.async_client import AsyncSession
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(
-                KeyRouteAffinityMode.ANY_WRITE,
-                table_pk_map={table_name: "pk"},
-            )
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(
+                mode=KeyRouteAffinityMode.ANY_WRITE,
+                table_pk_attributes={table_name: "pk"},
+            ),
         )
 
         async with AsyncSession(config) as session:
@@ -293,16 +294,13 @@ class TestAsyncKeyAffinity:
 
     async def test_async_pk_auto_discovery(self, table_name: str) -> None:
         """Test async auto-discovery of partition key via DescribeTable."""
-        from alternator import AlternatorConfigBuilder, KeyRouteAffinityMode
         from alternator.async_client import AsyncSession
 
-        # Configure affinity WITHOUT pre-defined table_pk_map
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_key_affinity(KeyRouteAffinityMode.ANY_WRITE)
-            .build()
+        # Configure affinity without preloaded partition-key attributes.
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.ANY_WRITE),
         )
 
         async with AsyncSession(config) as session:
@@ -352,7 +350,6 @@ class TestAsyncCompression:
         skip_if_scylla_version_below: Callable[..., None],
     ) -> None:
         """Test compression with async client."""
-        from alternator import AlternatorConfigBuilder, CompressionAlgorithm
         from alternator.async_client import AsyncSession
         from tests.integration.scylla_version import ScyllaVersion
 
@@ -360,12 +357,13 @@ class TestAsyncCompression:
             ScyllaVersion(2026, 1, 0), "gzip request compression"
         )
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_compression(CompressionAlgorithm.GZIP, min_size=100)
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            request_compression=RequestCompressionConfig(
+                algorithm=CompressionAlgorithm.GZIP,
+                min_size_bytes=100,
+            ),
         )
 
         async with AsyncSession(config) as session:
@@ -409,15 +407,12 @@ class TestAsyncHeaderOptimization:
 
     async def test_async_header_optimization(self, table_name: str) -> None:
         """Test header optimization with async client."""
-        from alternator import AlternatorConfigBuilder
         from alternator.async_client import AsyncSession
 
-        config = (
-            AlternatorConfigBuilder()
-            .with_seeds(SCYLLA_HOST)
-            .with_port(SCYLLA_PORT)
-            .with_header_optimization()
-            .build()
+        config = Config(
+            seed_hosts=[SCYLLA_HOST],
+            port=SCYLLA_PORT,
+            header_optimization=HeaderOptimizationConfig(enabled=True),
         )
 
         async with AsyncSession(config) as session:

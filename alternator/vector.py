@@ -1,8 +1,7 @@
 """Vector search support for ScyllaDB Alternator.
 
-This module provides the :class:`Vector` type and the
-:func:`enable_vector_support` function that add ScyllaDB Alternator's
-vector search extensions to a boto3 DynamoDB client or resource.
+This module provides the :class:`Vector` type for ScyllaDB Alternator vector
+search extensions.
 
 Vector search is a ScyllaDB Alternator extension that does not exist in the
 standard AWS DynamoDB API.  Because boto3 / botocore is generated from the
@@ -20,7 +19,7 @@ It also patches :class:`boto3.dynamodb.types.TypeSerializer` /
 DynamoDB Resource interface automatically converts :class:`Vector` instances
 to the ``FLOAT32VECTOR`` wire format and back.
 
-:func:`enable_vector_support` is called automatically by
+Vector support is enabled automatically by
 :func:`~alternator.client`, :func:`~alternator.resource`, and
 :class:`~alternator.async_client.AsyncSession`, so users of the
 Alternator client library do not need to call it manually.
@@ -80,6 +79,8 @@ from __future__ import annotations
 from typing import Any
 
 import boto3.dynamodb.types
+
+__all__ = ["Vector"]
 
 # ---------------------------------------------------------------------------
 # New botocore shapes that describe Alternator's vector search extensions.
@@ -169,7 +170,7 @@ class Vector(list[float]):
     """An optimized vector type for ScyllaDB Alternator vector search.
 
     Subclasses :class:`list` so it can be used everywhere a regular Python
-    list is expected.  When :func:`enable_vector_support` has been called,
+    list is expected.  When vector support has been enabled automatically,
     the patched :class:`~boto3.dynamodb.types.TypeSerializer` will encode a
     ``Vector`` value as ``{"FLOAT32VECTOR": [...]}`` on the wire instead of
     the standard DynamoDB list encoding ``{"L": [{"N": "..."}, ...]}``.
@@ -210,7 +211,7 @@ class _VectorTypeDeserializer(boto3.dynamodb.types.TypeDeserializer):
         return Vector(value)
 
 
-def enable_vector_support(client_or_resource: Any) -> None:  # noqa: ANN401 -- accepts either a boto3 DynamoDB client or resource instance
+def _enable_vector_support(client_or_resource: Any) -> None:  # noqa: ANN401 -- accepts either a boto3 DynamoDB client or resource instance
     """Enable ScyllaDB Alternator vector search on a boto3 DynamoDB client or resource.
 
     Patches botocore's in-memory DynamoDB service model to accept and return
