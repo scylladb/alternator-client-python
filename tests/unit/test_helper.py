@@ -9,9 +9,10 @@ from urllib.parse import urlsplit
 import pytest
 
 import alternator
-from alternator import Auth, Config, Session, close_client, create_client
+from alternator import Auth, Config, Session
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR
 from alternator.async_client import AsyncSession
+from alternator.client import _close_client
 from alternator.config import KeyRouteAffinityConfig
 from alternator.core.routing_scope import (
     ClusterScope,
@@ -91,7 +92,7 @@ def test_helper_created_clients_borrow_helper_manager(
         assert getattr(client, MANAGER_OWNS_ATTR) is False
         assert getattr(resource, MANAGER_OWNS_ATTR) is False
 
-        close_client(client)
+        _close_client(client)
         assert helper.refresh_nodes() is True
 
 
@@ -166,8 +167,11 @@ def test_no_fallback_scope_does_not_use_seed_hosts(
         routing_scope=DatacenterScope("missing", fallback=None),
     )
 
-    with pytest.raises(NoNodesAvailableError):
-        create_client(config)
+    with (
+        pytest.raises(NoNodesAvailableError),
+        alternator.client("dynamodb", cluster_config=config),
+    ):
+        pass
 
 
 def test_create_client_uses_configured_aws_region(
@@ -181,36 +185,33 @@ def test_create_client_uses_configured_aws_region(
         port=base_config.port,
         aws_region="us-west-2",
     )
-    client = create_client(config)
-    try:
+    with alternator.client("dynamodb", cluster_config=config) as client:
         assert client.meta.region_name == "us-west-2"
-    finally:
-        close_client(client)
 
 
 def test_close_client_closes_underlying_boto_client() -> None:
-    """close_client releases the botocore HTTP session for clients."""
+    """The internal close helper releases the botocore HTTP session."""
     manager = SimpleNamespace(stop=Mock())
     client = SimpleNamespace(close=Mock())
     setattr(client, MANAGER_ATTR, manager)
     setattr(client, MANAGER_OWNS_ATTR, True)
 
-    close_client(client)  # type: ignore[arg-type] # lightweight boto client stub
-    close_client(client)  # type: ignore[arg-type] # idempotency check
+    _close_client(client)  # type: ignore[arg-type] # lightweight boto client stub
+    _close_client(client)  # type: ignore[arg-type] # idempotency check
 
     assert manager.stop.call_count == 1
     assert client.close.call_count == 2
 
 
 def test_close_resource_closes_underlying_boto_client() -> None:
-    """close_client releases the botocore HTTP session for resources."""
+    """The internal close helper releases the resource's botocore client."""
     manager = SimpleNamespace(stop=Mock())
     service_client = SimpleNamespace(close=Mock())
     resource = SimpleNamespace(meta=SimpleNamespace(client=service_client))
     setattr(resource, MANAGER_ATTR, manager)
     setattr(resource, MANAGER_OWNS_ATTR, True)
 
-    close_client(resource)  # type: ignore[arg-type] # lightweight resource stub
+    _close_client(resource)  # type: ignore[arg-type] # lightweight resource stub
 
     manager.stop.assert_called_once_with()
     service_client.close.assert_called_once_with()

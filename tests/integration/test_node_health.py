@@ -13,9 +13,11 @@ import time
 import pytest
 
 from alternator import (
-    AlternatorClient,
     AlternatorConfigBuilder,
     Config,
+)
+from alternator import (
+    client as alternator_client,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
@@ -40,7 +42,7 @@ class TestNodeDiscovery:
 
     def test_discovers_multiple_nodes(self, config: Config) -> None:
         """Test that the client discovers nodes via /localnodes endpoint."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Perform a request to trigger node discovery
             client.list_tables()
 
@@ -58,7 +60,7 @@ class TestNodeDiscovery:
             scheme="http",
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # The very first request should succeed using the seed host
             response = client.list_tables()
             assert "TableNames" in response
@@ -73,7 +75,7 @@ class TestNodeRecoveryDetection:
         This simulates the background refresh cycle by making requests
         over a period longer than the active refresh interval.
         """
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Make requests over time to trigger background refreshes
             for _ in range(30):
                 response = client.list_tables()
@@ -91,7 +93,7 @@ class TestActiveVsQuarantinedNodeTracking:
 
     def test_all_nodes_active_after_startup(self, config: Config) -> None:
         """Test that all discovered nodes are active after client startup."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Multiple requests should succeed, indicating active nodes
             success_count = 0
             for _ in range(50):
@@ -107,7 +109,7 @@ class TestActiveVsQuarantinedNodeTracking:
 
     def test_node_list_refreshed_periodically(self, config: Config) -> None:
         """Test that the node list is refreshed by the background thread."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Initial request
             response = client.list_tables()
             assert "TableNames" in response
@@ -142,7 +144,7 @@ class TestQuarantineAndRelease:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             for _ in range(20):
                 response = client.list_tables()
                 assert "TableNames" in response
@@ -159,7 +161,7 @@ class TestQuarantineAndRelease:
             scheme="http",
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -175,7 +177,7 @@ class TestQuarantineReleaseConcurrency:
         """Test that concurrent requests work during node list refresh."""
         import threading
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             errors: list[Exception] = []
             lock = threading.Lock()
 

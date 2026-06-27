@@ -22,7 +22,7 @@ to the ``FLOAT32VECTOR`` wire format and back.
 
 :func:`enable_vector_support` is called automatically by
 :func:`~alternator.client`, :func:`~alternator.resource`, and
-:func:`~alternator.async_client.create_async_client`, so users of the
+:class:`~alternator.async_client.AsyncSession`, so users of the
 Alternator client library do not need to call it manually.
 
 Usage::

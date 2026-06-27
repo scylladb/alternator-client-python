@@ -397,66 +397,8 @@ async def _create_async_client_with_manager(
     return cast("AsyncDynamoDBClient", client)
 
 
-async def create_async_client(
-    config: Config,
-    *,
-    auth: Auth | None = None,
-    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
-) -> AsyncDynamoDBClient:
-    """
-    Create a load-balanced async DynamoDB client for Alternator.
-
-    The returned client is an aioboto3 DynamoDB client that
-    transparently distributes requests across cluster nodes.
-
-    Note:
-        Authentication is disabled by default. Alternator authentication
-        currently supports only static credentials; pass
-        ``auth=Auth.static_credentials(...)`` to enable request signing.
-
-    Args:
-        config: Alternator configuration
-        auth: Explicit Alternator auth settings. Defaults to disabled auth.
-        **boto_kwargs: Additional arguments passed to aioboto3.client()
-
-    Returns:
-        An async DynamoDB client with load balancing enabled
-
-    Example:
-        from alternator import Config
-        from alternator.async_client import create_async_client
-
-        config = Config(
-            seed_hosts=["node1.example.com"],
-            port=8000,
-        )
-        client = await create_async_client(config)
-
-        # Use like a normal aioboto3 client
-        response = await client.list_tables()
-    """
-    manager = await _create_async_manager(config)
-    await manager.start()
-    try:
-        return await _create_async_client_with_manager(
-            config,
-            manager,
-            auth=auth,
-            owns_manager=True,
-            **boto_kwargs,
-        )
-    except Exception:
-        await _close_async_manager(manager)
-        raise
-
-
-async def close_async_client(client: AsyncDynamoDBClient) -> None:
-    """
-    Close an async Alternator client and stop its background refresh task.
-
-    Args:
-        client: Client created by create_async_client
-    """
+async def _close_async_client(client: AsyncDynamoDBClient) -> None:
+    """Close an async Alternator client and stop its owned refresh task."""
     try:
         manager = getattr(client, MANAGER_ATTR, None)
         if manager is not None:
@@ -545,7 +487,7 @@ class AsyncSession:
         """Stop background node discovery and close session-created clients."""
         for created_client in list(self._clients):
             with contextlib.suppress(Exception):
-                await close_async_client(created_client)
+                await _close_async_client(created_client)
         self._clients.clear()
 
         if self._manager is not None:

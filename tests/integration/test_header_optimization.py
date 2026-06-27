@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import pytest
 
-from alternator import AlternatorConfigBuilder, Auth, close_client, create_client
-from alternator.async_client import close_async_client, create_async_client
+from alternator import AlternatorConfigBuilder, Auth
+from alternator import client as alternator_client
+from alternator.async_client import AsyncSession
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 from tests.integration.wire_capture import (
     capture_prepared_requests,
@@ -33,14 +34,14 @@ class TestHeaderOptimization:
     """Verify sync header filtering on prepared requests."""
 
     def test_disabled_keeps_user_agent_on_wire(self) -> None:
-        client = create_client(_user_agent_config("alternator-unfiltered"))
-        try:
+        with alternator_client(
+            "dynamodb",
+            cluster_config=_user_agent_config("alternator-unfiltered"),
+        ) as client:
             captured = capture_prepared_requests(client)
             client.list_tables()
             request = latest_request(captured)
             assert request.header("user-agent") == "alternator-unfiltered"
-        finally:
-            close_client(client)
 
     def test_filters_wire_headers_and_preserves_auth(self) -> None:
         config = (
@@ -51,11 +52,11 @@ class TestHeaderOptimization:
             .with_user_agent("alternator-filtered")
             .build()
         )
-        client = create_client(
-            config,
+        with alternator_client(
+            "dynamodb",
+            cluster_config=config,
             auth=Auth.static_credentials("alternator", "secret"),
-        )
-        try:
+        ) as client:
             inject_custom_headers(client)
             captured = capture_prepared_requests(client)
             client.list_tables()
@@ -66,8 +67,6 @@ class TestHeaderOptimization:
             assert request.header("authorization") is not None
             assert request.header("x-amz-date") is not None
             assert request.header("user-agent") == "alternator-filtered"
-        finally:
-            close_client(client)
 
 
 class TestAsyncHeaderOptimization:
@@ -82,11 +81,11 @@ class TestAsyncHeaderOptimization:
             .with_header_optimization(whitelist={"X-Keep-Me"})
             .build()
         )
-        client = await create_async_client(
+        async with AsyncSession(
             config,
             auth=Auth.static_credentials("alternator", "secret"),
-        )
-        try:
+        ) as session:
+            client = await session.client("dynamodb")
             inject_custom_headers(client)
             captured = capture_prepared_requests(client)
             await client.list_tables()
@@ -96,5 +95,3 @@ class TestAsyncHeaderOptimization:
             assert request.header("x-drop-me") is None
             assert request.header("authorization") is not None
             assert request.header("x-amz-date") is not None
-        finally:
-            await close_async_client(client)

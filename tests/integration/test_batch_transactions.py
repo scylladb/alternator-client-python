@@ -9,7 +9,8 @@ import uuid
 
 import pytest
 
-from alternator import AlternatorClient, Config
+from alternator import Config
+from alternator import client as alternator_client
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -39,7 +40,7 @@ class TestBatchWriteItem:
 
     def test_batch_write_multiple_items(self, config: Config, table_name: str) -> None:
         """Test writing multiple items in a single batch."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -76,7 +77,7 @@ class TestBatchWriteItem:
 
     def test_batch_write_with_deletes(self, config: Config, table_name: str) -> None:
         """Test batch write mixing puts and deletes."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -132,7 +133,7 @@ class TestBatchGetItem:
 
     def test_batch_get_multiple_items(self, config: Config, table_name: str) -> None:
         """Test getting multiple items in a single batch."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -171,7 +172,7 @@ class TestBatchGetItem:
 
     def test_batch_get_nonexistent_keys(self, config: Config, table_name: str) -> None:
         """Test batch get with keys that don't exist."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],

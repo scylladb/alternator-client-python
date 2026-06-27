@@ -8,14 +8,17 @@ Start a local cluster with: make scylla-start
 """
 
 import uuid
+from typing import Any
 
 import pytest
 
 from alternator import (
-    AlternatorClient,
     AlternatorConfigBuilder,
     Config,
     KeyRouteAffinityMode,
+)
+from alternator import (
+    client as alternator_client,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
@@ -31,7 +34,7 @@ def table_name() -> str:
     return f"test_affinity_{uuid.uuid4().hex[:8]}"
 
 
-def _create_table(client: AlternatorClient, table_name: str) -> None:
+def _create_table(client: Any, table_name: str) -> None:  # noqa: ANN401 -- generated boto3 client type is unavailable in integration tests
     """Helper to create a simple HASH-key table."""
     client.create_table(
         TableName=table_name,
@@ -81,7 +84,7 @@ class TestGetOperationAffinity:
         in ANY_WRITE mode it also does NOT use affinity. It should still work.
         """
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 client.put_item(
@@ -102,7 +105,7 @@ class TestGetOperationAffinity:
     def test_get_item_with_any_write_mode(self, table_name: str) -> None:
         """GET operations with ANY_WRITE mode should use round-robin (no affinity)."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 client.put_item(
@@ -126,7 +129,7 @@ class TestUpdateOperationAffinity:
     def test_update_with_rmw_condition(self, table_name: str) -> None:
         """UpdateItem with ConditionExpression is RMW — should use affinity."""
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 client.put_item(
@@ -155,7 +158,7 @@ class TestUpdateOperationAffinity:
     def test_update_with_any_write(self, table_name: str) -> None:
         """UpdateItem with ANY_WRITE mode routes all updates via affinity."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 client.put_item(
@@ -184,7 +187,7 @@ class TestUpdateOperationAffinity:
     def test_update_with_return_values_rmw(self, table_name: str) -> None:
         """UpdateItem with ReturnValues (non-NONE) is RMW — uses affinity in RMW mode."""
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 client.put_item(
@@ -212,7 +215,7 @@ class TestDeleteOperationAffinity:
     def test_delete_with_rmw_condition(self, table_name: str) -> None:
         """DeleteItem with ConditionExpression is RMW — should use affinity."""
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 client.put_item(
@@ -238,7 +241,7 @@ class TestDeleteOperationAffinity:
     def test_delete_with_any_write(self, table_name: str) -> None:
         """DeleteItem with ANY_WRITE routes all deletes via affinity."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 for i in range(5):
@@ -271,7 +274,7 @@ class TestInsertPutItemAffinity:
     def test_put_with_rmw_condition(self, table_name: str) -> None:
         """PutItem with ConditionExpression is RMW — should use affinity."""
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 # Conditional put (insert if not exists) — this is RMW
@@ -300,7 +303,7 @@ class TestInsertPutItemAffinity:
     def test_put_with_any_write(self, table_name: str) -> None:
         """PutItem with ANY_WRITE routes all puts via affinity."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 # Multiple puts with different keys — each routed via affinity
@@ -326,7 +329,7 @@ class TestBatchGetAffinity:
     def test_batch_get_works_with_affinity(self, table_name: str) -> None:
         """BatchGetItem should work correctly with affinity enabled."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 # Write items
@@ -353,7 +356,7 @@ class TestBatchGetAffinity:
     def test_batch_get_with_rmw_mode(self, table_name: str) -> None:
         """BatchGetItem with RMW mode (reads don't trigger affinity)."""
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 for i in range(3):
@@ -379,7 +382,7 @@ class TestBatchWriteAffinity:
     def test_batch_write_with_any_write(self, table_name: str) -> None:
         """BatchWriteItem with ANY_WRITE mode routes via affinity."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 items = [
@@ -408,7 +411,7 @@ class TestBatchWriteAffinity:
     def test_batch_write_with_rmw_mode(self, table_name: str) -> None:
         """BatchWriteItem with RMW mode (batch writes are not RMW)."""
         config = _make_rmw_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 items = [
@@ -436,7 +439,7 @@ class TestBatchWriteAffinity:
     def test_batch_write_mixed_operations(self, table_name: str) -> None:
         """BatchWriteItem with mixed puts and deletes using affinity."""
         config = _make_any_write_config(table_name)
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_table(client, table_name)
             try:
                 # Pre-populate items to delete

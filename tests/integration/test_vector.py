@@ -14,9 +14,13 @@ from decimal import Decimal
 import pytest
 
 from alternator import (
-    AlternatorClient,
-    AlternatorResource,
     Config,
+)
+from alternator import (
+    client as alternator_client,
+)
+from alternator import (
+    resource as alternator_resource,
 )
 from alternator.vector import Vector
 from tests.integration import (
@@ -48,7 +52,7 @@ def test_create_table_with_vector_index(
     skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
 
     name = table_name()
-    with AlternatorClient(config) as client:
+    with alternator_client("dynamodb", cluster_config=config) as client:
         client.create_table(
             TableName=name,
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -85,7 +89,7 @@ def test_create_table_with_vector_index_via_resource(
     skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
 
     name = table_name()
-    with AlternatorResource(config) as resource:
+    with alternator_resource("dynamodb", cluster_config=config) as resource:
         resource.create_table(
             TableName=name,
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -120,7 +124,7 @@ def test_vector_roundtrip_via_resource(
     skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
 
     name = table_name()
-    with AlternatorResource(config) as resource:
+    with alternator_resource("dynamodb", cluster_config=config) as resource:
         resource.create_table(
             TableName=name,
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -164,7 +168,7 @@ def test_vector_differs_from_decimal_list(
     skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
 
     name = table_name()
-    with AlternatorResource(config) as resource:
+    with alternator_resource("dynamodb", cluster_config=config) as resource:
         resource.create_table(
             TableName=name,
             KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],

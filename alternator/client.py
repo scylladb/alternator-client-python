@@ -263,44 +263,13 @@ def _create_client_with_manager(
     return client
 
 
-def create_client(
+def _create_client(
     config: Config,
     *,
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBClient:
-    """
-    Create a load-balanced DynamoDB client for Alternator.
-
-    The returned client is a standard boto3 DynamoDB client that
-    transparently distributes requests across cluster nodes.
-
-    Note:
-        Authentication is disabled by default. Alternator authentication
-        currently supports only static credentials; pass
-        ``auth=Auth.static_credentials(...)`` to enable request signing.
-
-    Args:
-        config: Alternator configuration
-        auth: Explicit Alternator auth settings. Defaults to disabled auth.
-        **boto_kwargs: Additional arguments passed to boto3.client()
-            (excluding ``config`` — BotoConfig is managed internally)
-
-    Returns:
-        A DynamoDB client with load balancing enabled
-
-    Example:
-        from alternator import Config, create_client
-
-        config = Config(
-            seed_hosts=["node1.example.com"],
-            port=8000,
-        )
-        client = create_client(config)
-
-        # Use like a normal boto3 client
-        response = client.list_tables()
-    """
+    """Create a load-balanced DynamoDB client for Alternator."""
     manager = _create_and_start_manager(config)
     try:
         return _create_client_with_manager(
@@ -380,7 +349,7 @@ def client(
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
-) -> AlternatorClient:
+) -> _ClientContext:
     """
     Create a context-manager friendly Alternator client.
 
@@ -395,7 +364,7 @@ def client(
         port=port,
         scheme=scheme,
     )
-    return AlternatorClient(config, auth=auth, **boto_kwargs)
+    return _ClientContext(config, auth=auth, **boto_kwargs)
 
 
 def resource(
@@ -407,7 +376,7 @@ def resource(
     scheme: Literal["http", "https"] = "http",
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
-) -> AlternatorResource:
+) -> _ResourceContext:
     """
     Create a context-manager friendly Alternator resource.
 
@@ -421,28 +390,16 @@ def resource(
         port=port,
         scheme=scheme,
     )
-    return AlternatorResource(config, auth=auth, **boto_kwargs)
+    return _ResourceContext(config, auth=auth, **boto_kwargs)
 
 
-def create_resource(
+def _create_resource(
     config: Config,
     *,
     auth: Auth | None = None,
     **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
 ) -> DynamoDBServiceResource:
-    """
-    Create a load-balanced DynamoDB resource for Alternator.
-
-    Note:
-        Authentication is disabled by default. Alternator authentication
-        currently supports only static credentials; pass
-        ``auth=Auth.static_credentials(...)`` to enable request signing.
-
-    Example:
-        resource = create_resource(config)
-        table = resource.Table("my_table")
-        table.put_item(Item={"pk": "123", "data": "hello"})
-    """
+    """Create a load-balanced DynamoDB resource for Alternator."""
     manager = _create_and_start_manager(config)
     try:
         return _create_resource_with_manager(
@@ -510,16 +467,8 @@ def _create_resource_with_manager(
     return resource
 
 
-def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
-    """
-    Close an Alternator client or resource and stop its background refresh thread.
-
-    Works for both clients created by ``create_client`` and resources created
-    by ``create_resource``. See also ``close_resource`` alias.
-
-    Args:
-        client: Client or resource created by create_client or create_resource
-    """
+def _close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
+    """Close an Alternator client/resource and stop its owned refresh thread."""
     manager = getattr(client, MANAGER_ATTR, None)
     if manager is not None:
         owns_manager = bool(getattr(client, MANAGER_OWNS_ATTR, True))
@@ -619,7 +568,7 @@ class Session:
         """Stop background node discovery and detach session-created clients."""
         for created_client in list(self._clients):
             with contextlib.suppress(Exception):
-                close_client(created_client)
+                _close_client(created_client)
         self._clients.clear()
 
         if self._manager is not None:
@@ -754,16 +703,8 @@ class Session:
         return cast(object | None, getattr(service_client, PK_CACHE_ATTR, None))
 
 
-class AlternatorClient:
-    """
-    Context manager for load-balanced Alternator connections.
-
-    Handles proper cleanup of background refresh threads.
-
-    Example:
-        with AlternatorClient(config) as client:
-            client.put_item(...)
-    """
+class _ClientContext:
+    """Context manager for load-balanced Alternator clients."""
 
     def __init__(
         self,
@@ -778,7 +719,9 @@ class AlternatorClient:
         self._client: DynamoDBClient | None = None
 
     def __enter__(self) -> DynamoDBClient:
-        self._client = create_client(self._config, auth=self._auth, **self._boto_kwargs)
+        self._client = _create_client(
+            self._config, auth=self._auth, **self._boto_kwargs
+        )
         return self._client
 
     def __exit__(
@@ -799,21 +742,12 @@ class AlternatorClient:
     def close(self) -> None:
         """Stop background threads and release resources."""
         if self._client is not None:
-            close_client(self._client)
+            _close_client(self._client)
             self._client = None
 
 
-class AlternatorResource:
-    """
-    Context manager for load-balanced Alternator resource connections.
-
-    Handles proper cleanup of background refresh threads.
-
-    Example:
-        with AlternatorResource(config) as resource:
-            table = resource.Table("my_table")
-            table.put_item(Item={"pk": "123", "data": "hello"})
-    """
+class _ResourceContext:
+    """Context manager for load-balanced Alternator resources."""
 
     def __init__(
         self,
@@ -828,7 +762,7 @@ class AlternatorResource:
         self._resource: DynamoDBServiceResource | None = None
 
     def __enter__(self) -> DynamoDBServiceResource:
-        self._resource = create_resource(
+        self._resource = _create_resource(
             self._config, auth=self._auth, **self._boto_kwargs
         )
         return self._resource
@@ -851,9 +785,5 @@ class AlternatorResource:
     def close(self) -> None:
         """Stop background threads and release resources."""
         if self._resource is not None:
-            close_client(self._resource)
+            _close_client(self._resource)
             self._resource = None
-
-
-# Alias for close_client that makes intent clearer when closing resources
-close_resource = close_client
