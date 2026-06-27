@@ -35,9 +35,11 @@ class DynamoDBLikeClient(Protocol):
     """Minimal DynamoDB client protocol used by this example."""
 
     @property
-    def meta(self) -> DynamoDBClientMetaLike: ...
+    def meta(self) -> DynamoDBClientMetaLike:
+        pass
 
-    def list_tables(self) -> Mapping[str, object]: ...
+    def list_tables(self) -> Mapping[str, object]:
+        pass
 
 
 def print_client_details(name: str, client: object) -> None:
