@@ -22,6 +22,26 @@ UserAgentCustomizer = Callable[[str], str]
 UserAgent = str | UserAgentCustomizer
 _DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
 
+__all__ = [
+    "Auth",
+    "CompressionAlgorithm",
+    "Config",
+    "HeaderOptimizationConfig",
+    "HeaderWhitelistCallback",
+    "HeaderWhitelistContext",
+    "KeyRouteAffinityConfig",
+    "KeyRouteAffinityMode",
+    "NodeListPollingConfig",
+    "RequestCompressionConfig",
+    "ResponseCompression",
+    "RetryConfig",
+    "RetryMode",
+    "TLS",
+    "TimeoutConfig",
+    "UserAgent",
+    "UserAgentCustomizer",
+]
+
 
 class CompressionAlgorithm(Enum):
     """Compression algorithm for request bodies."""

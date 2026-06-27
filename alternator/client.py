@@ -25,7 +25,7 @@ from alternator.core.key_affinity import (
 )
 from alternator.core.live_nodes import NodeList, SyncLiveNodesManager
 from alternator.exceptions import ConfigurationError
-from alternator.vector import enable_vector_support
+from alternator.vector import _enable_vector_support
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
@@ -35,6 +35,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("alternator")
 _DEFAULT_PORT = 8000
+__all__ = ["Session", "client", "resource"]
 
 # Registry of active managers for cleanup on exit
 _active_managers: weakref.WeakValueDictionary[int, SyncLiveNodesManager] = (
@@ -255,7 +256,7 @@ def _create_client_with_manager(
     setattr(client, MANAGER_OWNS_ATTR, owns_manager)
 
     # Enable Alternator vector search extensions before registering finalizers.
-    enable_vector_support(client)
+    _enable_vector_support(client)
 
     if owns_manager:
         _register_manager(manager, client)
@@ -459,7 +460,7 @@ def _create_resource_with_manager(
     setattr(resource, MANAGER_OWNS_ATTR, owns_manager)
 
     # Enable Alternator vector search extensions before registering finalizers.
-    enable_vector_support(resource)
+    _enable_vector_support(resource)
 
     if owns_manager:
         _register_manager(manager, resource)

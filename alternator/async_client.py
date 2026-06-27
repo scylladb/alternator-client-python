@@ -33,7 +33,7 @@ from alternator.core.key_affinity import (
     select_affinity_node,
 )
 from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
-from alternator.vector import enable_vector_support
+from alternator.vector import _enable_vector_support
 
 if TYPE_CHECKING:
     from types_aiobotocore_dynamodb import DynamoDBClient as AsyncDynamoDBClient
@@ -42,6 +42,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("alternator")
 _AUTH_UNSET = object()
+__all__ = ["AsyncSession"]
 
 
 class _AsyncPartitionKeyCache:
@@ -389,7 +390,7 @@ async def _create_async_client_with_manager(
         setattr(client, MANAGER_OWNS_ATTR, owns_manager)
 
         # Enable Alternator vector search extensions
-        enable_vector_support(client)
+        _enable_vector_support(client)
     except Exception:
         await client_ctx.__aexit__(None, None, None)
         raise
