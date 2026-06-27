@@ -264,4 +264,4 @@ class TestTlsSessionCacheConfig:
         config = TlsSessionCacheConfig()
 
         with pytest.raises(AttributeError):
-            config.enabled = False  # type: ignore[misc] -- testing frozen dataclass immutability
+            config.enabled = False  # type: ignore[misc] # testing frozen dataclass immutability

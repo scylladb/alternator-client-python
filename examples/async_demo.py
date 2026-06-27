@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import sys
+from typing import Any, cast
 
 from botocore.exceptions import ClientError
 
@@ -39,8 +40,8 @@ async def main() -> None:
         async with AsyncAlternatorClient(config) as client:
             # List existing tables
             print("Listing tables...")
-            response = await client.list_tables()
-            tables = response.get("TableNames", [])
+            list_response = await client.list_tables()
+            tables = list_response.get("TableNames", [])
             print(f"Found {len(tables)} tables: {tables}")
 
             # Create a test table if it doesn't exist
@@ -95,7 +96,7 @@ async def main() -> None:
             responses = await asyncio.gather(*read_tasks)
 
             for i, response in enumerate(responses):
-                item = response.get("Item", {})
+                item = cast(dict[str, Any], response.get("Item", {}))
                 print(f"  async_user_{i}: {item.get('data', {}).get('S', 'N/A')}")
 
             print("Async demo complete!")

@@ -20,7 +20,7 @@ def extract_operation_name(request: AWSPreparedRequest | AWSRequest) -> str:
     Returns:
         Operation name (e.g. "PutItem"), or empty string if not found
     """
-    target = request.headers.get("X-Amz-Target", "")
+    target: str | bytes = request.headers.get("X-Amz-Target", "")
     if isinstance(target, bytes):
         target = target.decode("utf-8")
     return target.split(".")[-1] if "." in target else ""

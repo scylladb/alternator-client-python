@@ -38,7 +38,7 @@ class TestNodeList:
         """Test that NodeList is frozen."""
         nodes = NodeList(nodes=("host1",), scope_name="Cluster")
         with pytest.raises(AttributeError):
-            nodes.nodes = ("host2",)  # type: ignore[misc] -- testing frozen dataclass immutability
+            nodes.nodes = ("host2",)  # type: ignore[misc] # testing frozen dataclass immutability
 
 
 class TestRoundRobinSelector:

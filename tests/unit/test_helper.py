@@ -188,8 +188,8 @@ def test_close_client_closes_underlying_boto_client() -> None:
     setattr(client, MANAGER_ATTR, manager)
     setattr(client, MANAGER_OWNS_ATTR, True)
 
-    close_client(client)  # type: ignore[arg-type] -- lightweight boto client stub
-    close_client(client)  # type: ignore[arg-type] -- idempotency check
+    close_client(client)  # type: ignore[arg-type] # lightweight boto client stub
+    close_client(client)  # type: ignore[arg-type] # idempotency check
 
     assert manager.stop.call_count == 1
     assert client.close.call_count == 2
@@ -203,7 +203,7 @@ def test_close_resource_closes_underlying_boto_client() -> None:
     setattr(resource, MANAGER_ATTR, manager)
     setattr(resource, MANAGER_OWNS_ATTR, True)
 
-    close_client(resource)  # type: ignore[arg-type] -- lightweight resource stub
+    close_client(resource)  # type: ignore[arg-type] # lightweight resource stub
 
     manager.stop.assert_called_once_with()
     service_client.close.assert_called_once_with()

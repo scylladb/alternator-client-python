@@ -111,7 +111,7 @@ lint-types:
 	uv run ruff check --select ANN alternator/ tests/ examples/
 
 typecheck:
-	uv run mypy alternator/ --strict
+	uv run mypy alternator/ examples/ tests/unit/ --strict
 
 # Auto-fix linting issues
 lint-fix:

@@ -65,7 +65,7 @@ def create_compression_handler(
     return compress_request
 
 
-def _set_request_body(request: AWSPreparedRequest | AWSRequest, body: bytes) -> None:
+def _set_request_body(request: object, body: bytes) -> None:
     """Set request body for both prepared and pre-signing request objects."""
     mutable_request = cast(Any, request)
     if isinstance(request, AWSPreparedRequest):

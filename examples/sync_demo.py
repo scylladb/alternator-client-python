@@ -11,6 +11,7 @@ This example shows how to:
 import logging
 import os
 import sys
+from typing import Any, cast
 
 from botocore.exceptions import ClientError
 
@@ -37,8 +38,8 @@ def main() -> None:
         with AlternatorClient(config) as client:
             # List existing tables
             print("Listing tables...")
-            response = client.list_tables()
-            tables = response.get("TableNames", [])
+            list_response = client.list_tables()
+            tables = list_response.get("TableNames", [])
             print(f"Found {len(tables)} tables: {tables}")
 
             # Create a test table if it doesn't exist
@@ -75,11 +76,11 @@ def main() -> None:
             # Read items back
             print("Reading items...")
             for i in range(5):
-                response = client.get_item(
+                get_response = client.get_item(
                     TableName=table_name,
                     Key={"pk": {"S": f"user_{i}"}},
                 )
-                item = response.get("Item", {})
+                item = cast(dict[str, Any], get_response.get("Item", {}))
                 print(f"  user_{i}: {item.get('data', {}).get('S', 'N/A')}")
 
             print("Demo complete!")

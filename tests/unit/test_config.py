@@ -1,6 +1,7 @@
 """Tests for configuration classes."""
 
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -56,7 +57,7 @@ class TestAlternatorConfig:
             Config(
                 seed_hosts=["localhost"],
                 port=8000,
-                scheme="ftp",
+                scheme=cast(Any, "ftp"),
             )
 
     def test_invalid_port_zero_raises(self) -> None:
@@ -93,6 +94,7 @@ class TestAlternatorConfig:
         assert config.node_list_polling.active_interval_ms == 1000
         assert config.node_list_polling.idle_interval_ms == 60000
         assert config.aws_region == "us-east-1"
+        assert isinstance(config.user_agent, str)
         assert config.user_agent.startswith("alternator-client-python/")
         assert isinstance(config.routing_scope, ClusterScope)
 
@@ -256,7 +258,7 @@ class TestAlternatorConfigBuilder:
             match="unsupported response compression encoding",
         ):
             AlternatorConfigBuilder().with_response_compression(
-                None,  # type: ignore[arg-type] -- validate runtime input
+                None,  # type: ignore[arg-type] # validate runtime input
             )
 
     def test_invalid_response_compression_raises(self) -> None:
@@ -268,7 +270,7 @@ class TestAlternatorConfigBuilder:
             Config(
                 seed_hosts=["localhost"],
                 port=8000,
-                response_compression=("br",),  # type: ignore[arg-type] -- validate runtime input
+                response_compression=("br",),  # type: ignore[arg-type] # validate runtime input
             )
 
     @pytest.mark.parametrize("gzip_level", [-1, 10])

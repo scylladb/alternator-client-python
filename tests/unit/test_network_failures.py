@@ -63,7 +63,7 @@ class ConnectionResetHandler(BaseHTTPRequestHandler):
 
 
 def _get_url(server: HTTPServer, path: str = "/localnodes") -> str:
-    host, port = server.server_address
+    host, port = "127.0.0.1", server.server_port
     return f"http://{host}:{port}{path}"
 
 
@@ -232,7 +232,9 @@ class TestAsyncFetcherNetworkFailures:
         """Get a port that is guaranteed to be unused."""
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
-            return s.getsockname()[1]
+            port = s.getsockname()[1]
+            assert isinstance(port, int)
+            return port
 
     @pytest.mark.asyncio
     async def test_connection_refused(self, unused_port: int) -> None:
