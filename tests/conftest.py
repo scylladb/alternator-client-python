@@ -208,7 +208,8 @@ def scylla_version() -> ScyllaVersion | None:
         return None
 
     try:
-        from alternator import Config, close_client, create_client
+        from alternator import Config
+        from alternator import client as alternator_client
         from tests.integration.scylla_version import detect_version_from_cluster
 
         config = Config(
@@ -216,12 +217,9 @@ def scylla_version() -> ScyllaVersion | None:
             port=SCYLLA_PORT,
             scheme="http",
         )
-        client = create_client(config)
-        try:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             version = detect_version_from_cluster(client)
             return version
-        finally:
-            close_client(client)
     except Exception:
         return None
 

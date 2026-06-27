@@ -11,14 +11,14 @@ from collections.abc import Callable
 import pytest
 
 from alternator import (
-    AlternatorClient,
     AlternatorConfigBuilder,
     Auth,
     CompressionAlgorithm,
     Config,
     KeyRouteAffinityMode,
-    close_client,
-    create_client,
+)
+from alternator import (
+    client as alternator_client,
 )
 from tests.integration import (
     SCYLLA_HOST,
@@ -54,14 +54,14 @@ class TestBasicOperations:
 
     def test_list_tables(self, config: Config) -> None:
         """Test listing tables."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
             assert isinstance(response["TableNames"], list)
 
     def test_create_and_delete_table(self, config: Config, table_name: str) -> None:
         """Test creating and deleting a table."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table
             client.create_table(
                 TableName=table_name,
@@ -87,7 +87,7 @@ class TestBasicOperations:
 
     def test_put_and_get_item(self, config: Config, table_name: str) -> None:
         """Test putting and getting an item."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table
             client.create_table(
                 TableName=table_name,
@@ -127,7 +127,7 @@ class TestLoadBalancing:
 
     def test_requests_distributed(self, config: Config) -> None:
         """Test that requests are distributed across nodes."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Make multiple requests
             for _ in range(10):
                 client.list_tables()
@@ -159,7 +159,7 @@ class TestCompression:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table
             client.create_table(
                 TableName=table_name,
@@ -206,7 +206,7 @@ class TestKeyAffinity:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table
             client.create_table(
                 TableName=table_name,
@@ -244,23 +244,21 @@ class TestKeyAffinity:
                 client.delete_table(TableName=table_name)
 
 
-class TestManualResourceManagement:
-    """Test manual client lifecycle management."""
+class TestClientContextManagement:
+    """Test client context-manager lifecycle management."""
 
-    def test_create_and_close(self, config: Config) -> None:
-        """Test manual create/close without context manager."""
-        client = create_client(config)
-        try:
+    def test_context_manager_opens_and_closes(self, config: Config) -> None:
+        """Test creating a client through the public context manager."""
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
-        finally:
-            close_client(client)
 
-    def test_double_close_safe(self, config: Config) -> None:
-        """Test that closing twice is safe."""
-        client = create_client(config)
-        close_client(client)
-        close_client(client)  # Should not raise
+    def test_context_close_is_idempotent(self, config: Config) -> None:
+        """Test that closing a client context twice is safe."""
+        ctx = alternator_client("dynamodb", cluster_config=config)
+        with ctx as client:
+            assert "TableNames" in client.list_tables()
+        ctx.close()
 
 
 class TestErrorHandling:
@@ -269,7 +267,7 @@ class TestErrorHandling:
     def test_invalid_table_raises(self, config: Config) -> None:
         """Test that accessing invalid table raises appropriate error."""
         with (
-            AlternatorClient(config) as client,
+            alternator_client("dynamodb", cluster_config=config) as client,
             pytest.raises(client.exceptions.ResourceNotFoundException),
         ):
             client.describe_table(TableName="nonexistent_table_12345")
@@ -296,7 +294,7 @@ class TestKeyAffinityDistribution:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table
             client.create_table(
                 TableName=table_name,
@@ -345,7 +343,7 @@ class TestPartitionKeyAutoDiscovery:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table with custom PK name
             client.create_table(
                 TableName=table_name,
@@ -406,7 +404,7 @@ class TestHeaderOptimization:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Create table
             client.create_table(
                 TableName=table_name,
@@ -459,7 +457,7 @@ class TestHeaderOptimization:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Basic operation should work
             response = client.list_tables()
             assert "TableNames" in response
@@ -474,8 +472,9 @@ class TestHeaderOptimization:
             .build()
         )
 
-        with AlternatorClient(
-            config,
+        with alternator_client(
+            "dynamodb",
+            cluster_config=config,
             auth=Auth.static_credentials("alternator", "secret"),
             region_name="us-east-1",
         ) as client:
@@ -504,7 +503,7 @@ class TestRoutingScopes:
         # Verify the config has the correct scope
         assert isinstance(config.routing_scope, DatacenterScope)
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -529,7 +528,7 @@ class TestRoutingScopes:
         # Verify the config has the correct scope
         assert isinstance(config.routing_scope, RackScope)
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -564,7 +563,9 @@ class TestTLSConfiguration:
             .build()
         )
 
-        with AlternatorClient(config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=config, verify=str(ca_path)
+        ) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -585,7 +586,9 @@ class TestTLSConfiguration:
             .build()
         )
 
-        with AlternatorClient(config, verify=False) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=config, verify=False
+        ) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -608,6 +611,6 @@ class TestTLSConfiguration:
 
         with (
             pytest.raises((ConnectionError, SSLError, Exception)),
-            AlternatorClient(config) as client,
+            alternator_client("dynamodb", cluster_config=config) as client,
         ):
             client.list_tables()

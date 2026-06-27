@@ -17,8 +17,10 @@ import pytest
 
 from alternator import (
     TLS,
-    AlternatorClient,
     AlternatorConfigBuilder,
+)
+from alternator import (
+    client as alternator_client,
 )
 from alternator.config import TlsSessionCacheConfig
 from tests.integration import SCYLLA_HOST, SCYLLA_HTTPS_PORT, SKIP_INTEGRATION
@@ -62,7 +64,9 @@ class TestTlsSessionCacheAln:
             .build()
         )
 
-        with AlternatorClient(config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=config, verify=str(ca_path)
+        ) as client:
             # Multiple requests should benefit from session caching
             for _ in range(10):
                 response = client.list_tables()
@@ -83,7 +87,9 @@ class TestTlsSessionCacheAln:
             .build()
         )
 
-        with AlternatorClient(config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=config, verify=str(ca_path)
+        ) as client:
             for _ in range(10):
                 response = client.list_tables()
                 assert "TableNames" in response
@@ -109,7 +115,9 @@ class TestTlsSessionCacheDynamoDbApi:
             .build()
         )
 
-        with AlternatorClient(config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=config, verify=str(ca_path)
+        ) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -153,7 +161,9 @@ class TestTlsSessionCacheDynamoDbApi:
             .build()
         )
 
-        with AlternatorClient(config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=config, verify=str(ca_path)
+        ) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -208,7 +218,9 @@ class TestSslKeyLogFile:
                     .build()
                 )
 
-                with AlternatorClient(config, verify=str(ca_path)) as client:
+                with alternator_client(
+                    "dynamodb", cluster_config=config, verify=str(ca_path)
+                ) as client:
                     response = client.list_tables()
                     assert "TableNames" in response
             finally:
@@ -247,7 +259,9 @@ class TestSslKeyLogFile:
                     .build()
                 )
 
-                with AlternatorClient(config, verify=str(ca_path)) as client:
+                with alternator_client(
+                    "dynamodb", cluster_config=config, verify=str(ca_path)
+                ) as client:
                     # Multiple API calls over HTTPS
                     for _ in range(5):
                         client.list_tables()

@@ -6,14 +6,17 @@ Start a local cluster with: make scylla-start
 """
 
 import uuid
+from typing import Any
 
 import pytest
 
 from alternator import (
-    AlternatorClient,
     AlternatorConfigBuilder,
     Config,
     KeyRouteAffinityMode,
+)
+from alternator import (
+    client as alternator_client,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
@@ -39,7 +42,7 @@ def table_name() -> str:
     return f"test_composite_{uuid.uuid4().hex[:8]}"
 
 
-def _create_composite_table(client: AlternatorClient, table_name: str) -> None:
+def _create_composite_table(client: Any, table_name: str) -> None:  # noqa: ANN401 -- generated boto3 client type is unavailable in integration tests
     """Helper to create a table with HASH + RANGE key."""
     client.create_table(
         TableName=table_name,
@@ -62,7 +65,7 @@ class TestCompositeKeyBasicOperations:
 
     def test_put_and_get_item(self, config: Config, table_name: str) -> None:
         """Test put and get with composite key."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 client.put_item(
@@ -93,7 +96,7 @@ class TestCompositeKeyBasicOperations:
         self, config: Config, table_name: str
     ) -> None:
         """Test multiple items with same HASH key but different RANGE keys."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 for i in range(5):
@@ -121,7 +124,7 @@ class TestCompositeKeyBasicOperations:
 
     def test_update_item_composite_key(self, config: Config, table_name: str) -> None:
         """Test updating an item with composite key."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 client.put_item(
@@ -157,7 +160,7 @@ class TestCompositeKeyBasicOperations:
 
     def test_delete_item_composite_key(self, config: Config, table_name: str) -> None:
         """Test deleting an item with composite key."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 client.put_item(
@@ -194,7 +197,7 @@ class TestCompositeKeyQuery:
 
     def test_query_by_partition_key(self, config: Config, table_name: str) -> None:
         """Test querying all range keys for a given partition key."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 # Insert items for two different partition keys
@@ -226,7 +229,7 @@ class TestCompositeKeyQuery:
         self, config: Config, table_name: str
     ) -> None:
         """Test querying with both partition and range key conditions."""
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 for i in range(5):
@@ -276,7 +279,7 @@ class TestCompositeKeyAffinity:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 # Write multiple items with same HASH key, different RANGE keys
@@ -313,7 +316,7 @@ class TestCompositeKeyAffinity:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             _create_composite_table(client, table_name)
             try:
                 # Should auto-discover that "pk" is the HASH key

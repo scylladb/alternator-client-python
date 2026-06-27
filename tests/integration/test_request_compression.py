@@ -13,10 +13,11 @@ from alternator import (
     AlternatorConfigBuilder,
     Auth,
     CompressionAlgorithm,
-    close_client,
-    create_client,
 )
-from alternator.async_client import close_async_client, create_async_client
+from alternator import (
+    client as alternator_client,
+)
+from alternator.async_client import AsyncSession
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 from tests.integration.wire_capture import (
     capture_prepared_requests,
@@ -48,14 +49,14 @@ class TestRequestCompression:
     """Verify sync request compression behavior on the wire."""
 
     def test_small_payload_is_not_gzipped_on_wire(self) -> None:
-        client = create_client(_gzip_config(min_size=10_000))
-        try:
+        with alternator_client(
+            "dynamodb",
+            cluster_config=_gzip_config(min_size=10_000),
+        ) as client:
             captured = capture_prepared_requests(client)
             client.list_tables()
             request = latest_request(captured)
             assert request.header("content-encoding") is None
-        finally:
-            close_client(client)
 
     def test_large_payload_is_gzipped_on_wire(
         self,
@@ -67,8 +68,7 @@ class TestRequestCompression:
             ScyllaVersion(2026, 1, 0), "gzip request compression"
         )
 
-        client = create_client(_gzip_config())
-        try:
+        with alternator_client("dynamodb", cluster_config=_gzip_config()) as client:
             captured = capture_prepared_requests(client)
             with pytest.raises(ClientError):
                 client.put_item(
@@ -82,8 +82,6 @@ class TestRequestCompression:
             request = latest_request(captured)
             assert request.header("content-encoding") == "gzip"
             assert b"wire-compression-payload" in gzip.decompress(request.body)
-        finally:
-            close_client(client)
 
     def test_headers_and_compression_share_wire_whitelist(
         self,
@@ -103,11 +101,11 @@ class TestRequestCompression:
             .with_header_optimization(whitelist={"X-Keep-Me"})
             .build()
         )
-        client = create_client(
-            config,
+        with alternator_client(
+            "dynamodb",
+            cluster_config=config,
             auth=Auth.static_credentials("alternator", "secret"),
-        )
-        try:
+        ) as client:
             inject_custom_headers(client)
             captured = capture_prepared_requests(client)
             with pytest.raises(ClientError):
@@ -125,8 +123,6 @@ class TestRequestCompression:
             assert request.header("x-keep-me") == "keep"
             assert request.header("x-drop-me") is None
             assert request.header("authorization") is not None
-        finally:
-            close_client(client)
 
 
 class TestAsyncRequestCompression:
@@ -143,8 +139,8 @@ class TestAsyncRequestCompression:
             ScyllaVersion(2026, 1, 0), "gzip request compression"
         )
 
-        client = await create_async_client(_gzip_config())
-        try:
+        async with AsyncSession(_gzip_config()) as session:
+            client = await session.client("dynamodb")
             captured = capture_prepared_requests(client)
             with pytest.raises(ClientError):
                 await client.put_item(
@@ -158,5 +154,3 @@ class TestAsyncRequestCompression:
             request = latest_request(captured)
             assert request.header("content-encoding") == "gzip"
             assert b"wire-compression-payload" in gzip.decompress(request.body)
-        finally:
-            await close_async_client(client)

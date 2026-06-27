@@ -11,8 +11,9 @@ from alternator import (
     AlternatorConfigBuilder,
     Config,
     ResponseCompression,
-    close_client,
-    create_client,
+)
+from alternator import (
+    client as alternator_client,
 )
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 from tests.integration.wire_capture import (
@@ -69,8 +70,10 @@ class TestResponseCompression:
         encoding: ResponseCompression,
     ) -> None:
         table_name = f"response_compression_{encoding.value}_{uuid.uuid4().hex}"
-        client = create_client(_response_compression_config(encoding))
-        try:
+        with alternator_client(
+            "dynamodb",
+            cluster_config=_response_compression_config(encoding),
+        ) as client:
             captured_requests = capture_prepared_requests(client)
             captured_responses = capture_raw_responses(client, "GetItem")
 
@@ -103,5 +106,3 @@ class TestResponseCompression:
                 assert response["Item"]["data"]["S"] == _large_response_payload()
             finally:
                 _delete_table(client, table_name)
-        finally:
-            close_client(client)

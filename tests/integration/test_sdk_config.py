@@ -9,10 +9,11 @@ from alternator import (
     RetryConfig,
     RetryMode,
     TimeoutConfig,
-    close_client,
-    create_client,
 )
-from alternator.async_client import close_async_client, create_async_client
+from alternator import (
+    client as alternator_client,
+)
+from alternator.async_client import AsyncSession
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
@@ -43,8 +44,7 @@ class TestSdkConfigPropagation:
 
     def test_client_applies_sdk_config_and_still_operates(self) -> None:
         config = _transport_config("alternator-sdk-config-sync")
-        client = create_client(config)
-        try:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             sdk_config = client.meta.config
             assert client.meta.region_name == "us-west-2"
             assert sdk_config.max_pool_connections == 37
@@ -53,8 +53,6 @@ class TestSdkConfigPropagation:
             assert sdk_config.retries["mode"] == RetryMode.STANDARD.value
             assert sdk_config.user_agent.startswith("alternator-sdk-config-sync")
             assert "TableNames" in client.list_tables()
-        finally:
-            close_client(client)
 
 
 class TestAsyncSdkConfigPropagation:
@@ -63,8 +61,8 @@ class TestAsyncSdkConfigPropagation:
     @pytest.mark.asyncio
     async def test_client_applies_sdk_config_and_still_operates(self) -> None:
         config = _transport_config("alternator-sdk-config-async")
-        client = await create_async_client(config)
-        try:
+        async with AsyncSession(config) as session:
+            client = await session.client("dynamodb")
             sdk_config = client.meta.config
             assert client.meta.region_name == "us-west-2"
             assert sdk_config.max_pool_connections == 37
@@ -73,5 +71,3 @@ class TestAsyncSdkConfigPropagation:
             assert sdk_config.retries["mode"] == RetryMode.STANDARD.value
             assert sdk_config.user_agent.startswith("alternator-sdk-config-async")
             assert "TableNames" in await client.list_tables()
-        finally:
-            await close_async_client(client)

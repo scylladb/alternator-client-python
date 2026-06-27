@@ -3,7 +3,7 @@
 import pytest
 
 import alternator
-from alternator import AlternatorClient, AlternatorResource, Auth, Config
+from alternator import Auth, Config
 from alternator.client import DEFAULT_PORT, client, resource
 from alternator.exceptions import ConfigurationError
 
@@ -12,10 +12,9 @@ class TestClientAlias:
     """Tests for alternator.client convenience API."""
 
     def test_builds_context_manager_from_seed_keywords(self) -> None:
-        """The alias builds an AlternatorClient from host-only seeds."""
+        """The alias builds a client context from host-only seeds."""
         ctx = client("dynamodb", seeds=["node1", "node2"])
 
-        assert isinstance(ctx, AlternatorClient)
         assert ctx._config.seed_hosts == ("node1", "node2")
         assert ctx._config.port == DEFAULT_PORT
         assert ctx._config.scheme == "http"
@@ -74,7 +73,6 @@ class TestClientAlias:
         """The resource alias mirrors boto3.resource."""
         ctx = resource("dynamodb", seeds=["node1"])
 
-        assert isinstance(ctx, AlternatorResource)
         assert ctx._config.seed_hosts == ("node1",)
 
     def test_top_level_export(self) -> None:

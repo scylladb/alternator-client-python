@@ -80,14 +80,8 @@ Notes
 
 from alternator._version import __version__
 from alternator.client import (
-    AlternatorClient,
-    AlternatorResource,
     Session,
     client,
-    close_client,
-    close_resource,
-    create_client,
-    create_resource,
     resource,
 )
 from alternator.config import (
@@ -130,19 +124,11 @@ __all__ = [
     # Version
     "__version__",
     # Sync Client
-    "AlternatorClient",
-    "AlternatorResource",
     "Session",
     "client",
-    "close_client",
-    "close_resource",
-    "create_client",
-    "create_resource",
     "resource",
     # Async Client (requires [async] extra)
     "AsyncSession",
-    "close_async_client",
-    "create_async_client",
     # Config
     "Auth",
     "Config",
@@ -181,11 +167,7 @@ __all__ = [
 
 def __getattr__(name: str) -> object:
     """Lazy import async client components to avoid requiring async dependencies."""
-    if name in (
-        "AsyncSession",
-        "close_async_client",
-        "create_async_client",
-    ):
+    if name in ("AsyncSession",):
         from alternator import async_client
 
         return getattr(async_client, name)

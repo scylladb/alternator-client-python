@@ -16,9 +16,11 @@ import pytest
 
 from alternator import (
     TLS,
-    AlternatorClient,
     AlternatorConfigBuilder,
     Config,
+)
+from alternator import (
+    client as alternator_client,
 )
 from tests.integration import (
     SCYLLA_HOST,
@@ -72,7 +74,7 @@ class TestHttpConnectionReuseSerial:
 
     def test_serial_requests_succeed(self, http_config: Config) -> None:
         """Test that multiple serial requests over HTTP succeed without errors."""
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             for _ in range(20):
                 response = client.list_tables()
                 assert "TableNames" in response
@@ -80,7 +82,7 @@ class TestHttpConnectionReuseSerial:
     def test_serial_crud_operations(self, http_config: Config) -> None:
         """Test serial CRUD operations reuse connections."""
         table_name = f"test_conn_{uuid.uuid4().hex[:8]}"
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -111,7 +113,9 @@ class TestHttpsConnectionReuseSerial:
 
     def test_serial_requests_succeed(self, https_config: Config, ca_path: Path) -> None:
         """Test that multiple serial HTTPS requests succeed."""
-        with AlternatorClient(https_config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=https_config, verify=str(ca_path)
+        ) as client:
             for _ in range(20):
                 response = client.list_tables()
                 assert "TableNames" in response
@@ -119,7 +123,9 @@ class TestHttpsConnectionReuseSerial:
     def test_serial_crud_over_https(self, https_config: Config, ca_path: Path) -> None:
         """Test serial CRUD over HTTPS reuses connections."""
         table_name = f"test_https_{uuid.uuid4().hex[:8]}"
-        with AlternatorClient(https_config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=https_config, verify=str(ca_path)
+        ) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -149,7 +155,7 @@ class TestHttpConnectionReuseParallel:
 
     def test_parallel_list_tables(self, http_config: Config) -> None:
         """Test parallel requests over HTTP all succeed."""
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             errors: list[Exception] = []
             results: list[dict] = []
             lock = threading.Lock()
@@ -175,7 +181,7 @@ class TestHttpConnectionReuseParallel:
     def test_parallel_writes(self, http_config: Config) -> None:
         """Test parallel write operations over HTTP."""
         table_name = f"test_par_{uuid.uuid4().hex[:8]}"
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -227,7 +233,9 @@ class TestHttpsConnectionReuseParallel:
         self, https_config: Config, ca_path: Path
     ) -> None:
         """Test parallel HTTPS requests all succeed."""
-        with AlternatorClient(https_config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=https_config, verify=str(ca_path)
+        ) as client:
             errors: list[Exception] = []
             results: list[dict] = []
             lock = threading.Lock()
@@ -252,7 +260,9 @@ class TestHttpsConnectionReuseParallel:
     def test_parallel_writes_https(self, https_config: Config, ca_path: Path) -> None:
         """Test parallel write operations over HTTPS."""
         table_name = f"test_https_par_{uuid.uuid4().hex[:8]}"
-        with AlternatorClient(https_config, verify=str(ca_path)) as client:
+        with alternator_client(
+            "dynamodb", cluster_config=https_config, verify=str(ca_path)
+        ) as client:
             client.create_table(
                 TableName=table_name,
                 KeySchema=[{"AttributeName": "pk", "KeyType": "HASH"}],
@@ -296,7 +306,7 @@ class TestConnectionPoolingValidation:
         self, http_config: Config
     ) -> None:
         """Test that many serial requests don't exhaust file descriptors or connections."""
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             # A large number of serial requests should work fine with connection reuse
             for _ in range(100):
                 response = client.list_tables()
@@ -304,7 +314,7 @@ class TestConnectionPoolingValidation:
 
     def test_high_concurrency_doesnt_exhaust_pool(self, http_config: Config) -> None:
         """Test high concurrency doesn't exhaust the connection pool."""
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             errors: list[Exception] = []
             lock = threading.Lock()
 
@@ -330,7 +340,7 @@ class TestConnectionPoolingValidation:
         If connections were not being reused, we'd see degraded performance
         or errors with many sequential requests.
         """
-        with AlternatorClient(http_config) as client:
+        with alternator_client("dynamodb", cluster_config=http_config) as client:
             # Warm up
             client.list_tables()
 

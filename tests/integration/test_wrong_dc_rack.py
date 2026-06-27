@@ -10,7 +10,6 @@ Start a local cluster with: make scylla-start
 import pytest
 
 from alternator import (
-    AlternatorClient,
     AlternatorConfigBuilder,
     ClusterScope,
     Config,
@@ -18,6 +17,9 @@ from alternator import (
     NoNodesAvailableError,
     RackScope,
     Session,
+)
+from alternator import (
+    client as alternator_client,
 )
 from alternator.exceptions import ConfigurationError
 from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
@@ -48,7 +50,7 @@ class TestWrongDatacenter:
         assert isinstance(config.routing_scope, DatacenterScope)
 
         # Should still work because fallback to cluster scope is explicit.
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -60,7 +62,7 @@ class TestWrongDatacenter:
             routing_scope=DatacenterScope("bad_dc", fallback=ClusterScope()),
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             # Multiple operations should all succeed after fallback
             for _ in range(5):
                 response = client.list_tables()
@@ -74,7 +76,10 @@ class TestWrongDatacenter:
             routing_scope=DatacenterScope("bad_dc"),
         )
 
-        with pytest.raises(NoNodesAvailableError), AlternatorClient(config):
+        with (
+            pytest.raises(NoNodesAvailableError),
+            alternator_client("dynamodb", cluster_config=config),
+        ):
             pass
 
 
@@ -99,7 +104,7 @@ class TestWrongRack:
         assert isinstance(config.routing_scope, RackScope)
 
         # Should still work because fallback through datacenter to cluster is explicit.
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -117,7 +122,7 @@ class TestWrongRack:
 
         assert isinstance(config.routing_scope, RackScope)
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -133,7 +138,7 @@ class TestWrongRack:
             ),
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             for _ in range(5):
                 response = client.list_tables()
                 assert "TableNames" in response
@@ -167,7 +172,7 @@ class TestRackDatacenterFeatureSupport:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
@@ -184,7 +189,7 @@ class TestRackDatacenterFeatureSupport:
             .build()
         )
 
-        with AlternatorClient(config) as client:
+        with alternator_client("dynamodb", cluster_config=config) as client:
             response = client.list_tables()
             assert "TableNames" in response
 
