@@ -1,8 +1,9 @@
 """Tests for HTTP fetcher and SSL context creation."""
 
 import json
+import socket
 import ssl
-from collections.abc import Generator
+from collections.abc import Generator, Sequence
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
@@ -10,7 +11,11 @@ from unittest.mock import patch
 
 import pytest
 
-from alternator._http import create_ssl_context, create_sync_http_fetcher
+from alternator._http import (
+    AsyncNodeFetcher,
+    create_ssl_context,
+    create_sync_http_fetcher,
+)
 from alternator.config import TLS, TlsSessionCacheConfig
 
 
@@ -28,6 +33,62 @@ class MockHTTPHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         pass  # Suppress logging
+
+
+class CountingHTTPServer(HTTPServer):
+    """HTTP server that counts accepted TCP connections."""
+
+    connection_count: int
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class: type[BaseHTTPRequestHandler],
+    ) -> None:
+        self.connection_count = 0
+        super().__init__(server_address, request_handler_class)
+
+    def get_request(self) -> tuple[socket.socket, object]:
+        request, client_address = super().get_request()
+        self.connection_count += 1
+        return request, client_address
+
+
+class SequencedLocalNodesHandler(BaseHTTPRequestHandler):
+    """Serve configured /localnodes responses over one keep-alive connection."""
+
+    protocol_version = "HTTP/1.1"
+    configured_responses: Sequence[tuple[int, bytes]] = ()
+    request_count = 0
+
+    def do_GET(self) -> None:
+        index = type(self).request_count
+        type(self).request_count += 1
+        status, body = type(self).configured_responses[index]
+        keep_alive = index + 1 < len(type(self).configured_responses)
+
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "keep-alive" if keep_alive else "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def make_local_nodes_handler(
+    responses: Sequence[tuple[int, bytes]],
+) -> type[SequencedLocalNodesHandler]:
+    """Create an isolated localnodes handler class."""
+    local_responses = tuple(responses)
+
+    class Handler(SequencedLocalNodesHandler):
+        configured_responses = local_responses
+        request_count = 0
+
+    return Handler
 
 
 @pytest.fixture
@@ -229,3 +290,36 @@ class TestCreateSslContext:
 
         # OP_NO_TICKET should be set when session cache is disabled
         assert context.options & ssl.OP_NO_TICKET
+
+
+@pytest.mark.asyncio
+async def test_async_fetcher_reuses_connection_after_repeated_non_success_responses() -> (
+    None
+):
+    """Async /localnodes fetches drain non-2xx bodies and reuse the connection."""
+    pytest.importorskip("aiohttp")
+    handler = make_local_nodes_handler(
+        (
+            (500, b'{"error":"temporary"}'),
+            (503, b'{"error":"busy"}'),
+            (200, b'["node1"]'),
+        )
+    )
+    server = CountingHTTPServer(("127.0.0.1", 0), handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    fetcher = AsyncNodeFetcher(timeout_seconds=2.0)
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/localnodes"
+
+        assert list(await fetcher(url)) == []
+        assert list(await fetcher(url)) == []
+        assert list(await fetcher(url)) == ["node1"]
+    finally:
+        await fetcher.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+    assert handler.request_count == 3
+    assert server.connection_count == 1

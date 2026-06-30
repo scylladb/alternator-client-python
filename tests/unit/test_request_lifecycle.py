@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import socket
+from collections.abc import Sequence
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from threading import Thread
 from typing import Any, cast
 
 import boto3
@@ -9,7 +14,7 @@ import pytest
 from botocore import UNSIGNED
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.config import Config as BotoConfig
-from botocore.exceptions import EndpointConnectionError
+from botocore.exceptions import ClientError, EndpointConnectionError
 
 from alternator.config import (
     DEFAULT_USER_AGENT,
@@ -29,6 +34,66 @@ class _StaticManager:
     @property
     def nodes(self) -> NodeList:
         return self._nodes
+
+
+class _CountingHTTPServer(HTTPServer):
+    """HTTP server that counts accepted TCP connections."""
+
+    connection_count: int
+
+    def __init__(
+        self,
+        server_address: tuple[str, int],
+        request_handler_class: type[BaseHTTPRequestHandler],
+    ) -> None:
+        self.connection_count = 0
+        super().__init__(server_address, request_handler_class)
+
+    def get_request(self) -> tuple[socket.socket, object]:
+        request, client_address = super().get_request()
+        self.connection_count += 1
+        return request, client_address
+
+
+class _SequencedDynamoDBHandler(BaseHTTPRequestHandler):
+    """Serve configured DynamoDB responses over one keep-alive connection."""
+
+    protocol_version = "HTTP/1.1"
+    configured_responses: Sequence[tuple[int, bytes]] = ()
+    request_count = 0
+
+    def do_POST(self) -> None:
+        content_length = int(self.headers.get("Content-Length", "0") or "0")
+        if content_length:
+            self.rfile.read(content_length)
+
+        index = type(self).request_count
+        type(self).request_count += 1
+        status, body = type(self).configured_responses[index]
+        keep_alive = index + 1 < len(type(self).configured_responses)
+
+        self.send_response(status)
+        self.send_header("Content-Type", "application/x-amz-json-1.0")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "keep-alive" if keep_alive else "close")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: object) -> None:
+        return
+
+
+def _make_dynamodb_handler(
+    responses: Sequence[tuple[int, bytes]],
+) -> type[_SequencedDynamoDBHandler]:
+    """Create an isolated DynamoDB handler class."""
+    local_responses = tuple(responses)
+
+    class Handler(_SequencedDynamoDBHandler):
+        configured_responses = local_responses
+        request_count = 0
+
+    return Handler
 
 
 def _header_text(value: object) -> str:
@@ -228,3 +293,59 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
 
     assert urls[0] == "http://node-b:8000/"
     assert set(urls[1:]) == {"http://node-a:8000/", "http://node-c:8000/"}
+
+
+def test_dynamodb_non_success_responses_keep_connection_reusable() -> None:
+    """DynamoDB responses are consumed so repeated non-2xx does not kill reuse."""
+    handler = _make_dynamodb_handler(
+        (
+            (
+                400,
+                json.dumps({"__type": "ValidationException", "message": "bad"}).encode(
+                    "utf-8"
+                ),
+            ),
+            (
+                400,
+                json.dumps(
+                    {"__type": "ValidationException", "message": "bad again"}
+                ).encode("utf-8"),
+            ),
+            (200, json.dumps({"TableNames": []}).encode("utf-8")),
+        )
+    )
+    server = _CountingHTTPServer(("127.0.0.1", 0), handler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url=f"http://seed:{server.server_port}",
+        region_name="us-east-1",
+        config=BotoConfig(
+            signature_version=UNSIGNED,
+            max_pool_connections=1,
+            retries={"max_attempts": 0, "mode": "standard"},
+        ),
+    )
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("127.0.0.1",)),
+        Config(seed_hosts=["seed"], port=server.server_port),
+        auth_enabled=False,
+    )
+
+    try:
+        with pytest.raises(ClientError):
+            client.list_tables()
+        with pytest.raises(ClientError):
+            client.list_tables()
+        assert client.list_tables()["TableNames"] == []
+    finally:
+        client.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+    assert handler.request_count == 3
+    assert server.connection_count == 1
