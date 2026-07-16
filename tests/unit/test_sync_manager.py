@@ -159,6 +159,32 @@ class TestSyncLiveNodesManager:
 
         assert captured_url[0] == "http://192.168.1.1:8000/localnodes"
 
+    def test_url_construction_brackets_ipv6_seed(self) -> None:
+        """Test raw IPv6 seed hosts are bracketed in discovery URLs."""
+        config = Config(seed_hosts=["2001:db8::1"], port=8000)
+        captured_url: list[str] = []
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            captured_url.append(url)
+            return ["node1"]
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+        manager.refresh_nodes()
+
+        assert captured_url[0] == "http://[2001:db8::1]:8000/localnodes"
+
+    def test_next_node_uri_brackets_ipv6_node(self) -> None:
+        """Test raw IPv6 live nodes are bracketed in operation URLs."""
+        config = Config(seed_hosts=["seed"], port=8000)
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            return ["2001:db8::2"]
+
+        manager = SyncLiveNodesManager(config, mock_fetch)
+        manager.refresh_nodes()
+
+        assert manager.next_node_uri() == "http://[2001:db8::2]:8000"
+
     def test_url_construction_with_dc_scope(self) -> None:
         """Test URL includes query string for datacenter scope."""
         config = Config(

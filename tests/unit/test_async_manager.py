@@ -163,6 +163,32 @@ class TestAsyncLiveNodesManager:
         assert url == "http://192.168.1.1:8000/localnodes"
 
     @pytest.mark.asyncio
+    async def test_url_construction_brackets_ipv6_seed(self) -> None:
+        """Test raw IPv6 seed hosts are bracketed in discovery URLs."""
+
+        async def empty_fetch(url: str) -> list[str]:
+            return []
+
+        config = Config(seed_hosts=["2001:db8::1"], port=8000)
+        manager = AsyncLiveNodesManager(config, empty_fetch)
+
+        url = manager._core.build_localnodes_url(ClusterScope(), "2001:db8::1")
+        assert url == "http://[2001:db8::1]:8000/localnodes"
+
+    @pytest.mark.asyncio
+    async def test_next_node_uri_brackets_ipv6_node(self) -> None:
+        """Test raw IPv6 live nodes are bracketed in operation URLs."""
+
+        async def mock_fetch(url: str) -> list[str]:
+            return ["2001:db8::2"]
+
+        config = Config(seed_hosts=["seed"], port=8000)
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+        await manager.refresh_nodes()
+
+        assert manager.next_node_uri() == "http://[2001:db8::2]:8000"
+
+    @pytest.mark.asyncio
     async def test_url_construction_with_dc_scope(self, config: Config) -> None:
         """Test URL construction with datacenter scope."""
 
