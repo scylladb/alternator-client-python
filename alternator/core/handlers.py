@@ -22,6 +22,7 @@ from alternator.core.headers import (
     create_header_filter_handler,
     create_user_agent_header_handler,
 )
+from alternator.core.live_nodes import _format_host_port
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_operation_name, extract_request_params
 from alternator.exceptions import NoNodesAvailableError
@@ -83,20 +84,20 @@ def _register_alternator_handlers(
         """Create a URI iterator for a single request."""
         node_addresses = nodes.nodes
         if preferred_node is not None and preferred_node in node_addresses:
-            yield f"{scheme}://{preferred_node}:{port}"
+            yield f"{scheme}://{_format_host_port(preferred_node, port)}"
             remaining_nodes = tuple(
                 node for node in node_addresses if node != preferred_node
             )
             seed = _stable_seed(preferred_node)
             plan = LazyQueryPlan(nodes=remaining_nodes, seed=seed)
             for node in plan:
-                yield f"{scheme}://{node}:{port}"
+                yield f"{scheme}://{_format_host_port(node, port)}"
             return
 
         seed = random.getrandbits(64)
         plan = LazyQueryPlan(nodes=node_addresses, seed=seed)
         for node in plan:
-            yield f"{scheme}://{node}:{port}"
+            yield f"{scheme}://{_format_host_port(node, port)}"
 
     # Register event handler to update endpoint per-request
     def update_endpoint(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import ipaddress
 import logging
 import threading
 import time
@@ -137,7 +138,8 @@ class LiveNodesManagerCore:
         Returns:
             Full URL with query string
         """
-        base = f"{self._config.scheme}://{seed}:{self._config.port}/localnodes"
+        authority = _format_host_port(seed, self._config.port)
+        base = f"{self._config.scheme}://{authority}/localnodes"
         query = scope.get_localnodes_query()
         return f"{base}?{query}" if query else base
 
@@ -236,6 +238,22 @@ def _no_nodes_for_scope_error(scope: RoutingScope) -> ConfigurationError:
     return ConfigurationError(f"No nodes found for routing scope: {scope.description}")
 
 
+def _format_host_port(host: str, port: int) -> str:
+    """Return a URL authority for a host-only address and shared port."""
+    if host.startswith("[") and host.endswith("]"):
+        return f"{host}:{port}"
+    if _is_ipv6_literal(host):
+        return f"[{host}]:{port}"
+    return f"{host}:{port}"
+
+
+def _is_ipv6_literal(host: str) -> bool:
+    try:
+        return ipaddress.ip_address(host).version == 6
+    except ValueError:
+        return False
+
+
 class SyncLiveNodesManager:
     """
     Synchronous LiveNodesManager with background refresh thread.
@@ -319,7 +337,8 @@ class SyncLiveNodesManager:
                 scope_name=self._config.routing_scope.name,
                 attempted_hosts=list(self._config.seed_hosts),
             )
-        return f"{self._config.scheme}://{node}:{self._config.port}"
+        authority = _format_host_port(node, self._config.port)
+        return f"{self._config.scheme}://{authority}"
 
     def refresh_nodes(self) -> bool:
         """
@@ -509,7 +528,8 @@ class AsyncLiveNodesManager:
                 scope_name=self._config.routing_scope.name,
                 attempted_hosts=list(self._config.seed_hosts),
             )
-        return f"{self._config.scheme}://{node}:{self._config.port}"
+        authority = _format_host_port(node, self._config.port)
+        return f"{self._config.scheme}://{authority}"
 
     async def refresh_nodes(self) -> bool:
         """

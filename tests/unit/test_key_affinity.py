@@ -24,6 +24,7 @@ from alternator.core.key_affinity import (
     should_use_affinity,
 )
 from alternator.core.live_nodes import NodeList
+from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_request_params
 
 Params = dict[str, Any]
@@ -49,6 +50,19 @@ def _pk_value_for_node(nodes: NodeList, target_node: str, prefix: str) -> str:
         if selector.select(nodes, hash_value) == target_node:
             return value
     raise AssertionError(f"could not find value for node {target_node}")
+
+
+def _query_plan_first_node(nodes: NodeList, hash_value: int) -> str:
+    return next(LazyQueryPlan(nodes=tuple(sorted(nodes.nodes)), seed=hash_value))
+
+
+def _pk_value_for_batch_node(nodes: NodeList, target_node: str, prefix: str) -> str:
+    for index in range(1000):
+        value = f"{prefix}-{index}"
+        hash_value = hash_attribute_value("S", value)
+        if _query_plan_first_node(nodes, hash_value) == target_node:
+            return value
+    raise AssertionError(f"could not find batch value for node {target_node}")
 
 
 class TestIsRmwOperation:
@@ -360,7 +374,7 @@ class TestSelectAffinityNode:
     def test_batch_write_single_put_selects_node(self) -> None:
         """Test BatchWriteItem with a single PutRequest selects its node."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
-        value = _pk_value_for_node(nodes, "a", "batch-put")
+        value = _pk_value_for_batch_node(nodes, "a", "batch-put")
         params = {
             "RequestItems": {
                 "orders": [{"PutRequest": {"Item": {"pk": {"S": value}}}}],
@@ -378,10 +392,49 @@ class TestSelectAffinityNode:
             == "a"
         )
 
+    def test_batch_write_vote_uses_query_plan_first_pick(self) -> None:
+        """Test BatchWriteItem votes use canonical query-plan first pick."""
+        nodes = NodeList(
+            nodes=("node1", "node2", "node3", "node4", "node5", "node6"),
+            scope_name="test",
+        )
+        value = None
+        expected = None
+        modulo = None
+        for index in range(1000):
+            candidate = f"canonical-batch-{index}"
+            hash_value = hash_attribute_value("S", candidate)
+            query_plan_node = _query_plan_first_node(nodes, hash_value)
+            modulo_node = AffinitySelector().select(nodes, hash_value)
+            if query_plan_node != modulo_node:
+                value = candidate
+                expected = query_plan_node
+                modulo = modulo_node
+                break
+
+        assert value is not None
+        params = {
+            "RequestItems": {
+                "orders": [{"PutRequest": {"Item": {"pk": {"S": value}}}}],
+            }
+        }
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk"}.get,
+            )
+            == expected
+        )
+        assert expected != modulo
+
     def test_batch_write_single_delete_selects_node(self) -> None:
         """Test BatchWriteItem with a single DeleteRequest selects its node."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
-        value = _pk_value_for_node(nodes, "c", "batch-delete")
+        value = _pk_value_for_batch_node(nodes, "c", "batch-delete")
         params = {
             "RequestItems": {
                 "orders": [{"DeleteRequest": {"Key": {"pk": {"S": value}}}}],
@@ -402,9 +455,9 @@ class TestSelectAffinityNode:
     def test_batch_write_mixed_put_delete_unique_winner(self) -> None:
         """Test BatchWriteItem votes for the unique preferred node."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
-        b1 = _pk_value_for_node(nodes, "b", "b1")
-        b2 = _pk_value_for_node(nodes, "b", "b2")
-        c1 = _pk_value_for_node(nodes, "c", "c1")
+        b1 = _pk_value_for_batch_node(nodes, "b", "b1")
+        b2 = _pk_value_for_batch_node(nodes, "b", "b2")
+        c1 = _pk_value_for_batch_node(nodes, "c", "c1")
         params = {
             "RequestItems": {
                 "orders": [
@@ -429,9 +482,9 @@ class TestSelectAffinityNode:
     def test_batch_write_multi_table_reversed_order_same_winner(self) -> None:
         """Test batch voting is independent of table and request order."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
-        b1 = _pk_value_for_node(nodes, "b", "orders-b1")
-        b2 = _pk_value_for_node(nodes, "b", "sessions-b2")
-        a1 = _pk_value_for_node(nodes, "a", "orders-a1")
+        b1 = _pk_value_for_batch_node(nodes, "b", "orders-b1")
+        b2 = _pk_value_for_batch_node(nodes, "b", "sessions-b2")
+        a1 = _pk_value_for_batch_node(nodes, "a", "orders-a1")
         orders = [
             {"PutRequest": {"Item": {"pk": {"S": b1}}}},
             {"PutRequest": {"Item": {"pk": {"S": a1}}}},
@@ -543,8 +596,8 @@ class TestSelectAffinityNode:
     def test_batch_write_tied_votes_fall_back(self) -> None:
         """Test tied preferred-node votes produce no preferred node."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
-        a1 = _pk_value_for_node(nodes, "a", "tie-a")
-        b1 = _pk_value_for_node(nodes, "b", "tie-b")
+        a1 = _pk_value_for_batch_node(nodes, "a", "tie-a")
+        b1 = _pk_value_for_batch_node(nodes, "b", "tie-b")
         params = {
             "RequestItems": {
                 "orders": [
@@ -569,9 +622,8 @@ class TestSelectAffinityNode:
         """Test binary partition-key values use stable hashing."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
         binary_value = b"\x00\x01stable"
-        expected = AffinitySelector().select(
-            nodes,
-            hash_attribute_value("B", binary_value),
+        expected = _query_plan_first_node(
+            nodes, hash_attribute_value("B", binary_value)
         )
         params = {
             "RequestItems": {
@@ -595,7 +647,7 @@ class TestSelectAffinityNode:
     def test_batch_write_selection_does_not_mutate_params(self) -> None:
         """Test BatchWriteItem affinity selection leaves request params unchanged."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
-        value = _pk_value_for_node(nodes, "b", "no-mutate")
+        value = _pk_value_for_batch_node(nodes, "b", "no-mutate")
         params = {
             "RequestItems": {
                 "orders": [{"PutRequest": {"Item": {"pk": {"S": value}}}}],
@@ -660,6 +712,34 @@ class TestAffinityHandlerRouting:
 
         assert first_url == "http://b:8000/"
         assert {second_url, third_url} == {"http://a:8000/", "http://c:8000/"}
+
+    def test_query_plan_brackets_ipv6_nodes(self) -> None:
+        """Test request handler formats raw IPv6 node addresses as URL authorities."""
+        config = Config(seed_hosts=["seed"], port=8000)
+        manager = MagicMock()
+        manager.nodes = NodeList(
+            nodes=("2001:db8::1", "2001:db8::2"), scope_name="cluster"
+        )
+        events = MagicMock()
+
+        _register_alternator_handlers(events, manager, config)
+        handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+
+        request = MagicMock()
+        request.url = "http://seed:8000/"
+        request.headers = {"X-Amz-Target": "DynamoDB_20120810.ListTables"}
+        request.body = b"{}"
+        request._alternator_query_plan = None
+
+        update_endpoint = handlers["update_endpoint"]
+        update_endpoint(request)
+
+        assert request.url in {
+            "http://[2001:db8::1]:8000/",
+            "http://[2001:db8::2]:8000/",
+        }
 
 
 class TestExtractPartitionKey:

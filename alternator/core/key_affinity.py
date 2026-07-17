@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
 from alternator.core.hashing import hash_attribute_value
+from alternator.core.query_plan import LazyQueryPlan
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
@@ -205,7 +206,6 @@ def _select_batch_write_affinity_node(
     get_pk_name: Callable[[str], str | None],
 ) -> str | None:
     votes: Counter[str] = Counter()
-    selector = AffinitySelector()
 
     for candidate in _iter_batch_write_candidates(params):
         pk_name = get_pk_name(candidate.table_name)
@@ -226,7 +226,7 @@ def _select_batch_write_affinity_node(
         except (ValueError, TypeError, UnicodeEncodeError):
             continue
 
-        node = selector.select(nodes, hash_value)
+        node = _select_query_plan_first_node(nodes, hash_value)
         if node is not None:
             votes[node] += 1
 
@@ -238,6 +238,12 @@ def _select_batch_write_affinity_node(
     if len(winners) != 1:
         return None
     return winners[0]
+
+
+def _select_query_plan_first_node(nodes: NodeList, hash_value: int) -> str | None:
+    if not nodes:
+        return None
+    return next(LazyQueryPlan(nodes=tuple(sorted(nodes.nodes)), seed=hash_value))
 
 
 def _iter_batch_write_candidates(
