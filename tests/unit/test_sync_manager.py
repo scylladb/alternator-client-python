@@ -2,13 +2,16 @@
 
 import time
 from collections.abc import Sequence
+from urllib.parse import urlsplit
 
 import pytest
 
+from alternator._http import create_sync_http_fetcher
 from alternator.config import Config
 from alternator.core.live_nodes import NoNodesAvailableError, SyncLiveNodesManager
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from alternator.exceptions import ConfigurationError
+from tests.conftest import FakeAlternatorServer
 
 
 class TestSyncLiveNodesManager:
@@ -145,6 +148,29 @@ class TestSyncLiveNodesManager:
 
         assert manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
+
+    def test_dns_entrypoint_discovers_dns_node_records(
+        self,
+        fake_alternator_server: FakeAlternatorServer,
+    ) -> None:
+        """Discovery reaches a resolver-backed seed host and keeps DNS node records."""
+        fake_alternator_server.set_localnodes(["localhost", "node-a.internal"])
+        parsed = urlsplit(fake_alternator_server.url("/"))
+        assert parsed.port is not None
+        config = Config(
+            seed_hosts=["localhost"],
+            port=parsed.port,
+            routing_scope=ClusterScope(),
+        )
+        manager = SyncLiveNodesManager(
+            config,
+            create_sync_http_fetcher(timeout_seconds=1.0),
+        )
+
+        assert manager.refresh_nodes() is True
+
+        assert fake_alternator_server.requested_paths() == ["/localnodes"]
+        assert manager.nodes.nodes == ("localhost", "node-a.internal")
 
     def test_url_construction(self, config: Config) -> None:
         """Test URL is constructed correctly."""
