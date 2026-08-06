@@ -15,6 +15,7 @@
 """Tests for HTTP fetcher and SSL context creation."""
 
 import json
+import os
 import socket
 import ssl
 from collections.abc import Generator, Sequence
@@ -66,6 +67,12 @@ class CountingHTTPServer(HTTPServer):
         request, client_address = super().get_request()
         self.connection_count += 1
         return request, client_address
+
+
+class IPv6HTTPServer(HTTPServer):
+    """HTTP server bound to the IPv6 loopback interface."""
+
+    address_family = socket.AF_INET6
 
 
 class SequencedLocalNodesHandler(BaseHTTPRequestHandler):
@@ -228,6 +235,117 @@ class TestCreateSyncHttpFetcher:
         url = "http://192.0.2.1:8000/localnodes"
 
         nodes = fetcher(url)
+
+        assert list(nodes) == []
+
+    def test_fetches_through_ipv6_literal_endpoint(self) -> None:
+        """IPv6 literal discovery URLs reach /localnodes directly."""
+        MockHTTPHandler.response_data = ["::1"]
+        MockHTTPHandler.response_code = 200
+        try:
+            server = IPv6HTTPServer(("::1", 0), MockHTTPHandler)
+        except OSError as error:
+            pytest.skip(f"IPv6 loopback is unavailable: {error}")
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+
+        fetcher = create_sync_http_fetcher(timeout_seconds=1.0)
+        with patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}):
+            nodes = fetcher(f"http://[::1]:{server.server_port}/localnodes")
+        thread.join(timeout=2)
+        server.server_close()
+
+        assert list(nodes) == ["::1"]
+
+    def test_dual_stack_dns_falls_back_from_broken_ipv6_to_ipv4(self) -> None:
+        """The resolver tries a reachable IPv4 record after broken IPv6."""
+        MockHTTPHandler.response_data = ["127.0.0.1"]
+        MockHTTPHandler.response_code = 200
+        server = HTTPServer(("127.0.0.1", 0), MockHTTPHandler)
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        records = [
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("::2", server.server_port, 0, 0),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.1", server.server_port),
+            ),
+        ]
+
+        with (
+            patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}),
+            patch("socket.getaddrinfo", return_value=records),
+        ):
+            nodes = create_sync_http_fetcher(timeout_seconds=1.0)(
+                f"http://entrypoint.test:{server.server_port}/localnodes"
+            )
+        thread.join(timeout=2)
+        server.server_close()
+
+        assert list(nodes) == ["127.0.0.1"]
+
+    def test_dual_stack_dns_falls_back_from_broken_ipv4_to_ipv6(self) -> None:
+        """The resolver tries a reachable IPv6 record after broken IPv4."""
+        MockHTTPHandler.response_data = ["::1"]
+        MockHTTPHandler.response_code = 200
+        try:
+            server = IPv6HTTPServer(("::1", 0), MockHTTPHandler)
+        except OSError as error:
+            pytest.skip(f"IPv6 loopback is unavailable: {error}")
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        records = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("127.0.0.2", server.server_port),
+            ),
+            (
+                socket.AF_INET6,
+                socket.SOCK_STREAM,
+                6,
+                "",
+                ("::1", server.server_port, 0, 0),
+            ),
+        ]
+
+        with (
+            patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}),
+            patch("socket.getaddrinfo", return_value=records),
+        ):
+            nodes = create_sync_http_fetcher(timeout_seconds=1.0)(
+                f"http://entrypoint.test:{server.server_port}/localnodes"
+            )
+        thread.join(timeout=2)
+        server.server_close()
+
+        assert list(nodes) == ["::1"]
+
+    def test_dual_stack_dns_all_records_unavailable_fails_clearly(self) -> None:
+        """Exhausted IPv4 and IPv6 records return without hanging."""
+        records = [
+            (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.2", 9)),
+            (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::2", 9, 0, 0)),
+        ]
+
+        with (
+            patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}),
+            patch("socket.getaddrinfo", return_value=records),
+        ):
+            nodes = create_sync_http_fetcher(timeout_seconds=0.5)(
+                "http://entrypoint.test:9/localnodes"
+            )
 
         assert list(nodes) == []
 
