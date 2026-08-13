@@ -332,6 +332,56 @@ class TestCreateSyncHttpFetcher:
 
         assert list(nodes) == ["::1"]
 
+    def test_dns_falls_back_after_several_broken_ipv4_addresses(self) -> None:
+        """The sync resolver advances past several broken IPv4 records."""
+        MockHTTPHandler.response_data = ["127.0.0.1"]
+        MockHTTPHandler.response_code = 200
+        server = HTTPServer(("127.0.0.1", 0), MockHTTPHandler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        records = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.2", server.server_port),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.3", server.server_port),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", server.server_port),
+            ),
+        ]
+
+        try:
+            with (
+                patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}),
+                patch("socket.getaddrinfo", return_value=records) as resolve,
+            ):
+                nodes = create_sync_http_fetcher(timeout_seconds=1.0)(
+                    f"http://entrypoint.test:{server.server_port}/localnodes"
+                )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert resolve.call_args.args[:2] == (
+            "entrypoint.test",
+            server.server_port,
+        )
+        assert list(nodes) == ["127.0.0.1"]
+
     def test_dual_stack_dns_all_records_unavailable_fails_clearly(self) -> None:
         """Exhausted IPv4 and IPv6 records return without hanging."""
         records = [
@@ -457,6 +507,59 @@ class TestAsyncNodeFetcher:
             thread.join(timeout=2)
 
         assert list(nodes) == ["::1"]
+
+    @pytest.mark.asyncio
+    async def test_dns_falls_back_after_several_broken_ipv4_addresses(
+        self,
+    ) -> None:
+        """The aiohttp resolver advances past several broken IPv4 records."""
+        pytest.importorskip("aiohttp")
+        MockHTTPHandler.response_data = ["127.0.0.1"]
+        MockHTTPHandler.response_code = 200
+        server = HTTPServer(("127.0.0.1", 0), MockHTTPHandler)
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        records = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.2", server.server_port),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.3", server.server_port),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", server.server_port),
+            ),
+        ]
+        fetcher = AsyncNodeFetcher(timeout_seconds=1.0)
+
+        try:
+            with patch("socket.getaddrinfo", return_value=records) as resolve:
+                nodes = await fetcher(
+                    f"http://entrypoint.test:{server.server_port}/localnodes"
+                )
+        finally:
+            await fetcher.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        assert resolve.call_args.args[:2] == (
+            "entrypoint.test",
+            server.server_port,
+        )
+        assert list(nodes) == ["127.0.0.1"]
 
     @pytest.mark.asyncio
     async def test_dual_stack_dns_all_records_unavailable_fails_clearly(

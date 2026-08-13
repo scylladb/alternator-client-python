@@ -231,6 +231,34 @@ class TestAsyncLiveNodesManager:
         ]
 
     @pytest.mark.asyncio
+    async def test_refresh_recovers_through_original_dns_entrypoint(self) -> None:
+        """Failed refresh retains nodes, then recovers through logical seed host."""
+        config = Config(seed_hosts=["entrypoint.test"], port=8000)
+        calls: list[str] = []
+
+        async def mock_fetch(url: str) -> list[str]:
+            calls.append(url)
+            if len(calls) == 1:
+                return ["old-node.test"]
+            if len(calls) == 2:
+                return []
+            return ["new-node.test"]
+
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("old-node.test",)
+        assert await manager.refresh_nodes() is False
+        assert manager.nodes.nodes == ("old-node.test",)
+        assert await manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("new-node.test",)
+        assert calls == [
+            "http://entrypoint.test:8000/localnodes",
+            "http://entrypoint.test:8000/localnodes",
+            "http://entrypoint.test:8000/localnodes",
+        ]
+
+    @pytest.mark.asyncio
     async def test_url_construction_with_dc_scope(self, config: Config) -> None:
         """Test URL construction with datacenter scope."""
 
