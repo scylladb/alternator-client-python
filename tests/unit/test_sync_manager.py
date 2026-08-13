@@ -168,7 +168,7 @@ class TestSyncLiveNodesManager:
         fake_alternator_server: FakeAlternatorServer,
     ) -> None:
         """Discovery reaches a resolver-backed seed host and keeps DNS node records."""
-        fake_alternator_server.set_localnodes(["localhost", "node-a.internal"])
+        fake_alternator_server.set_localnodes(["127.0.0.1", "127.0.0.2"])
         parsed = urlsplit(fake_alternator_server.url("/"))
         assert parsed.port is not None
         config = Config(
@@ -184,7 +184,7 @@ class TestSyncLiveNodesManager:
         assert manager.refresh_nodes() is True
 
         assert fake_alternator_server.requested_paths() == ["/localnodes"]
-        assert manager.nodes.nodes == ("localhost", "node-a.internal")
+        assert manager.nodes.nodes == ("127.0.0.1", "127.0.0.2")
 
     def test_url_construction(self, config: Config) -> None:
         """Test URL is constructed correctly."""
