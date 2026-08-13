@@ -203,6 +203,34 @@ class TestAsyncLiveNodesManager:
         assert manager.next_node_uri() == "http://[2001:db8::2]:8000"
 
     @pytest.mark.asyncio
+    async def test_refresh_recovers_through_original_ipv6_entrypoint(self) -> None:
+        """Later refreshes keep using the original seed after nodes are learned."""
+        config = Config(seed_hosts=["2001:db8::1"], port=8000)
+        calls: list[str] = []
+
+        async def mock_fetch(url: str) -> list[str]:
+            calls.append(url)
+            if len(calls) == 1:
+                return ["2001:db8::2"]
+            if len(calls) == 2:
+                return []
+            return ["2001:db8::3"]
+
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("2001:db8::2",)
+        assert await manager.refresh_nodes() is False
+        assert manager.nodes.nodes == ("2001:db8::2",)
+        assert await manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("2001:db8::3",)
+        assert calls == [
+            "http://[2001:db8::1]:8000/localnodes",
+            "http://[2001:db8::1]:8000/localnodes",
+            "http://[2001:db8::1]:8000/localnodes",
+        ]
+
+    @pytest.mark.asyncio
     async def test_url_construction_with_dc_scope(self, config: Config) -> None:
         """Test URL construction with datacenter scope."""
 
