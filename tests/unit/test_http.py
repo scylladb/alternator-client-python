@@ -14,18 +14,21 @@
 
 """Tests for HTTP fetcher and SSL context creation."""
 
+import asyncio
 import json
 import os
 import socket
 import ssl
+import time
 from collections.abc import Generator, Sequence
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from threading import Thread
+from threading import Event, Thread
 from unittest.mock import patch
 
 import pytest
 
+import alternator._http as http_helpers
 from alternator._http import (
     AsyncNodeFetcher,
     create_ssl_context,
@@ -37,7 +40,7 @@ from alternator.config import TLS, TlsSessionCacheConfig
 class MockHTTPHandler(BaseHTTPRequestHandler):
     """Mock HTTP handler for testing."""
 
-    response_data: list[str] = []
+    response_data: object = []
     response_code: int = 200
 
     def do_GET(self) -> None:
@@ -119,12 +122,53 @@ def mock_server() -> Generator[HTTPServer, None, None]:
     thread = Thread(target=server.serve_forever)
     thread.daemon = True
     thread.start()
-    yield server
-    server.shutdown()
+    try:
+        yield server
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1)
 
 
 class TestCreateSyncHttpFetcher:
     """Tests for create_sync_http_fetcher."""
+
+    @pytest.mark.parametrize(
+        "connection_class",
+        (
+            http_helpers._DeadlineHTTPConnection,
+            http_helpers._DeadlineHTTPSConnection,
+        ),
+    )
+    def test_deadline_connection_emits_standard_connect_audit_event(
+        self,
+        connection_class: type[http_helpers._DeadlineHTTPConnection],
+    ) -> None:
+        """Custom connections preserve http.client's auditable policy hook."""
+        connection = connection_class("entrypoint.test", 8000)
+        http_helpers._sync_request_state.deadline = time.monotonic() + 1
+        try:
+            with (
+                patch(
+                    "alternator._http.sys.audit",
+                    side_effect=RuntimeError("blocked by audit hook"),
+                ) as audit,
+                patch(
+                    "alternator._http._create_connection_with_deadline"
+                ) as open_socket,
+                pytest.raises(RuntimeError, match="blocked by audit hook"),
+            ):
+                connection.connect()
+        finally:
+            del http_helpers._sync_request_state.deadline
+
+        audit.assert_called_once_with(
+            "http.client.connect",
+            connection,
+            "entrypoint.test",
+            8000,
+        )
+        open_socket.assert_not_called()
 
     def test_fetches_json_node_list(self, mock_server: HTTPServer) -> None:
         """Test fetcher parses JSON node list."""
@@ -149,6 +193,30 @@ class TestCreateSyncHttpFetcher:
         url = f"http://{host}:{port}/localnodes"
 
         nodes = fetcher(url)
+
+        assert list(nodes) == []
+
+    @pytest.mark.parametrize(
+        "response_data",
+        (
+            ["node.example.com"],
+            ["127.0.0.1", ""],
+            ["127.0.0.1", None],
+            {"node": "127.0.0.1"},
+        ),
+    )
+    def test_rejects_unusable_node_data(
+        self,
+        mock_server: HTTPServer,
+        response_data: object,
+    ) -> None:
+        """Only non-empty lists of IP literals are accepted."""
+        MockHTTPHandler.response_data = response_data
+        MockHTTPHandler.response_code = 200
+
+        nodes = create_sync_http_fetcher()(
+            f"http://127.0.0.1:{mock_server.server_port}/localnodes"
+        )
 
         assert list(nodes) == []
 
@@ -184,8 +252,11 @@ class TestCreateSyncHttpFetcher:
         host, port = "127.0.0.1", server.server_port
         url = f"http://{host}:{port}/localnodes"
 
-        nodes = fetcher(url)
-        thread.join()
+        try:
+            nodes = fetcher(url)
+            thread.join(timeout=1)
+        finally:
+            server.server_close()
 
         assert list(nodes) == []
 
@@ -237,6 +308,102 @@ class TestCreateSyncHttpFetcher:
         nodes = fetcher(url)
 
         assert list(nodes) == []
+
+    def test_timeout_bounds_dns_resolution(self) -> None:
+        """The discovery timeout includes a stalled synchronous DNS lookup."""
+        release = Event()
+        finished = Event()
+
+        def slow_resolve(*args: object, **kwargs: object) -> list[object]:
+            try:
+                release.wait(timeout=2)
+            finally:
+                finished.set()
+            raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+
+        fetcher = create_sync_http_fetcher(timeout_seconds=0.05)
+        try:
+            with patch("socket.getaddrinfo", side_effect=slow_resolve):
+                started = time.monotonic()
+                nodes = fetcher("http://slow.test:8000/localnodes")
+                elapsed = time.monotonic() - started
+
+                assert list(nodes) == []
+                assert elapsed < 0.5
+        finally:
+            release.set()
+            assert finished.wait(timeout=1)
+
+    def test_stalled_dns_lookup_has_one_worker_per_origin(self) -> None:
+        """Repeated refreshes do not accumulate workers for one stuck seed."""
+        release = Event()
+        finished = Event()
+        calls = 0
+
+        def slow_resolve(*args: object, **kwargs: object) -> list[object]:
+            nonlocal calls
+            calls += 1
+            try:
+                release.wait(timeout=2)
+            finally:
+                finished.set()
+            raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+
+        fetcher = create_sync_http_fetcher(timeout_seconds=0.05)
+        try:
+            with patch("socket.getaddrinfo", side_effect=slow_resolve):
+                assert list(fetcher("http://slow.test:8000/localnodes")) == []
+                assert list(fetcher("http://slow.test:8000/localnodes")) == []
+                assert calls == 1
+        finally:
+            release.set()
+            assert finished.wait(timeout=1)
+
+    def test_concurrent_requests_to_same_origin_are_not_suppressed(
+        self,
+        mock_server: HTTPServer,
+    ) -> None:
+        """An ordinary in-flight request does not make another request fail."""
+        MockHTTPHandler.response_data = ["127.0.0.1"]
+        MockHTTPHandler.response_code = 200
+        first_lookup_started = Event()
+        release_first_lookup = Event()
+        original_getaddrinfo = socket.getaddrinfo
+        lookup_count = 0
+
+        def resolve(
+            host: bytes | str | None,
+            port: bytes | str | int | None,
+            family: int = 0,
+            type: int = 0,
+            proto: int = 0,
+            flags: int = 0,
+        ) -> list[object]:
+            nonlocal lookup_count
+            lookup_count += 1
+            if lookup_count == 1:
+                first_lookup_started.set()
+                release_first_lookup.wait(timeout=2)
+            return list(original_getaddrinfo(host, port, family, type, proto, flags))
+
+        url = f"http://127.0.0.1:{mock_server.server_port}/localnodes"
+        fetcher = create_sync_http_fetcher(timeout_seconds=1.0)
+        first_result: list[Sequence[str]] = []
+        first = Thread(target=lambda: first_result.append(fetcher(url)), daemon=True)
+        try:
+            with patch("socket.getaddrinfo", side_effect=resolve):
+                first.start()
+                assert first_lookup_started.wait(timeout=1)
+
+                assert list(fetcher(url)) == ["127.0.0.1"]
+                release_first_lookup.set()
+                first.join(timeout=2)
+        finally:
+            release_first_lookup.set()
+            first.join(timeout=2)
+
+        assert not first.is_alive()
+        assert [list(nodes) for nodes in first_result] == [["127.0.0.1"]]
 
     def test_fetches_through_ipv6_literal_endpoint(self) -> None:
         """IPv6 literal discovery URLs reach /localnodes directly."""
@@ -290,6 +457,52 @@ class TestCreateSyncHttpFetcher:
             )
         thread.join(timeout=2)
         server.server_close()
+
+        assert list(nodes) == ["127.0.0.1"]
+
+    def test_silent_first_dns_address_preserves_later_fallback(self) -> None:
+        """A timed-out address leaves deadline budget for a reachable peer."""
+        MockHTTPHandler.response_data = ["127.0.0.1"]
+        MockHTTPHandler.response_code = 200
+        server = HTTPServer(("127.0.0.1", 0), MockHTTPHandler)
+        thread = Thread(target=server.handle_request, daemon=True)
+        thread.start()
+        records = [
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("192.0.2.1", server.server_port),
+            ),
+            (
+                socket.AF_INET,
+                socket.SOCK_STREAM,
+                socket.IPPROTO_TCP,
+                "",
+                ("127.0.0.1", server.server_port),
+            ),
+        ]
+        original_connect = socket.socket.connect
+
+        def connect(connection: socket.socket, address: object) -> None:
+            if isinstance(address, tuple) and address[0] == "192.0.2.1":
+                time.sleep(connection.gettimeout() or 0)
+                raise TimeoutError("simulated silent address")
+            original_connect(connection, address)  # type: ignore[arg-type]
+
+        try:
+            with (
+                patch.dict(os.environ, {"NO_PROXY": "*", "no_proxy": "*"}),
+                patch("socket.getaddrinfo", return_value=records),
+                patch.object(socket.socket, "connect", new=connect),
+            ):
+                nodes = create_sync_http_fetcher(timeout_seconds=0.4)(
+                    f"http://entrypoint.test:{server.server_port}/localnodes"
+                )
+        finally:
+            server.server_close()
+            thread.join(timeout=2)
 
         assert list(nodes) == ["127.0.0.1"]
 
@@ -424,6 +637,110 @@ class TestAsyncNodeFetcher:
             thread.join(timeout=2)
 
         assert list(nodes) == ["::1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "response_data",
+        (
+            ["node.example.com"],
+            ["127.0.0.1", ""],
+            ["127.0.0.1", None],
+            {"node": "127.0.0.1"},
+        ),
+    )
+    async def test_rejects_unusable_node_data(
+        self,
+        mock_server: HTTPServer,
+        response_data: object,
+    ) -> None:
+        """Only non-empty lists of IP literals are accepted."""
+        pytest.importorskip("aiohttp")
+        MockHTTPHandler.response_data = response_data
+        MockHTTPHandler.response_code = 200
+        fetcher = AsyncNodeFetcher(timeout_seconds=1.0)
+        try:
+            nodes = await fetcher(
+                f"http://127.0.0.1:{mock_server.server_port}/localnodes"
+            )
+        finally:
+            await fetcher.close()
+
+        assert list(nodes) == []
+
+    @pytest.mark.asyncio
+    async def test_rejects_success_shaped_body_on_non_success_status(
+        self,
+        mock_server: HTTPServer,
+    ) -> None:
+        """HTTP status is validated independently from response shape."""
+        pytest.importorskip("aiohttp")
+        MockHTTPHandler.response_data = ["127.0.0.1"]
+        MockHTTPHandler.response_code = 503
+        fetcher = AsyncNodeFetcher(timeout_seconds=1.0)
+        try:
+            nodes = await fetcher(
+                f"http://127.0.0.1:{mock_server.server_port}/localnodes"
+            )
+        finally:
+            await fetcher.close()
+
+        assert list(nodes) == []
+
+    @pytest.mark.asyncio
+    async def test_timeout_bounds_dns_resolution(self) -> None:
+        """The aiohttp discovery timeout includes a stalled DNS lookup."""
+        pytest.importorskip("aiohttp")
+        release = Event()
+        finished = Event()
+
+        def slow_resolve(*args: object, **kwargs: object) -> list[object]:
+            try:
+                release.wait(timeout=2)
+            finally:
+                finished.set()
+            raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+
+        fetcher = AsyncNodeFetcher(timeout_seconds=0.05)
+        try:
+            with patch("socket.getaddrinfo", side_effect=slow_resolve):
+                started = time.monotonic()
+                nodes = await fetcher("http://slow.test:8000/localnodes")
+                elapsed = time.monotonic() - started
+
+                assert list(nodes) == []
+                assert elapsed < 0.5
+        finally:
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 1)
+            await fetcher.close()
+
+    @pytest.mark.asyncio
+    async def test_stalled_dns_lookup_is_coalesced_per_origin(self) -> None:
+        """Repeated aiohttp refreshes share one unresolved DNS operation."""
+        pytest.importorskip("aiohttp")
+        release = Event()
+        finished = Event()
+        calls = 0
+
+        def slow_resolve(*args: object, **kwargs: object) -> list[object]:
+            nonlocal calls
+            calls += 1
+            try:
+                release.wait(timeout=2)
+            finally:
+                finished.set()
+            raise socket.gaierror(socket.EAI_AGAIN, "temporary failure")
+
+        fetcher = AsyncNodeFetcher(timeout_seconds=0.05)
+        try:
+            with patch("socket.getaddrinfo", side_effect=slow_resolve):
+                assert list(await fetcher("http://slow.test:8000/localnodes")) == []
+                assert list(await fetcher("http://slow.test:8000/localnodes")) == []
+                assert calls == 1
+        finally:
+            release.set()
+            assert await asyncio.to_thread(finished.wait, 1)
+            await fetcher.close()
 
     @pytest.mark.asyncio
     async def test_dual_stack_dns_falls_back_from_broken_ipv6_to_ipv4(
@@ -665,7 +982,7 @@ async def test_async_fetcher_reuses_connection_after_repeated_non_success_respon
         (
             (500, b'{"error":"temporary"}'),
             (503, b'{"error":"busy"}'),
-            (200, b'["node1"]'),
+            (200, b'["127.0.0.1"]'),
         )
     )
     server = CountingHTTPServer(("127.0.0.1", 0), handler)
@@ -677,7 +994,7 @@ async def test_async_fetcher_reuses_connection_after_repeated_non_success_respon
 
         assert list(await fetcher(url)) == []
         assert list(await fetcher(url)) == []
-        assert list(await fetcher(url)) == ["node1"]
+        assert list(await fetcher(url)) == ["127.0.0.1"]
     finally:
         await fetcher.close()
         server.shutdown()
