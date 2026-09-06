@@ -39,6 +39,7 @@ from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import (
+    AffinityTarget,
     select_affinity_node,
 )
 from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
@@ -217,7 +218,7 @@ class AsyncPartitionKeyCache:
 def _create_async_affinity_node_computer(
     config: Config,
     pk_cache: AsyncPartitionKeyCache | None,
-) -> Callable[[str, dict[str, Any], NodeList], str | None] | None:
+) -> Callable[[str, dict[str, Any], NodeList], AffinityTarget | None] | None:
     """
     Create a function that selects the preferred key-affinity node.
 
@@ -254,7 +255,7 @@ def _create_async_affinity_node_computer(
         operation_name: str,
         params: dict[str, Any],
         nodes: NodeList,
-    ) -> str | None:
+    ) -> AffinityTarget | None:
         """Select the preferred key-affinity node for this request."""
         return select_affinity_node(
             mode=affinity_mode.name,

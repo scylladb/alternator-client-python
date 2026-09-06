@@ -395,16 +395,13 @@ class TestSelectAffinityNode:
             }
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="BatchWriteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "a"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("a",)
 
     def test_batch_write_vote_uses_query_plan_first_pick(self) -> None:
         """Test BatchWriteItem votes use canonical query-plan first pick."""
@@ -433,16 +430,13 @@ class TestSelectAffinityNode:
             }
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="BatchWriteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == expected
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == (expected,)
         assert expected != modulo
 
     def test_batch_write_single_delete_selects_node(self) -> None:
@@ -455,16 +449,13 @@ class TestSelectAffinityNode:
             }
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="BatchWriteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "c"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("c",)
 
     def test_batch_write_mixed_put_delete_unique_winner(self) -> None:
         """Test BatchWriteItem votes for the unique preferred node."""
@@ -482,16 +473,13 @@ class TestSelectAffinityNode:
             }
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="BatchWriteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "b"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("b", "c")
 
     def test_batch_write_multi_table_reversed_order_same_winner(self) -> None:
         """Test batch voting is independent of table and request order."""
@@ -513,16 +501,13 @@ class TestSelectAffinityNode:
         }
 
         for params in (params_a, params_b):
-            assert (
-                select_affinity_node(
-                    mode="ANY_WRITE",
-                    operation_name="BatchWriteItem",
-                    params=params,
-                    nodes=nodes,
-                    get_pk_name={"orders": "pk", "sessions": "pk"}.get,
-                )
-                == "b"
-            )
+            assert select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name={"orders": "pk", "sessions": "pk"}.get,
+            ) == ("b", "a")
 
     def test_batch_write_missing_pk_metadata_falls_back(self) -> None:
         """Test missing partition-key metadata produces no preferred node."""
@@ -607,8 +592,8 @@ class TestSelectAffinityNode:
             is None
         )
 
-    def test_batch_write_tied_votes_fall_back(self) -> None:
-        """Test tied preferred-node votes produce no preferred node."""
+    def test_batch_write_tied_votes_use_node_address_tie_break(self) -> None:
+        """Test tied preferred-node votes use node address order."""
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
         a1 = _pk_value_for_batch_node(nodes, "a", "tie-a")
         b1 = _pk_value_for_batch_node(nodes, "b", "tie-b")
@@ -621,16 +606,136 @@ class TestSelectAffinityNode:
             }
         }
 
-        assert (
-            select_affinity_node(
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("a", "b")
+
+    def test_batch_write_unknown_table_metadata_does_not_block_known_table(
+        self,
+    ) -> None:
+        """Unknown table metadata is skipped while another table can vote."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        b1 = _pk_value_for_batch_node(nodes, "b", "known-table")
+        params = {
+            "RequestItems": {
+                "unknown": [
+                    {"PutRequest": {"Item": {"pk": {"S": "ignored"}}}},
+                ],
+                "orders": [
+                    {"DeleteRequest": {"Key": {"pk": {"S": b1}}}},
+                ],
+            }
+        }
+
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("b",)
+
+    def test_batch_write_unusable_candidates_are_skipped(self) -> None:
+        """Missing and unsupported keys are skipped while valid candidates vote."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        c1 = _pk_value_for_batch_node(nodes, "c", "usable")
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"BOOL": True}}}},
+                    {"DeleteRequest": {"Key": {"other": {"S": "missing-pk"}}}},
+                    {"PutRequest": {"Item": {"pk": {"S": c1}}}},
+                ],
+            }
+        }
+
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("c",)
+
+    def test_batch_write_non_key_attributes_do_not_change_winner(self) -> None:
+        """Non-key payload attributes do not affect batch affinity voting."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        b1 = _pk_value_for_batch_node(nodes, "b", "payload-b1")
+        b2 = _pk_value_for_batch_node(nodes, "b", "payload-b2")
+        a1 = _pk_value_for_batch_node(nodes, "a", "payload-a1")
+        params_a = {
+            "RequestItems": {
+                "orders": [
+                    {
+                        "PutRequest": {
+                            "Item": {"pk": {"S": b1}, "note": {"S": "before"}}
+                        }
+                    },
+                    {
+                        "PutRequest": {
+                            "Item": {"pk": {"S": b2}, "note": {"S": "before"}}
+                        }
+                    },
+                    {
+                        "DeleteRequest": {
+                            "Key": {"pk": {"S": a1}, "note": {"S": "before"}}
+                        }
+                    },
+                ],
+            }
+        }
+        params_b = {
+            "RequestItems": {
+                "orders": [
+                    {
+                        "DeleteRequest": {
+                            "Key": {"pk": {"S": a1}, "note": {"S": "after"}}
+                        }
+                    },
+                    {"PutRequest": {"Item": {"pk": {"S": b2}, "note": {"S": "after"}}}},
+                    {"PutRequest": {"Item": {"pk": {"S": b1}, "note": {"S": "after"}}}},
+                ],
+            }
+        }
+
+        for params in (params_a, params_b):
+            assert select_affinity_node(
                 mode="ANY_WRITE",
                 operation_name="BatchWriteItem",
                 params=params,
                 nodes=nodes,
                 get_pk_name={"orders": "pk"}.get,
-            )
-            is None
-        )
+            ) == ("b", "a")
+
+    def test_batch_write_invalid_union_write_request_is_ignored(self) -> None:
+        """A malformed write containing put and delete does not contribute votes."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        a1 = _pk_value_for_batch_node(nodes, "a", "valid-write")
+        b1 = _pk_value_for_batch_node(nodes, "b", "invalid-put")
+        b2 = _pk_value_for_batch_node(nodes, "b", "invalid-delete")
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"S": a1}}}},
+                    {
+                        "PutRequest": {"Item": {"pk": {"S": b1}}},
+                        "DeleteRequest": {"Key": {"pk": {"S": b2}}},
+                    },
+                ],
+            }
+        }
+
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == ("a",)
 
     def test_batch_write_binary_pk_selects_stable_node(self) -> None:
         """Test binary partition-key values use stable hashing."""
@@ -647,16 +752,13 @@ class TestSelectAffinityNode:
             }
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="BatchWriteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == expected
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="BatchWriteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == (expected,)
 
     def test_batch_write_selection_does_not_mutate_params(self) -> None:
         """Test BatchWriteItem affinity selection leaves request params unchanged."""
@@ -754,6 +856,62 @@ class TestAffinityHandlerRouting:
             "http://[2001:db8::1]:8000/",
             "http://[2001:db8::2]:8000/",
         }
+
+    def test_batch_write_preferred_node_first_and_remaining_nodes_preserved(
+        self,
+    ) -> None:
+        """Test BatchWriteItem affinity keeps retries after the preferred node."""
+        config = Config(seed_hosts=["seed"], port=8000)
+        manager = MagicMock()
+        manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
+        events = MagicMock()
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"S": "order-1"}}}},
+                ],
+            }
+        }
+
+        def compute_affinity_node(
+            operation_name: str,
+            request_params: dict[str, Any],
+            nodes: NodeList,
+        ) -> tuple[str, ...] | None:
+            assert operation_name == "BatchWriteItem"
+            assert request_params == params
+            assert nodes.nodes == ("a", "b", "c")
+            return ("c", "a")
+
+        _register_alternator_handlers(
+            events,
+            manager,
+            config,
+            compute_affinity_node,
+        )
+        handlers = {
+            call[0][1].__name__: call[0][1] for call in events.register.call_args_list
+        }
+
+        request = MagicMock()
+        request.url = "http://seed:8000/"
+        request.headers = {"X-Amz-Target": "DynamoDB_20120810.BatchWriteItem"}
+        request.body = b'{"RequestItems":{"orders":[{"PutRequest":{"Item":{"pk":{"S":"order-1"}}}}]}}'
+        request._alternator_query_plan = None
+
+        update_endpoint = handlers["update_endpoint"]
+        update_endpoint(request)
+        first_url = request.url
+        update_endpoint(request)
+        second_url = request.url
+        update_endpoint(request)
+        third_url = request.url
+
+        assert (first_url, second_url, third_url) == (
+            "http://c:8000/",
+            "http://a:8000/",
+            "http://b:8000/",
+        )
 
 
 class TestExtractPartitionKey:
@@ -997,6 +1155,22 @@ class TestExtractPartitionKey:
         }
         result = extract_partition_key(params, "user_id")
         assert result is None
+
+    def test_extract_from_invalid_batch_write_union_is_ignored(self) -> None:
+        """Batch write entries with both operations are not routing targets."""
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {
+                        "PutRequest": {"Item": {"pk": {"S": "put"}}},
+                        "DeleteRequest": {"Key": {"pk": {"S": "delete"}}},
+                    },
+                ],
+            }
+        }
+
+        assert get_table_name(params) is None
+        assert extract_partition_key(params, "pk") is None
 
     def test_key_not_found(self) -> None:
         """Test when partition key is not in params."""

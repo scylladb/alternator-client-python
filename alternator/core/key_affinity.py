@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from alternator.core.live_nodes import NodeList
 
 logger = logging.getLogger("alternator")
+AffinityTarget = str | tuple[str, ...]
 
 
 class _BatchWriteRoutingTarget(NamedTuple):
@@ -46,6 +47,7 @@ class _BatchWriteRoutingTarget(NamedTuple):
 class _BatchWriteCandidate(NamedTuple):
     table_name: str
     attributes: dict[str, Any]
+    operation: str
 
 
 class AffinitySelector:
@@ -137,7 +139,7 @@ def select_affinity_node(
     params: dict[str, Any],
     nodes: NodeList,
     get_pk_name: Callable[[str], str | None],
-) -> str | None:
+) -> AffinityTarget | None:
     """Select the preferred affinity node for a request, or None for fallback."""
     if not should_use_affinity(mode, operation_name, params):
         return None
@@ -218,7 +220,7 @@ def _select_batch_write_affinity_node(
     params: dict[str, Any],
     nodes: NodeList,
     get_pk_name: Callable[[str], str | None],
-) -> str | None:
+) -> tuple[str, ...] | None:
     votes: Counter[str] = Counter()
 
     for candidate in _iter_batch_write_candidates(params):
@@ -247,14 +249,16 @@ def _select_batch_write_affinity_node(
     if not votes:
         return None
 
-    top_count = max(votes.values())
-    winners = [node for node, count in votes.items() if count == top_count]
-    if len(winners) != 1:
-        return None
-    return winners[0]
+    return tuple(
+        sorted(
+            votes,
+            key=lambda node: (-votes[node], node),
+        )
+    )
 
 
 def _select_query_plan_first_node(nodes: NodeList, hash_value: int) -> str | None:
+    """Return first node from canonical seeded affinity query plan."""
     if not nodes:
         return None
     return next(LazyQueryPlan(nodes=tuple(sorted(nodes.nodes)), seed=hash_value))
@@ -274,22 +278,37 @@ def _iter_batch_write_candidates(
         if not isinstance(table_name, str) or not isinstance(writes, list):
             continue
         for write in writes:
-            if not isinstance(write, dict):
-                continue
-
-            put_request = write.get("PutRequest")
-            if isinstance(put_request, dict):
-                item = put_request.get("Item")
-                if isinstance(item, dict):
-                    candidates.append(_BatchWriteCandidate(table_name, item))
-
-            delete_request = write.get("DeleteRequest")
-            if isinstance(delete_request, dict):
-                key = delete_request.get("Key")
-                if isinstance(key, dict):
-                    candidates.append(_BatchWriteCandidate(table_name, key))
+            candidate = _batch_write_candidate(table_name, write)
+            if candidate is not None:
+                candidates.append(candidate)
 
     return tuple(candidates)
+
+
+def _batch_write_candidate(
+    table_name: str,
+    write: object,
+) -> _BatchWriteCandidate | None:
+    if not isinstance(write, dict):
+        return None
+
+    operations = [
+        operation for operation in ("PutRequest", "DeleteRequest") if operation in write
+    ]
+    if len(operations) != 1:
+        return None
+
+    operation = operations[0]
+    request = write[operation]
+    if not isinstance(request, dict):
+        return None
+
+    attribute_field = "Item" if operation == "PutRequest" else "Key"
+    attributes = request.get(attribute_field)
+    if not isinstance(attributes, dict):
+        return None
+
+    return _BatchWriteCandidate(table_name, attributes, operation)
 
 
 def _non_empty_string(value: object) -> bool:
@@ -344,34 +363,22 @@ def _find_batch_write_routing_target(
         if not isinstance(table_name, str) or not isinstance(writes, list):
             continue
         for write in writes:
-            if not isinstance(write, dict):
+            candidate = _batch_write_candidate(table_name, write)
+            if candidate is None:
                 continue
 
-            put_request = write.get("PutRequest")
-            if isinstance(put_request, dict):
-                item = put_request.get("Item")
-                if isinstance(item, dict):
-                    target = _min_batch_write_target(
-                        target,
-                        _BatchWriteRoutingTarget(
-                            table_name,
-                            item,
-                            _batch_write_sort_key(table_name, "PutRequest", item),
-                        ),
-                    )
-
-            delete_request = write.get("DeleteRequest")
-            if isinstance(delete_request, dict):
-                key = delete_request.get("Key")
-                if isinstance(key, dict):
-                    target = _min_batch_write_target(
-                        target,
-                        _BatchWriteRoutingTarget(
-                            table_name,
-                            key,
-                            _batch_write_sort_key(table_name, "DeleteRequest", key),
-                        ),
-                    )
+            target = _min_batch_write_target(
+                target,
+                _BatchWriteRoutingTarget(
+                    table_name,
+                    candidate.attributes,
+                    _batch_write_sort_key(
+                        table_name,
+                        candidate.operation,
+                        candidate.attributes,
+                    ),
+                ),
+            )
 
     return target
 
