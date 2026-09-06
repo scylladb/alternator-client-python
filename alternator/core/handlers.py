@@ -36,6 +36,7 @@ from alternator.core.headers import (
     create_header_filter_handler,
     create_user_agent_header_handler,
 )
+from alternator.core.key_affinity import AffinityTarget
 from alternator.core.live_nodes import _format_host_port
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_operation_name, extract_request_params
@@ -64,7 +65,9 @@ def _register_alternator_handlers(
     events: BaseEventHooks,
     manager: _HasNodes,
     config: Config,
-    compute_affinity_node: Callable[[str, DynamoDBParams, NodeList], str | None]
+    compute_affinity_node: Callable[
+        [str, DynamoDBParams, NodeList], AffinityTarget | None
+    ]
     | None = None,
     *,
     auth_enabled: bool = False,
@@ -93,10 +96,21 @@ def _register_alternator_handlers(
 
     def create_query_plan(
         nodes: NodeList,
-        preferred_node: str | None,
+        preferred_node: AffinityTarget | None,
     ) -> Iterator[str]:
         """Create a URI iterator for a single request."""
         node_addresses = nodes.nodes
+        if isinstance(preferred_node, tuple):
+            emitted: set[str] = set()
+            for node in preferred_node:
+                if node in node_addresses and node not in emitted:
+                    emitted.add(node)
+                    yield f"{scheme}://{_format_host_port(node, port)}"
+            for node in node_addresses:
+                if node not in emitted:
+                    yield f"{scheme}://{_format_host_port(node, port)}"
+            return
+
         if preferred_node is not None and preferred_node in node_addresses:
             yield f"{scheme}://{_format_host_port(preferred_node, port)}"
             remaining_nodes = tuple(
@@ -161,7 +175,7 @@ def _register_alternator_handlers(
 
     def _create_request_query_plan(
         request: AWSRequest | AWSPreparedRequest,
-        preferred_node: str | None | object = _PREFERRED_NODE_UNSET,
+        preferred_node: AffinityTarget | None | object = _PREFERRED_NODE_UNSET,
     ) -> Iterator[str]:
         nodes = manager.nodes
         if not nodes:
@@ -170,7 +184,7 @@ def _register_alternator_handlers(
                 scope_name=scope_name,
             )
 
-        selected_preferred_node: str | None
+        selected_preferred_node: AffinityTarget | None
         if preferred_node is _PREFERRED_NODE_UNSET:
             selected_preferred_node = None
             if compute_affinity_node is not None:
@@ -185,7 +199,7 @@ def _register_alternator_handlers(
                         nodes,
                     )
         else:
-            selected_preferred_node = cast("str | None", preferred_node)
+            selected_preferred_node = cast("AffinityTarget | None", preferred_node)
         return create_query_plan(nodes, selected_preferred_node)
 
     def _store_query_plan(
