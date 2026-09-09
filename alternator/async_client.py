@@ -20,7 +20,8 @@ import asyncio
 import contextlib
 import inspect
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from functools import partial
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
@@ -54,6 +55,20 @@ logger = logging.getLogger("alternator")
 _AUTH_UNSET = object()
 
 
+async def _finish_cleanup(cleanup: Awaitable[Any]) -> None:  # noqa: ANN401 -- cleanup result is intentionally ignored
+    """Finish async cleanup even if the caller receives repeated cancellation."""
+    cleanup_task = asyncio.ensure_future(cleanup)
+    cancelled = False
+    while not cleanup_task.done():
+        try:
+            await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            cancelled = True
+    await cleanup_task
+    if cancelled:
+        raise asyncio.CancelledError
+
+
 class AsyncPartitionKeyCache:
     """
     Async version of partition key cache for table -> pk name mapping.
@@ -74,7 +89,38 @@ class AsyncPartitionKeyCache:
         self._cache: dict[str, str] = {}
         self._pending: dict[str, asyncio.Event] = {}
         self._errors: dict[str, Exception] = {}
+        self._background_tasks: dict[str, asyncio.Task[str | None]] = {}
+        self._closed = False
         self._lock = asyncio.Lock()
+
+    def get_cached_pk_name(self, table_name: str) -> str | None:
+        """Return cached metadata and coalesce background discovery on a miss."""
+        pk_name = self._cache.get(table_name)
+        if pk_name is not None or self._closed:
+            return pk_name
+
+        if table_name not in self._background_tasks:
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                return None
+            task = loop.create_task(
+                self.get_pk_name(table_name),
+                name=f"alternator-pk-discovery-{table_name}",
+            )
+            self._background_tasks[table_name] = task
+            task.add_done_callback(partial(self._finish_background_task, table_name))
+        return None
+
+    def _finish_background_task(
+        self,
+        table_name: str,
+        task: asyncio.Task[str | None],
+    ) -> None:
+        if self._background_tasks.get(table_name) is task:
+            self._background_tasks.pop(table_name, None)
+        with contextlib.suppress(asyncio.CancelledError):
+            task.exception()
 
     async def get_pk_name(self, table_name: str) -> str | None:
         """
@@ -89,6 +135,9 @@ class AsyncPartitionKeyCache:
         Returns:
             Partition key attribute name, or None if not found
         """
+        if self._closed:
+            return None
+
         # Fast path: check cache without lock
         if table_name in self._cache:
             return self._cache[table_name]
@@ -115,10 +164,15 @@ class AsyncPartitionKeyCache:
             try:
                 pk_name = await self._fetch_pk_name(table_name)
                 async with self._lock:
-                    if pk_name:
+                    if pk_name and not self._closed:
                         self._cache[table_name] = pk_name
                     self._pending.pop(table_name, None)
                     self._errors.pop(table_name, None)
+            except asyncio.CancelledError:
+                async with self._lock:
+                    self._pending.pop(table_name, None)
+                    self._errors.pop(table_name, None)
+                raise
             except Exception as exc:
                 async with self._lock:
                     self._pending.pop(table_name, None)
@@ -202,6 +256,26 @@ class AsyncPartitionKeyCache:
         async with self._lock:
             self._cache.clear()
 
+    async def close(self) -> None:
+        """Cancel client-owned background metadata discovery."""
+        if self._closed:
+            return
+        self._closed = True
+
+        tasks = tuple(self._background_tasks.values())
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._background_tasks.clear()
+
+        async with self._lock:
+            pending_events = tuple(self._pending.values())
+            self._pending.clear()
+            self._errors.clear()
+        for event in pending_events:
+            event.set()
+
     def preload(self, table_pk_map: dict[str, str]) -> None:
         """
         Preload cache with known table -> pk mappings.
@@ -212,7 +286,8 @@ class AsyncPartitionKeyCache:
         Args:
             table_pk_map: Mapping of table name to partition key name
         """
-        self._cache.update(table_pk_map)
+        if not self._closed:
+            self._cache.update(table_pk_map)
 
 
 def _create_async_affinity_node_computer(
@@ -235,22 +310,6 @@ def _create_async_affinity_node_computer(
     if affinity_mode == KeyRouteAffinityMode.NONE or pk_cache is None:
         return None
 
-    def get_cached_pk_name(table_name: str) -> str | None:
-        pk_name = pk_cache._cache.get(table_name)
-        if not pk_name:
-            # Schedule async discovery for future requests
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(pk_cache.get_pk_name(table_name))
-            except RuntimeError:
-                pass
-            logger.debug(
-                "Partition key for table %s not yet cached, scheduled async discovery",
-                table_name,
-            )
-            return None
-        return pk_name
-
     def compute_affinity_node(
         operation_name: str,
         params: dict[str, Any],
@@ -262,7 +321,7 @@ def _create_async_affinity_node_computer(
             operation_name=operation_name,
             params=params,
             nodes=nodes,
-            get_pk_name=get_cached_pk_name,
+            get_pk_name=pk_cache.get_cached_pk_name,
         )
 
     return compute_affinity_node
@@ -287,16 +346,22 @@ async def _create_async_manager(
     # Create async live nodes manager
     manager = AsyncLiveNodesManager(config, http_fetcher)
 
-    # Perform initial node fetch
-    if initial_refresh and not await manager.refresh_nodes():
-        from alternator.core.routing_scope import (
-            ClusterScope,
-            scope_chain_includes_cluster,
-        )
+    try:
+        # Perform initial node fetch
+        if initial_refresh and not await manager.refresh_nodes():
+            from alternator.core.routing_scope import (
+                ClusterScope,
+                scope_chain_includes_cluster,
+            )
 
-        if scope_chain_includes_cluster(config.routing_scope):
-            logger.warning("Initial node discovery failed, using seed hosts")
-            manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
+            if scope_chain_includes_cluster(config.routing_scope):
+                logger.warning("Initial node discovery failed, using seed hosts")
+                manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
+    except BaseException:
+        # The fetcher creates its aiohttp session lazily during refresh. Close it
+        # when initialization is interrupted as no manager is returned to own it.
+        await _finish_cleanup(_close_async_manager(manager))
+        raise
 
     return manager
 
@@ -400,8 +465,8 @@ async def _create_async_client_with_manager(
 
         # Enable Alternator vector search extensions
         enable_vector_support(client)
-    except Exception:
-        await client_ctx.__aexit__(None, None, None)
+    except BaseException:
+        await _finish_cleanup(client_ctx.__aexit__(None, None, None))
         raise
 
     return cast("AsyncDynamoDBClient", client)
@@ -446,8 +511,8 @@ async def create_async_client(
         response = await client.list_tables()
     """
     manager = await _create_async_manager(config)
-    await manager.start()
     try:
+        await manager.start()
         return await _create_async_client_with_manager(
             config,
             manager,
@@ -455,8 +520,8 @@ async def create_async_client(
             owns_manager=True,
             **boto_kwargs,
         )
-    except Exception:
-        await _close_async_manager(manager)
+    except BaseException:
+        await _finish_cleanup(_close_async_manager(manager))
         raise
 
 
@@ -467,21 +532,35 @@ async def close_async_client(client: AsyncDynamoDBClient) -> None:
     Args:
         client: Client created by create_async_client
     """
-    try:
-        manager = getattr(client, MANAGER_ATTR, None)
-        if manager is not None:
-            owns_manager = bool(getattr(client, MANAGER_OWNS_ATTR, True))
-            if owns_manager:
-                await _close_async_manager(manager)
-            setattr(client, MANAGER_ATTR, None)
-            setattr(client, MANAGER_OWNS_ATTR, False)
 
-        # Clear PK cache reference
-        if hasattr(client, PK_CACHE_ATTR):
-            setattr(client, PK_CACHE_ATTR, None)
-    finally:
-        # Always close the underlying client
-        await client.__aexit__(None, None, None)
+    async def close_resources() -> None:
+        try:
+            # Stop metadata discovery before its manager and SDK transport.
+            if hasattr(client, PK_CACHE_ATTR):
+                try:
+                    pk_cache = getattr(client, PK_CACHE_ATTR, None)
+                    cache_close = getattr(pk_cache, "close", None)
+                    if callable(cache_close):
+                        result = cache_close()
+                        if inspect.isawaitable(result):
+                            await result
+                finally:
+                    setattr(client, PK_CACHE_ATTR, None)
+        finally:
+            try:
+                manager = getattr(client, MANAGER_ATTR, None)
+                if manager is not None:
+                    try:
+                        owns_manager = bool(getattr(client, MANAGER_OWNS_ATTR, True))
+                        if owns_manager:
+                            await _close_async_manager(manager)
+                    finally:
+                        setattr(client, MANAGER_ATTR, None)
+                        setattr(client, MANAGER_OWNS_ATTR, False)
+            finally:
+                await client.__aexit__(None, None, None)
+
+    await _finish_cleanup(close_resources())
 
 
 class AsyncHelper:
