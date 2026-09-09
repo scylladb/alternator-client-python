@@ -458,12 +458,18 @@ def _create_resource_with_manager(
     # Attach manager for cleanup reference
     setattr(resource, MANAGER_ATTR, manager)
     setattr(resource, MANAGER_OWNS_ATTR, owns_manager)
+    setattr(resource.meta.client, MANAGER_ATTR, manager)
+    setattr(resource.meta.client, MANAGER_OWNS_ATTR, owns_manager)
 
     # Enable Alternator vector search extensions before registering finalizers.
     enable_vector_support(resource)
 
     if owns_manager:
-        _register_manager(manager, resource)
+        # Derived resources such as ``resource.Table(...)`` retain the service
+        # client, but not the root DynamoDB resource.  Tie manager cleanup to
+        # that shared client so dropping the root resource does not stop node
+        # discovery while a derived resource is still in use.
+        _register_manager(manager, resource.meta.client)
 
     return resource
 

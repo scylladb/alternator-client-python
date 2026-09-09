@@ -16,6 +16,8 @@
 
 from __future__ import annotations
 
+import gc
+import weakref
 from types import SimpleNamespace
 from unittest.mock import Mock
 from urllib.parse import urlsplit
@@ -29,6 +31,7 @@ from alternator import (
     Helper,
     close_client,
     create_client,
+    create_resource,
 )
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator.async_client import AsyncHelper
@@ -261,6 +264,44 @@ def test_close_resource_closes_underlying_boto_client() -> None:
     pk_cache.close.assert_called_once_with()
     assert getattr(service_client, PK_CACHE_ATTR) is None
     service_client.close.assert_called_once_with()
+
+
+def test_derived_table_keeps_resource_manager_alive(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    """A derived Table keeps discovery alive after its root resource is gone."""
+    fake_alternator_server.set_localnodes(["127.0.0.1"])
+    resource = create_resource(_config_for_server(fake_alternator_server))
+    manager = getattr(resource, MANAGER_ATTR)
+    resource_ref = weakref.ref(resource)
+    table = resource.Table("tbl")
+
+    del resource
+    gc.collect()
+
+    assert resource_ref() is None
+    assert manager._refresh_thread is not None
+    assert manager._refresh_thread.is_alive()
+
+    del table
+    gc.collect()
+
+    assert manager._refresh_thread is None
+
+
+def test_derived_table_client_can_close_owned_manager(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    """Closing a derived resource's shared client also stops discovery."""
+    fake_alternator_server.set_localnodes(["127.0.0.1"])
+    resource = create_resource(_config_for_server(fake_alternator_server))
+    manager = getattr(resource, MANAGER_ATTR)
+    table = resource.Table("tbl")
+
+    close_client(table.meta.client)
+
+    assert manager._refresh_thread is None
+    close_client(resource)
 
 
 @pytest.mark.asyncio
