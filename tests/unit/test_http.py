@@ -616,6 +616,17 @@ class TestCreateSyncHttpFetcher:
 class TestAsyncNodeFetcher:
     """Tests for AsyncNodeFetcher IPv6 and dual-stack behavior."""
 
+    def test_missing_aiohttp_error_names_async_extra(self) -> None:
+        """The missing-dependency hint names the installable distribution."""
+        with (
+            patch.dict("sys.modules", {"aiohttp": None}),
+            pytest.raises(
+                ImportError,
+                match=r"pip install alternator-client\[async\]",
+            ),
+        ):
+            AsyncNodeFetcher()
+
     @pytest.mark.asyncio
     async def test_fetches_through_ipv6_literal_endpoint(self) -> None:
         """IPv6 literal discovery URLs reach /localnodes directly."""

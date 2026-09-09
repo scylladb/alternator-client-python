@@ -17,6 +17,7 @@
 import contextlib
 from pathlib import Path
 from typing import Any, cast
+from unittest.mock import patch
 
 import pytest
 from botocore import UNSIGNED
@@ -186,6 +187,20 @@ class TestCreateBotoConfig:
 
 class TestCreateAioConfig:
     """Tests for async SDK config creation."""
+
+    def test_missing_aiobotocore_error_names_async_extra(self) -> None:
+        """The missing-dependency hint names the installable distribution."""
+        from alternator.async_client import _create_aio_config
+
+        config = Config(seed_hosts=["localhost"], port=9998)
+        with (
+            patch.dict("sys.modules", {"aiobotocore.config": None}),
+            pytest.raises(
+                ImportError,
+                match=r"pip install alternator-client\[async\]",
+            ),
+        ):
+            _create_aio_config(config, auth_enabled=False)
 
     def test_async_config_matches_sync_transport_settings(self) -> None:
         """AioConfig receives retry, timeout, pool, and signature settings."""

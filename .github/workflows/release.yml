@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g., 1.0.0)"
+        description: "Version to release (e.g., 2.0.0)"
         required: true
         type: string
       dry_run:
@@ -17,6 +17,9 @@ jobs:
   build:
     name: Build & Test
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -28,38 +31,95 @@ jobs:
           python-version: "3.11"
 
       - name: Validate version format
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if ! echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
-            echo "Invalid version format: ${{ inputs.version }}"
+          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
+            echo "Invalid version format: $RELEASE_VERSION"
             echo "Expected format: X.Y.Z or X.Y.Z-suffix"
             exit 1
           fi
 
+      - name: Require main branch for a production release
+        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "Production releases must be dispatched from the main branch."
+          echo "Current ref: $GITHUB_REF"
+          exit 1
+
+      - name: Require successful CI for the production commit
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          RELEASE_CI_COUNT=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=100" \
+            --jq '[.workflow_runs[] | select(.event == "push" and .conclusion == "success")] | length')
+          if [ "$RELEASE_CI_COUNT" -lt 1 ]; then
+            echo "No successful main-branch CI run found for ${GITHUB_SHA}."
+            echo "Wait for CI to pass for this exact commit, then dispatch again."
+            exit 1
+          fi
+
       - name: Check version in _version.py
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
           CURRENT_VERSION=$(grep -oP '__version__ = "\K[^"]+' alternator/_version.py)
-          if [ "$CURRENT_VERSION" != "${{ inputs.version }}" ]; then
+          if [ "$CURRENT_VERSION" != "$RELEASE_VERSION" ]; then
             echo "Version mismatch!"
             echo "  _version.py: $CURRENT_VERSION"
-            echo "  Release input: ${{ inputs.version }}"
+            echo "  Release input: $RELEASE_VERSION"
             echo "Please update alternator/_version.py first."
             exit 1
           fi
 
       - name: Check tag does not already exist
         if: ${{ !inputs.dry_run }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if git ls-remote --tags origin "refs/tags/v${{ inputs.version }}" | grep -q .; then
-            echo "Tag v${{ inputs.version }} already exists on remote!"
-            echo "Delete it first if you intend to re-release: git push origin :refs/tags/v${{ inputs.version }}"
+          if ! RELEASE_REMOTE_TAG=$(git ls-remote --tags origin "refs/tags/v${RELEASE_VERSION}"); then
+            echo "Unable to check remote tag v${RELEASE_VERSION}."
             exit 1
           fi
+          if [ -n "$RELEASE_REMOTE_TAG" ]; then
+            echo "Tag v${RELEASE_VERSION} already exists on remote!"
+            echo "Choose a new version; published release versions must not be reused."
+            exit 1
+          fi
+
+      - name: Check version does not already exist on PyPI
+        if: ${{ !inputs.dry_run }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          PYPI_URL="https://pypi.org/pypi/alternator-client/${RELEASE_VERSION}/json"
+          HTTP_STATUS=$(curl --silent --show-error --location \
+            --output /dev/null --write-out '%{http_code}' "$PYPI_URL")
+
+          case "$HTTP_STATUS" in
+            404)
+              echo "alternator-client ${RELEASE_VERSION} is available on PyPI."
+              ;;
+            200)
+              echo "alternator-client ${RELEASE_VERSION} already exists on PyPI."
+              exit 1
+              ;;
+            *)
+              echo "Unable to confirm version availability on PyPI (HTTP ${HTTP_STATUS})."
+              exit 1
+              ;;
+          esac
 
       - name: Install dependencies
         run: make install
 
       - name: Run tests
         run: make test-unit
+
+      - name: Run integration tests
+        run: make test-integration
 
       - name: Run linters
         run: make lint
@@ -87,7 +147,7 @@ jobs:
       - name: Generate checksums
         run: |
           cd dist
-          sha256sum *.whl *.tar.gz > SHA256SUMS
+          sha256sum -- *.whl *.tar.gz > SHA256SUMS
           cat SHA256SUMS
 
       - name: Sign checksums with GPG
@@ -99,6 +159,35 @@ jobs:
         with:
           name: dist
           path: dist/
+
+  tag-release:
+    name: Create Signed Tag
+    if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: false
+          git_tag_gpgsign: true
+
+      - name: Create and verify signed tag
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          git tag -s "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
+          git tag --verify "v${RELEASE_VERSION}"
+          git push origin "v${RELEASE_VERSION}"
 
   publish-testpypi:
     name: Publish to TestPyPI
@@ -127,9 +216,9 @@ jobs:
 
   publish:
     name: Publish to PyPI
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, tag-release]
     permissions:
       id-token: write
     steps:
@@ -146,12 +235,10 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-        with:
-          skip-existing: true
 
   create-release:
     name: Create GitHub Release
-    if: ${{ !inputs.dry_run }}
+    if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
     needs: publish
     permissions:
@@ -167,57 +254,33 @@ jobs:
           name: dist
           path: dist/
 
-      - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.GPG_PASSPHRASE }}
-          git_user_signingkey: true
-          git_commit_gpgsign: false
-          git_tag_gpgsign: true
-
-      - name: Create signed tag
-        run: |
-          git tag -s "v${{ inputs.version }}" -m "Release v${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
-
       - name: Build release body
-        id: release-body
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${{ inputs.version }}"
-          REPO="${{ github.repository }}"
-          BODY="## Installation
-
-          \`\`\`bash
-          pip install alternator-client==${VERSION}
-          \`\`\`
-
-          ## Verification
-
-          ### Checksum Verification
-
-          \`\`\`bash
-          curl -LO https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS
-          sha256sum -c SHA256SUMS
-          \`\`\`
-
-          ### GPG Signature Verification
-
-          All release artifacts are GPG signed. To verify:
-
-          \`\`\`bash
-          gpg --keyserver keyserver.ubuntu.com --recv-keys A97AF2DE72D4293398AF8274FC93C043D8ADA78E
-
-          # Download and verify
-          curl -LO https://github.com/${REPO}/releases/download/v${VERSION}/SHA256SUMS.asc
-          gpg --verify SHA256SUMS.asc SHA256SUMS
-          \`\`\`"
-
+          # shellcheck disable=SC2016 # Markdown code fences are literal text.
           {
-            echo "body<<RELEASE_BODY_EOF"
-            echo "$BODY"
-            echo "RELEASE_BODY_EOF"
-          } >> "$GITHUB_OUTPUT"
+            cat docs/RELEASE_NOTES.md
+            printf '\n## Installation\n\n```bash\n'
+            printf 'pip install alternator-client==%s\n' "$RELEASE_VERSION"
+            printf '```\n\n## Verification\n\n'
+            printf 'Download the wheel, source distribution, checksums, and checksum signature:\n\n'
+            printf '```bash\n'
+            printf 'mkdir "alternator-client-%s"\n' "$RELEASE_VERSION"
+            printf 'cd "alternator-client-%s"\n' "$RELEASE_VERSION"
+            printf 'gh release download "v%s" --repo "%s" \\\n' "$RELEASE_VERSION" "$GITHUB_REPOSITORY"
+            printf '%s\n' "  --pattern '*.whl' \\"
+            printf '%s\n' "  --pattern '*.tar.gz' \\"
+            printf '%s\n' "  --pattern 'SHA256SUMS*'"
+            printf '```\n\n### Checksum Verification\n\n```bash\n'
+            printf 'sha256sum -c SHA256SUMS\n'
+            printf '```\n\n### GPG Signature Verification\n\n'
+            printf 'The signed checksum file authenticates the checksums used above. To verify it:\n\n'
+            printf '```bash\n'
+            printf 'gpg --keyserver keyserver.ubuntu.com --recv-keys A97AF2DE72D4293398AF8274FC93C043D8ADA78E\n'
+            printf 'gpg --verify SHA256SUMS.asc SHA256SUMS\n'
+            printf '```\n'
+          } > release-body.md
 
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
@@ -228,4 +291,4 @@ jobs:
           prerelease: ${{ contains(inputs.version, '-') }}
           files: dist/*
           generate_release_notes: true
-          body: ${{ steps.release-body.outputs.body }}
+          body_path: release-body.md

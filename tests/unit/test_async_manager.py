@@ -18,7 +18,7 @@ import asyncio
 import gc
 import warnings
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -38,6 +38,23 @@ def config() -> Config:
         port=8000,
         scheme="http",
     )
+
+
+@pytest.mark.asyncio
+async def test_missing_aioboto3_error_names_async_extra(config: Config) -> None:
+    """The missing-dependency hint names the installable distribution."""
+    with (
+        patch.dict("sys.modules", {"aioboto3": None}),
+        pytest.raises(
+            ImportError,
+            match=r"pip install alternator-client\[async\]",
+        ),
+    ):
+        await async_client_module._create_async_client_with_manager(
+            config,
+            MagicMock(),
+            owns_manager=True,
+        )
 
 
 class TestAsyncLiveNodesManager:
