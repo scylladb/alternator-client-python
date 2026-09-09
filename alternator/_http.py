@@ -352,7 +352,7 @@ class AsyncNodeFetcher:
         except ImportError as e:
             raise ImportError(
                 "aiohttp is required for async support. "
-                "Install with: pip install alternator[async]"
+                "Install with: pip install alternator-client[async]"
             ) from e
         self._aiohttp = _aiohttp
         self._ssl_context = ssl_context

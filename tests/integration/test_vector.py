@@ -14,13 +14,15 @@
 
 """Integration tests for vector search support.
 
-These tests require a running ScyllaDB cluster with Alternator and vector
-search support enabled.  Start a local cluster with: make scylla-start
+These tests require a ScyllaDB Cloud cluster with Alternator vector search
+enabled. Set ``SCYLLA_VECTOR_SEARCH=1`` and ``SCYLLA_VERSION`` when running
+against such a cluster.
 
-Vector search is a ScyllaDB Alternator extension; all tests in this file are
-skipped when running against a Scylla version that predates the feature.
+Vector search is a ScyllaDB Alternator extension backed by an external service;
+the stock local ScyllaDB image does not provide it.
 """
 
+import os
 import uuid
 from collections.abc import Callable
 from decimal import Decimal
@@ -42,6 +44,13 @@ from tests.integration import (
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.skipif(SKIP_INTEGRATION, reason="Integration tests disabled"),
+    pytest.mark.skipif(
+        os.environ.get("SCYLLA_VECTOR_SEARCH", "").lower() not in {"1", "true", "yes"},
+        reason=(
+            "ScyllaDB Cloud vector search is not enabled; set "
+            "SCYLLA_VECTOR_SEARCH=1 when testing a supported cluster"
+        ),
+    ),
 ]
 
 
@@ -59,7 +68,7 @@ def test_create_table_with_vector_index(
     return the index."""
     from tests.integration.scylla_version import ScyllaVersion
 
-    skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
+    skip_if_scylla_version_below(ScyllaVersion(2026, 3, 0), "vector search")
 
     name = table_name()
     with AlternatorClient(config) as client:
@@ -96,7 +105,7 @@ def test_create_table_with_vector_index_via_resource(
     interface as well as the low-level client."""
     from tests.integration.scylla_version import ScyllaVersion
 
-    skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
+    skip_if_scylla_version_below(ScyllaVersion(2026, 3, 0), "vector search")
 
     name = table_name()
     with AlternatorResource(config) as resource:
@@ -131,7 +140,7 @@ def test_vector_roundtrip_via_resource(
     (within 32-bit float precision)."""
     from tests.integration.scylla_version import ScyllaVersion
 
-    skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
+    skip_if_scylla_version_below(ScyllaVersion(2026, 3, 0), "vector search")
 
     name = table_name()
     with AlternatorResource(config) as resource:
@@ -175,7 +184,7 @@ def test_vector_differs_from_decimal_list(
     the two wire types are distinct."""
     from tests.integration.scylla_version import ScyllaVersion
 
-    skip_if_scylla_version_below(ScyllaVersion(2026, 2, 0), "vector search")
+    skip_if_scylla_version_below(ScyllaVersion(2026, 3, 0), "vector search")
 
     name = table_name()
     with AlternatorResource(config) as resource:

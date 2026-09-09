@@ -14,8 +14,9 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 - **TLS Support**: Full TLS/SSL support with custom CA certificates
 - **Async Support**: Full async/await support via aioboto3
 
-See [docs/CAPABILITY_MATRIX.md](docs/CAPABILITY_MATRIX.md) for the current
-capability matrix and planned follow-up work.
+See the
+[capability matrix](https://github.com/scylladb/alternator-client-python/blob/main/docs/CAPABILITY_MATRIX.md)
+for the current support status and planned follow-up work.
 
 ## Installation
 
@@ -162,10 +163,12 @@ config = Config(
 )
 ```
 
-> **Compatibility:** `AlternatorConfig` and `TlsConfig` remain available for
+> **2.0 compatibility:** `AlternatorConfig` and `TlsConfig` remain available for
 > existing callers, but are deprecated. Prefer `Config` and `TLS` for new code.
-> See [docs/COMPATIBILITY_AND_RELEASE.md](docs/COMPATIBILITY_AND_RELEASE.md)
-> for compatibility and versioning decisions.
+> `AlternatorConfigBuilder.build()` now returns `Config`, rather than the
+> deprecated `AlternatorConfig` subclass. See the
+> [2.0.0 release notes](https://github.com/scylladb/alternator-client-python/blob/main/docs/RELEASE_NOTES.md)
+> for breaking changes and migration guidance.
 
 ### Using the Builder Pattern
 
@@ -587,9 +590,15 @@ finally:
 
 ## Vector Search (ScyllaDB Extension)
 
-ScyllaDB Alternator supports vector similarity search, which is not part of the standard AWS DynamoDB API. All clients and resources created by this library have vector search support enabled automatically — no extra setup is needed.
+ScyllaDB Alternator supports vector similarity search, which is not part of the
+standard AWS DynamoDB API. All clients and resources created by this library
+enable the required request models automatically, with no additional
+client-side setup.
 
-> **Note:** Vector search requires ScyllaDB with Alternator vector search support enabled. These operations are not available on AWS DynamoDB. The feature is fully supported from ScyllaDB 2026.3, and only partially supported in ScyllaDB 2026.2: Version 2026.2 did not yet support the optimized "Vector" type, configurable SimilarityFunction, returning scores (ReturnScores), pre-filtering (KeyConditionExpression) or projected attributes (ProjectionType=INCLUDE).
+> **Note:** Vector search currently requires a ScyllaDB Cloud cluster with the
+> Alternator vector-search feature enabled. It is not provided by the stock
+> local ScyllaDB image and is not available on AWS DynamoDB. Supported request
+> options depend on the enabled Cloud service version.
 
 ### Creating a Table with a Vector Index
 
@@ -695,7 +704,7 @@ client = create_client(config)
 try:
     client.list_tables()
 finally:
-    close_client(client)  # Stop background refresh thread
+    close_client(client)  # Stop discovery and close the underlying SDK session
 ```
 
 Async equivalent:
@@ -822,9 +831,9 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 
 ## Release Notes
 
-See [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) for capability release-note
-guidance covering additive APIs, deprecations, behavior notes, migration steps,
-and versioning expectations.
+See the
+[release notes](https://github.com/scylladb/alternator-client-python/blob/main/docs/RELEASE_NOTES.md)
+for the changes and migration steps in 2.0.0.
 
 ## Development
 

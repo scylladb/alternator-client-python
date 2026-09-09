@@ -388,7 +388,7 @@ def _create_aio_config(config: Config, *, auth_enabled: bool) -> object:
     except ImportError as e:
         raise ImportError(
             "aiobotocore is required for async support. "
-            "Install with: pip install alternator[async]"
+            "Install with: pip install alternator-client[async]"
         ) from e
 
     from botocore import UNSIGNED
@@ -414,7 +414,7 @@ async def _create_async_client_with_manager(
     except ImportError as e:
         raise ImportError(
             "aioboto3 is required for async support. "
-            "Install with: pip install alternator[async]"
+            "Install with: pip install alternator-client[async]"
         ) from e
 
     # Get initial endpoint

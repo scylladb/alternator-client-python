@@ -1,6 +1,10 @@
 MAKEFILE_PATH := $(abspath $(dir $(abspath $(lastword $(MAKEFILE_LIST)))))
 COMPOSE ?= docker compose
-SCYLLA_IMAGE ?= scylladb/scylla:2025.1
+# Alternator exposes a Cassandra-compatible release_version, so integration
+# feature gates use the matching Scylla image version explicitly.
+SCYLLA_IMAGE ?= scylladb/scylla:2026.2.0
+SCYLLA_VERSION ?= $(patsubst scylladb/scylla:%,%,$(SCYLLA_IMAGE))
+export SCYLLA_IMAGE SCYLLA_VERSION
 SCYLLA_HOST ?= localhost
 SCYLLA_PORT ?= 9998
 SCYLLA_READY_URL ?= http://$(SCYLLA_HOST):$(SCYLLA_PORT)/localnodes
@@ -133,6 +137,7 @@ clean:
 
 # Generate self-signed certificate for Alternator HTTPS
 .prepare-cert: tests/scylla/db.key tests/scylla/db.crt
+	chmod 644 tests/scylla/db.key tests/scylla/db.crt
 
 tests/scylla/db.key tests/scylla/db.crt:
 	openssl req -x509 -newkey rsa:4096 -keyout tests/scylla/db.key -out tests/scylla/db.crt \
@@ -193,7 +198,7 @@ cert-cache-load:
 	@if [ -f "$(CERT_CACHE_DIR)/db.key" ] && [ -f "$(CERT_CACHE_DIR)/db.crt" ]; then \
 		echo "Loading certificates from cache..."; \
 		cp "$(CERT_CACHE_DIR)/db.key" "$(CERT_CACHE_DIR)/db.crt" "$(CERT_DIR)/"; \
-		chmod 644 "$(CERT_DIR)/db.key"; \
+		chmod 644 "$(CERT_DIR)/db.key" "$(CERT_DIR)/db.crt"; \
 	else \
 		echo "Certificate cache not found, generating..."; \
 		$(MAKE) .prepare-cert; \
