@@ -4,7 +4,7 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 
 ## Features
 
-- **Automatic Load Balancing**: Distributes requests across all available Alternator nodes using round-robin selection
+- **Automatic Load Balancing**: Distributes requests across all available Alternator nodes using randomized request-scoped plans
 - **Node Discovery**: Automatically discovers cluster topology via the `/localnodes` endpoint
 - **Topology Awareness**: Route requests to specific datacenters or racks
 - **Key Affinity Routing**: Optimizes LWT (Lightweight Transaction) operations by routing requests for the same partition key to the same node
@@ -362,21 +362,22 @@ config = (
 
 | Mode | Description |
 |------|-------------|
-| `NONE` | Disabled (default round-robin) |
+| `NONE` | Disabled (default randomized routing) |
 | `RMW` | Only for write operations that require a read-before-write path |
 | `ANY_WRITE` | For all write operations (`PutItem`, `UpdateItem`, `DeleteItem`, `BatchWriteItem`) |
 
-`RMW` mode applies affinity to conditional `PutItem`/`DeleteItem`, `ALL_OLD`
+`RMW` mode applies affinity to conditional `PutItem`/`DeleteItem`, non-`NONE`
 returns, and `UpdateItem` requests that need prior item state, including
-non-empty update or condition expressions, `Expected`, selected `ReturnValues`,
-`ADD`, and value-bearing `DELETE` attribute updates. `BatchWriteItem` does not
-use affinity in `RMW` mode.
+non-empty update or condition expressions, non-empty legacy `Expected`, selected
+`ReturnValues`, `ADD`, and value-bearing `DELETE` attribute updates.
+`BatchWriteItem` does not use affinity in `RMW` mode.
 
 `ANY_WRITE` mode applies affinity to single-item writes using the request
 partition key. For `BatchWriteItem`, each valid put/delete votes for its
-preferred node. The request tries the unique winning node first and keeps the
-remaining nodes in the retry plan. Missing partition-key metadata, unsupported
-key values, no active nodes, no votes, or tied votes fall back to normal routing.
+preferred node. The request orders voted nodes by descending vote count and
+then address, followed by remaining nodes. Missing partition-key metadata and
+unsupported key values are skipped; absence of usable votes falls back to
+normal routing.
 
 ## TLS Configuration
 
@@ -808,8 +809,8 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
 - **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
-- **Async Key Affinity**: For async clients, partition key auto-discovery happens asynchronously. The first request for an unknown table will use round-robin routing while discovery runs in the background. Subsequent requests will use affinity. Preloading via `table_pk_map` avoids this initial miss.
-- **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Ties, missing partition-key metadata, unsupported key values, no active nodes, or no eligible votes fall back to normal routing. Batches are not split by affinity target.
+- **Key Affinity Discovery**: For sync and async clients, partition key auto-discovery happens in the background. The first request for an unknown table uses normal routing while discovery runs; subsequent requests use affinity. Preloading via `table_pk_map` avoids this initial miss.
+- **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Tied nodes use address order; missing partition-key metadata and unsupported key values are skipped. No eligible votes cause normal-routing fallback; no active nodes fail locally. Batches are not split by affinity target.
 - **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `get_quarantined_nodes()` returns an empty list until a future implementation is explicitly added.
 
 ## Examples
