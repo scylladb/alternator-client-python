@@ -38,7 +38,9 @@ from alternator.config import (
     RequestCompressionConfig,
 )
 from alternator.core.handlers import _register_alternator_handlers
+from alternator.core.key_affinity import SeededAffinityPlan
 from alternator.core.live_nodes import NodeList
+from alternator.core.query_plan import LazyQueryPlan
 
 
 class _StaticManager:
@@ -311,20 +313,21 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
         ),
     )
 
-    def preferred_node(
+    def affinity_plan(
         operation_name: str,
         params: dict[str, Any],
         nodes: NodeList,
-    ) -> str | None:
+    ) -> SeededAffinityPlan:
         assert operation_name == "PutItem"
         assert nodes.nodes == ("node-a", "node-b", "node-c")
-        return "node-b"
+        return SeededAffinityPlan(seed=42)
 
+    manager = _StaticManager(("node-a", "node-b", "node-c"))
     _register_alternator_handlers(
         client.meta.events,
-        _StaticManager(("node-a", "node-b", "node-c")),
+        manager,
         config,
-        preferred_node,
+        affinity_plan,
         auth_enabled=False,
     )
     urls: list[str] = []
@@ -336,7 +339,7 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
         raise EndpointConnectionError(endpoint_url=request.url)
 
     def retry_without_sleep(attempts: int, **_: object) -> int | None:
-        return 0 if attempts < 3 else None
+        return 0 if attempts < 6 else None
 
     client.meta.events.register_last(
         "before-send.dynamodb.PutItem", capture_before_send
@@ -350,8 +353,14 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(EndpointConnectionError):
         client.put_item(TableName="tbl", Item={"pk": {"S": "k"}})
 
-    assert urls[0] == "http://node-b:8000/"
-    assert set(urls[1:]) == {"http://node-a:8000/", "http://node-c:8000/"}
+    expected_cycle = [
+        f"http://{node}:8000/"
+        for node in LazyQueryPlan(
+            nodes=("node-a", "node-b", "node-c"),
+            seed=42,
+        )
+    ]
+    assert urls == expected_cycle * 2
 
 
 def test_dynamodb_non_success_responses_keep_connection_reusable() -> None:

@@ -23,6 +23,7 @@ import logging
 import threading
 from collections import Counter
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
@@ -35,7 +36,16 @@ if TYPE_CHECKING:
     from alternator.core.live_nodes import NodeList
 
 logger = logging.getLogger("alternator")
-AffinityTarget = str | tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SeededAffinityPlan:
+    """Descriptor for a canonical partition-key-seeded query plan."""
+
+    seed: int
+
+
+AffinityTarget = SeededAffinityPlan | tuple[str, ...]
 
 
 class _BatchWriteRoutingTarget(NamedTuple):
@@ -58,25 +68,20 @@ class AffinitySelector:
     """
 
     def select(self, nodes: NodeList, hash_value: int) -> str | None:
-        """Select node based on hash value (deterministic)."""
+        """Select first node from the canonical seeded query plan."""
         if not nodes:
             return None
 
-        sorted_nodes = tuple(sorted(nodes.nodes))
-
-        # Use hash to deterministically select node
-        index = abs(hash_value) % len(sorted_nodes)
-        selected = sorted_nodes[index]
+        sorted_nodes = tuple(sorted(set(nodes.nodes)))
+        selected = next(LazyQueryPlan(nodes=sorted_nodes, seed=hash_value))
         logger.debug(
-            "Affinity selection: hash=%d -> node_index=%d -> %s (of %d nodes)",
+            "Affinity selection: hash=%d -> %s (of %d nodes)",
             hash_value,
-            index,
             selected,
             len(sorted_nodes),
             extra={
                 "event": "affinity_selection",
                 "hash_value": hash_value,
-                "node_index": index,
                 "selected_node": selected,
                 "node_count": len(sorted_nodes),
             },
@@ -176,7 +181,7 @@ def select_affinity_node(
         logger.debug("Error hashing partition key: %s", e)
         return None
 
-    return AffinitySelector().select(nodes, hash_value)
+    return SeededAffinityPlan(seed=hash_value)
 
 
 def extract_partition_key(
@@ -274,7 +279,7 @@ def _select_query_plan_first_node(nodes: NodeList, hash_value: int) -> str | Non
     """Return first node from canonical seeded affinity query plan."""
     if not nodes:
         return None
-    return next(LazyQueryPlan(nodes=tuple(sorted(nodes.nodes)), seed=hash_value))
+    return next(LazyQueryPlan(nodes=tuple(sorted(set(nodes.nodes))), seed=hash_value))
 
 
 def _iter_batch_write_candidates(

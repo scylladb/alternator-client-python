@@ -118,7 +118,7 @@ class LiveNodesManagerCore:
         consistent affinity-based routing.
         """
         new_list = NodeList(
-            nodes=tuple(sorted(nodes)),
+            nodes=tuple(sorted(set(nodes))),
             scope_name=scope.name,
         )
         with self._nodes_lock:

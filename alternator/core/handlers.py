@@ -16,10 +16,9 @@
 
 from __future__ import annotations
 
-import hashlib
 import random
 from collections.abc import Callable, Iterator
-from typing import TYPE_CHECKING, Any, Protocol, cast, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 from urllib.parse import urlparse
 
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
@@ -36,7 +35,7 @@ from alternator.core.headers import (
     create_header_filter_handler,
     create_user_agent_header_handler,
 )
-from alternator.core.key_affinity import AffinityTarget
+from alternator.core.key_affinity import AffinityTarget, SeededAffinityPlan
 from alternator.core.live_nodes import _format_host_port
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_operation_name, extract_request_params
@@ -96,36 +95,35 @@ def _register_alternator_handlers(
 
     def create_query_plan(
         nodes: NodeList,
-        preferred_node: AffinityTarget | None,
+        affinity_target: AffinityTarget | None,
     ) -> Iterator[str]:
         """Create a URI iterator for a single request."""
-        node_addresses = nodes.nodes
-        if isinstance(preferred_node, tuple):
+        node_addresses = tuple(sorted(set(nodes.nodes)))
+        if isinstance(affinity_target, tuple):
             emitted: set[str] = set()
-            for node in preferred_node:
+            ordered_nodes: list[str] = []
+            for node in affinity_target:
                 if node in node_addresses and node not in emitted:
                     emitted.add(node)
-                    yield f"{scheme}://{_format_host_port(node, port)}"
+                    ordered_nodes.append(node)
             for node in node_addresses:
                 if node not in emitted:
-                    yield f"{scheme}://{_format_host_port(node, port)}"
-            return
+                    ordered_nodes.append(node)
 
-        if preferred_node is not None and preferred_node in node_addresses:
-            yield f"{scheme}://{_format_host_port(preferred_node, port)}"
-            remaining_nodes = tuple(
-                node for node in node_addresses if node != preferred_node
-            )
-            seed = _stable_seed(preferred_node)
-            plan = LazyQueryPlan(nodes=remaining_nodes, seed=seed)
+            while True:
+                for node in ordered_nodes:
+                    yield f"{scheme}://{_format_host_port(node, port)}"
+
+        if isinstance(affinity_target, SeededAffinityPlan):
+            while True:
+                plan = LazyQueryPlan(nodes=node_addresses, seed=affinity_target.seed)
+                for node in plan:
+                    yield f"{scheme}://{_format_host_port(node, port)}"
+
+        while True:
+            plan = LazyQueryPlan(nodes=node_addresses, seed=random.getrandbits(64))
             for node in plan:
                 yield f"{scheme}://{_format_host_port(node, port)}"
-            return
-
-        seed = random.getrandbits(64)
-        plan = LazyQueryPlan(nodes=node_addresses, seed=seed)
-        for node in plan:
-            yield f"{scheme}://{_format_host_port(node, port)}"
 
     # Register event handler to update endpoint per-request
     def update_endpoint(
@@ -146,12 +144,7 @@ def _register_alternator_handlers(
             _store_query_plan(request, plan)
 
         # Get next node from plan
-        try:
-            new_uri = next(plan)
-        except StopIteration:
-            plan = _create_request_query_plan(request, preferred_node=None)
-            _store_query_plan(request, plan)
-            new_uri = next(plan)
+        new_uri = next(plan)
 
         request_url = (
             request.url.decode("utf-8")
@@ -175,7 +168,6 @@ def _register_alternator_handlers(
 
     def _create_request_query_plan(
         request: AWSRequest | AWSPreparedRequest,
-        preferred_node: AffinityTarget | None | object = _PREFERRED_NODE_UNSET,
     ) -> Iterator[str]:
         nodes = manager.nodes
         if not nodes:
@@ -184,23 +176,19 @@ def _register_alternator_handlers(
                 scope_name=scope_name,
             )
 
-        selected_preferred_node: AffinityTarget | None
-        if preferred_node is _PREFERRED_NODE_UNSET:
-            selected_preferred_node = None
-            if compute_affinity_node is not None:
-                # Check operation name first (cheap header read) before
-                # parsing the JSON body (expensive)
-                operation_name = extract_operation_name(request)
-                if operation_name in _affinity_operations:
-                    params = extract_request_params(request)
-                    selected_preferred_node = compute_affinity_node(
-                        operation_name,
-                        params,
-                        nodes,
-                    )
-        else:
-            selected_preferred_node = cast("AffinityTarget | None", preferred_node)
-        return create_query_plan(nodes, selected_preferred_node)
+        affinity_target: AffinityTarget | None = None
+        if compute_affinity_node is not None:
+            # Check operation name first (cheap header read) before
+            # parsing the JSON body (expensive)
+            operation_name = extract_operation_name(request)
+            if operation_name in _affinity_operations:
+                params = extract_request_params(request)
+                affinity_target = compute_affinity_node(
+                    operation_name,
+                    params,
+                    nodes,
+                )
+        return create_query_plan(nodes, affinity_target)
 
     def _store_query_plan(
         request: AWSRequest | AWSPreparedRequest,
@@ -245,11 +233,3 @@ def _register_alternator_handlers(
 
     user_agent_handler = create_user_agent_header_handler(user_agent)
     events.register_last("before-send.dynamodb.*", user_agent_handler)
-
-
-def _stable_seed(value: str) -> int:
-    digest = hashlib.blake2b(value.encode("utf-8"), digest_size=8).digest()
-    return int.from_bytes(digest, "big")
-
-
-_PREFERRED_NODE_UNSET = object()

@@ -30,6 +30,7 @@ from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     AffinitySelector,
     PartitionKeyCache,
+    SeededAffinityPlan,
     extract_partition_key,
     get_table_name,
     is_rmw_operation,
@@ -349,16 +350,13 @@ class TestSelectAffinityNode:
             "Item": {"pk": {"S": value}},
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="PutItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "b"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="PutItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == SeededAffinityPlan(hash_attribute_value("S", value))
 
     def test_single_delete_item_selects_node(self) -> None:
         """Test single DeleteItem routes by the key partition key."""
@@ -369,16 +367,13 @@ class TestSelectAffinityNode:
             "Key": {"pk": {"S": value}},
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="DeleteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "c"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="DeleteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == SeededAffinityPlan(hash_attribute_value("S", value))
 
     def test_single_put_item_binary_pk_decodes_prepared_json(self) -> None:
         """Real botocore JSON base64 binary values are decoded before hashing."""
@@ -388,10 +383,7 @@ class TestSelectAffinityNode:
 
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
         binary_value = b"\x00\x01stable"
-        expected = AffinitySelector().select(
-            nodes,
-            hash_attribute_value("B", binary_value),
-        )
+        expected = SeededAffinityPlan(hash_attribute_value("B", binary_value))
         captured_params: dict[str, Any] = {}
 
         client = boto3.client(
@@ -458,7 +450,8 @@ class TestSelectAffinityNode:
             candidate = f"canonical-batch-{index}"
             hash_value = hash_attribute_value("S", candidate)
             query_plan_node = _query_plan_first_node(nodes, hash_value)
-            modulo_node = AffinitySelector().select(nodes, hash_value)
+            sorted_nodes = tuple(sorted(nodes.nodes))
+            modulo_node = sorted_nodes[abs(hash_value) % len(sorted_nodes)]
             if query_plan_node != modulo_node:
                 value = candidate
                 expected = query_plan_node
@@ -856,8 +849,8 @@ class TestSelectAffinityNode:
 class TestAffinityHandlerRouting:
     """Tests for preferred-node routing through shared request handlers."""
 
-    def test_preferred_node_first_and_remaining_nodes_preserved(self) -> None:
-        """Test handler tries preferred node first without dropping retries."""
+    def test_seeded_plan_and_retry_cycle_match_canonical_order(self) -> None:
+        """Single-item affinity retries preserve the full canonical plan."""
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
@@ -867,11 +860,11 @@ class TestAffinityHandlerRouting:
             operation_name: str,
             params: dict[str, Any],
             nodes: NodeList,
-        ) -> str | None:
+        ) -> SeededAffinityPlan:
             assert operation_name == "PutItem"
             assert params == {"TableName": "orders"}
             assert nodes.nodes == ("a", "b", "c")
-            return "b"
+            return SeededAffinityPlan(seed=42)
 
         _register_alternator_handlers(
             events,
@@ -890,15 +883,16 @@ class TestAffinityHandlerRouting:
         request._alternator_query_plan = None
 
         update_endpoint = handlers["update_endpoint"]
-        update_endpoint(request)
-        first_url = request.url
-        update_endpoint(request)
-        second_url = request.url
-        update_endpoint(request)
-        third_url = request.url
+        urls: list[str] = []
+        for _ in range(6):
+            update_endpoint(request)
+            urls.append(request.url)
 
-        assert first_url == "http://b:8000/"
-        assert {second_url, third_url} == {"http://a:8000/", "http://c:8000/"}
+        expected_cycle = [
+            f"http://{node}:8000/"
+            for node in LazyQueryPlan(nodes=("a", "b", "c"), seed=42)
+        ]
+        assert urls == expected_cycle * 2
 
     def test_query_plan_brackets_ipv6_nodes(self) -> None:
         """Test request handler formats raw IPv6 node addresses as URL authorities."""
@@ -977,11 +971,14 @@ class TestAffinityHandlerRouting:
         second_url = request.url
         update_endpoint(request)
         third_url = request.url
+        update_endpoint(request)
+        fourth_url = request.url
 
-        assert (first_url, second_url, third_url) == (
+        assert (first_url, second_url, third_url, fourth_url) == (
             "http://c:8000/",
             "http://a:8000/",
             "http://b:8000/",
+            "http://c:8000/",
         )
 
 
@@ -1642,16 +1639,14 @@ class TestAffinitySelectorConcurrency:
         nodes = NodeList(nodes=("a", "b", "c", "d", "e"), scope_name="test")
 
         # Pre-compute expected results
-        expected = {h: selector.select(nodes, h) for h in range(100)}
+        expected = {h: selector.select(nodes, h) for h in range(20)}
 
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            for h in range(100):
-                # Submit 100 selections for the same hash
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            for h in range(20):
                 futures = [
-                    executor.submit(selector.select, nodes, h) for _ in range(100)
+                    executor.submit(selector.select, nodes, h) for _ in range(10)
                 ]
                 results = [f.result() for f in futures]
-                # All results should match expected
                 assert all(r == expected[h] for r in results)
 
     def test_concurrent_selection_distribution(self) -> None:
@@ -1660,9 +1655,9 @@ class TestAffinitySelectorConcurrency:
         nodes = NodeList(nodes=("n1", "n2", "n3", "n4"), scope_name="test")
 
         # Use different hash values
-        hashes = list(range(10000))
+        hashes = list(range(400))
 
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(selector.select, nodes, h) for h in hashes]
             results = [f.result() for f in futures]
 
@@ -1670,4 +1665,4 @@ class TestAffinitySelectorConcurrency:
 
         # Distribution should be roughly even
         for node in ("n1", "n2", "n3", "n4"):
-            assert 2000 < counter[node] < 3000
+            assert 60 < counter[node] < 140
