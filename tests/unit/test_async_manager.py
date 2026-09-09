@@ -41,10 +41,10 @@ def config() -> Config:
 
 
 @pytest.mark.asyncio
-async def test_missing_aioboto3_error_names_async_extra(config: Config) -> None:
+async def test_missing_aiobotocore_error_names_async_extra(config: Config) -> None:
     """The missing-dependency hint names the installable distribution."""
     with (
-        patch.dict("sys.modules", {"aioboto3": None}),
+        patch.dict("sys.modules", {"aiobotocore.session": None}),
         pytest.raises(
             ImportError,
             match=r"pip install alternator-client\[async\]",
@@ -756,7 +756,7 @@ async def test_entered_sdk_client_closes_when_setup_is_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation after entering SDK context closes that context."""
-    aioboto3 = pytest.importorskip("aioboto3")
+    aiobotocore_session = pytest.importorskip("aiobotocore.session")
     manager = MagicMock(spec=AsyncLiveNodesManager)
     manager.next_node_uri.return_value = "http://127.0.0.1:8000"
     client = MagicMock()
@@ -765,9 +765,9 @@ async def test_entered_sdk_client_closes_when_setup_is_cancelled(
     client_context.__aenter__ = AsyncMock(return_value=client)
     client_context.__aexit__ = AsyncMock(return_value=None)
     session = MagicMock()
-    session.client.return_value = client_context
+    session.create_client.return_value = client_context
 
-    monkeypatch.setattr(aioboto3, "Session", lambda: session)
+    monkeypatch.setattr(aiobotocore_session, "get_session", lambda: session)
 
     def cancel_setup(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError

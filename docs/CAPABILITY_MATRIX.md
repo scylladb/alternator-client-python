@@ -7,7 +7,7 @@ and intentionally deferred behavior.
 | --- | --- | --- | --- |
 | Sync DynamoDB client | Supported | Existing API | `create_client`, `AlternatorClient`, and `alternator.client(...)` return standard boto3 clients. |
 | DynamoDB resource | Supported | Existing API | `create_resource` and `AlternatorResource` wrap boto3 resource usage. |
-| Async DynamoDB client | Supported | Existing API | `create_async_client` and `AsyncAlternatorClient` use aioboto3. |
+| Async DynamoDB client | Supported | Existing API | `create_async_client` and `AsyncAlternatorClient` use aiobotocore. |
 | Host-only seeds with one shared port | Supported | Existing API | Seeds must not include ports; one port applies to all nodes. |
 | Node discovery | Supported | Existing API | `/localnodes` refresh updates the live node list. `ClusterScope` combines results from all configured seeds, so multi-DC routing requires at least one reachable seed from each datacenter. |
 | IPv6, dual-stack, and DNS seed recovery | Supported | Existing API | Discovery and routed endpoints support IPv4 and IPv6 literals. DNS seeds try resolved addresses within one discovery deadline and are re-resolved after failures so later refreshes can recover. |
