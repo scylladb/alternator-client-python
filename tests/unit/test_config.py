@@ -525,6 +525,35 @@ class TestKeyRouteAffinityConfig:
         assert config.mode == KeyRouteAffinityMode.RMW
         assert config.table_pk_attributes == {"users": "pk"}
 
+    def test_null_mode_normalizes_to_disabled(self) -> None:
+        """Runtime null mode uses disabled affinity semantics."""
+        config = KeyRouteAffinityConfig(
+            mode=None,  # type: ignore[arg-type] # verify runtime normalization
+        )
+
+        assert config.mode is KeyRouteAffinityMode.NONE
+
+    def test_preconfigured_mapping_is_copied_and_ignores_null_entries(self) -> None:
+        """Caller mutation and null entries cannot corrupt cached metadata."""
+        source = {
+            "users": "pk",
+            "ignored": None,
+        }
+        config = KeyRouteAffinityConfig(
+            table_pk_attributes=source,  # type: ignore[arg-type] # verify runtime normalization
+        )
+
+        source["users"] = "changed"
+
+        assert config.table_pk_attributes == {"users": "pk"}
+
+    def test_invalid_mode_raises(self) -> None:
+        """Unsupported modes fail during configuration, not client creation."""
+        with pytest.raises(ConfigurationError, match="unsupported key affinity mode"):
+            KeyRouteAffinityConfig(
+                mode="invalid",  # type: ignore[arg-type] # verify runtime validation
+            )
+
 
 class TestRetryConfig:
     """Tests for RetryConfig validation."""
