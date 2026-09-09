@@ -223,6 +223,42 @@ class TestHeaderFilterHandler:
 
         assert len(request.headers) == 3
 
+    def test_signed_headers_are_never_removed(self) -> None:
+        """Filtering preserves headers already covered by a SigV4 signature."""
+        handler = create_header_filter_handler(frozenset({"Host", "Authorization"}))
+        request = MagicMock()
+        request.headers = {
+            "Host": "example.com",
+            "Content-Type": "application/json",
+            "X-Custom-Signed": "signed-value",
+            "X-Unwanted": "remove",
+            "Authorization": (
+                b"AWS4-HMAC-SHA256 Credential=key/scope, "
+                b"SignedHeaders=content-type;host;x-custom-signed, Signature=value"
+            ),
+        }
+
+        handler(request)
+
+        assert request.headers["Content-Type"] == "application/json"
+        assert request.headers["X-Custom-Signed"] == "signed-value"
+        assert "X-Unwanted" not in request.headers
+
+    def test_malformed_binary_authorization_does_not_break_filtering(self) -> None:
+        """Malformed Authorization bytes cannot crash header optimization."""
+        handler = create_header_filter_handler(frozenset({"Host", "Authorization"}))
+        request = MagicMock()
+        request.headers = {
+            "Host": "example.com",
+            "X-Unwanted": "remove",
+            "Authorization": b"\xff\xfe",
+        }
+
+        handler(request)
+
+        assert request.headers["Authorization"] == b"\xff\xfe"
+        assert "X-Unwanted" not in request.headers
+
     def test_handles_missing_headers_attribute(self) -> None:
         """Test handler handles request without headers attribute."""
         whitelist = frozenset({"Host"})

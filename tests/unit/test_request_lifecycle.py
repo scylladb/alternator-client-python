@@ -172,6 +172,51 @@ def test_signed_request_url_and_compressed_body_are_final_before_signing() -> No
     assert seen["authorization"] is not None
 
 
+def test_header_filter_preserves_every_sigv4_signed_header() -> None:
+    """Header optimization cannot remove fields covered by Authorization."""
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        header_optimization=HeaderOptimizationConfig(enabled=True),
+    )
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url="http://seed:8000",
+        region_name="us-east-1",
+        aws_access_key_id="alternator",
+        aws_secret_access_key="secret",
+        config=BotoConfig(retries={"max_attempts": 0, "mode": "standard"}),
+    )
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("node-b",)),
+        config,
+        auth_enabled=True,
+    )
+    seen: dict[str, Any] = {}
+
+    def add_signed_header(request: AWSRequest, **_: object) -> None:
+        request.headers["X-Custom-Signed"] = "signed-value"
+
+    def capture_before_send(request: AWSPreparedRequest, **_: object) -> None:
+        seen["authorization"] = _header_text(request.headers["Authorization"])
+        seen["custom"] = request.headers.get("X-Custom-Signed")
+        raise RuntimeError("captured")
+
+    client.meta.events.register_first(
+        "before-sign.dynamodb.ListTables", add_signed_header
+    )
+    client.meta.events.register_last(
+        "before-send.dynamodb.ListTables", capture_before_send
+    )
+
+    with pytest.raises(RuntimeError, match="captured"):
+        client.list_tables()
+
+    assert "x-custom-signed" in seen["authorization"]
+    assert seen["custom"] == b"signed-value"
+
+
 def test_unset_user_agent_removes_sdk_user_agent_before_send() -> None:
     """Final request does not include User-Agent when Alternator value is unset."""
     config = Config(

@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from botocore.awsrequest import AWSPreparedRequest
 
@@ -127,14 +127,48 @@ def create_header_filter_handler(
         if not hasattr(request, "headers"):
             return
 
+        protected_headers = whitelist_lower | _signed_header_names(request.headers)
         headers_to_remove = [
-            key for key in request.headers if key.lower() not in whitelist_lower
+            key for key in request.headers if key.lower() not in protected_headers
         ]
 
         for key in headers_to_remove:
             del request.headers[key]
 
     return filter_headers
+
+
+def _signed_header_names(headers: object) -> frozenset[str]:
+    """Return headers covered by a SigV4 Authorization value."""
+    try:
+        header_items = dict(cast(Any, headers)).items()
+    except (TypeError, ValueError):
+        return frozenset()
+
+    for key, value in header_items:
+        try:
+            key_text = key.decode("ascii") if isinstance(key, bytes) else str(key)
+        except UnicodeDecodeError:
+            continue
+        if key_text.lower() != "authorization":
+            continue
+
+        try:
+            value_text = (
+                value.decode("ascii") if isinstance(value, bytes) else str(value)
+            )
+        except UnicodeDecodeError:
+            return frozenset()
+        marker = "SignedHeaders="
+        marker_index = value_text.find(marker)
+        if marker_index < 0:
+            return frozenset()
+        signed_headers = value_text[marker_index + len(marker) :].split(",", 1)[0]
+        return frozenset(
+            name.strip().lower() for name in signed_headers.split(";") if name.strip()
+        )
+
+    return frozenset()
 
 
 def create_user_agent_header_handler(user_agent: str | None) -> Callable[..., None]:
