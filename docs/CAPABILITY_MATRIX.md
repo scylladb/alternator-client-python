@@ -26,7 +26,6 @@ and intentionally deferred behavior.
 | Helper lifecycle facade | Supported | [#33](https://github.com/scylladb/alternator-client-python/issues/33) | `Helper` and `AsyncHelper` expose lifecycle, node inspection, topology checks, and partition-key diagnostics. |
 | Release and migration documentation | Supported | [#39](https://github.com/scylladb/alternator-client-python/issues/39) | Breaking changes and migration guidance are recorded in [RELEASE_NOTES.md](RELEASE_NOTES.md). |
 | Node health tracking | Deferred | [#32](https://github.com/scylladb/alternator-client-python/issues/32) | Planning-only. No node health code, tests, config objects, or behavior changes are authorized by this roadmap. |
-| Vector search extension | Supported | Existing API | Python client enables ScyllaDB Alternator vector extensions. Server-side vector search currently requires a ScyllaDB Cloud cluster with the feature enabled. |
 | Capability test harness | Partial | [#36](https://github.com/scylladb/alternator-client-python/issues/36) | Fake Alternator server fixture introduced for deterministic unit tests. |
 | Documentation and examples | Supported | [#40](https://github.com/scylladb/alternator-client-python/issues/40) | README, examples, and release-note guidance are aligned with implemented APIs. |
 

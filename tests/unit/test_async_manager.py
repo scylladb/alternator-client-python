@@ -769,12 +769,12 @@ async def test_entered_sdk_client_closes_when_setup_is_cancelled(
 
     monkeypatch.setattr(aioboto3, "Session", lambda: session)
 
-    def cancel_setup(client: object) -> None:
+    def cancel_setup(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError
 
     monkeypatch.setattr(
         async_client_module,
-        "enable_vector_support",
+        "_register_alternator_handlers",
         cancel_setup,
     )
 
