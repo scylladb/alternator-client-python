@@ -100,6 +100,91 @@ class TestApplyAuth:
         assert auth_enabled is True
         assert boto_kwargs["aws_access_key_id"] == "alternator"
 
+    def test_legacy_boto_credentials_accept_session_token(self) -> None:
+        """Raw boto credentials preserve an optional session token."""
+        boto_kwargs: dict[str, object] = {
+            "aws_access_key_id": "alternator",
+            "aws_secret_access_key": "secret",
+            "aws_session_token": "token",
+        }
+
+        with pytest.warns(DeprecationWarning, match="raw boto credential kwargs"):
+            auth_enabled = apply_auth(None, boto_kwargs)
+
+        assert auth_enabled is True
+        assert boto_kwargs["aws_session_token"] == "token"
+
+    def test_all_none_legacy_boto_credentials_disable_auth(self) -> None:
+        """Forwarded None credentials do not opt into boto's provider chain."""
+        boto_kwargs: dict[str, object] = {
+            "aws_access_key_id": None,
+            "aws_secret_access_key": None,
+            "aws_session_token": None,
+            "region_name": "us-east-1",
+        }
+
+        with pytest.warns(DeprecationWarning, match="raw boto credential kwargs"):
+            auth_enabled = apply_auth(None, boto_kwargs)
+
+        assert auth_enabled is False
+        assert boto_kwargs == {"region_name": "us-east-1"}
+
+    @pytest.mark.parametrize(
+        "boto_kwargs, error_match",
+        [
+            ({"aws_access_key_id": "alternator"}, "aws_secret_access_key"),
+            ({"aws_secret_access_key": "secret"}, "aws_access_key_id"),
+            (
+                {
+                    "aws_access_key_id": "alternator",
+                    "aws_secret_access_key": None,
+                },
+                "aws_secret_access_key",
+            ),
+            (
+                {
+                    "aws_access_key_id": None,
+                    "aws_secret_access_key": "secret",
+                },
+                "aws_access_key_id",
+            ),
+            (
+                {
+                    "aws_access_key_id": "",
+                    "aws_secret_access_key": "secret",
+                },
+                "aws_access_key_id",
+            ),
+            (
+                {
+                    "aws_access_key_id": "alternator",
+                    "aws_secret_access_key": "",
+                },
+                "aws_secret_access_key",
+            ),
+            ({"aws_session_token": "token"}, "aws_access_key_id"),
+            (
+                {
+                    "aws_access_key_id": "alternator",
+                    "aws_secret_access_key": "secret",
+                    "aws_session_token": "",
+                },
+                "aws_session_token",
+            ),
+        ],
+    )
+    def test_rejects_invalid_legacy_boto_credentials(
+        self,
+        boto_kwargs: dict[str, object],
+        error_match: str,
+    ) -> None:
+        """Raw boto credentials require complete non-empty static values."""
+        with (
+            pytest.warns(DeprecationWarning, match="raw boto credential kwargs"),
+            pytest.raises(ConfigurationError, match=error_match),
+        ):
+            apply_auth(None, boto_kwargs)
+
     def test_rejects_auth_with_legacy_boto_credentials(self) -> None:
         """Explicit auth cannot be mixed with raw boto credential kwargs."""
         boto_kwargs: dict[str, object] = {

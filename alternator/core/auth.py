@@ -51,7 +51,32 @@ def apply_auth(auth: Auth | None, boto_kwargs: dict[str, Any]) -> bool:
             DeprecationWarning,
             stacklevel=3,
         )
-        return "aws_access_key_id" in boto_kwargs
+
+        if all(boto_kwargs[key] is None for key in legacy_credential_keys):
+            for key in legacy_credential_keys:
+                del boto_kwargs[key]
+            return False
+
+        access_key_id = boto_kwargs.get("aws_access_key_id")
+        secret_access_key = boto_kwargs.get("aws_secret_access_key")
+        if not isinstance(access_key_id, str) or not access_key_id:
+            raise ConfigurationError(
+                "Raw boto credentials require a non-empty aws_access_key_id"
+            )
+        if not isinstance(secret_access_key, str) or not secret_access_key:
+            raise ConfigurationError(
+                "Raw boto credentials require a non-empty aws_secret_access_key"
+            )
+
+        session_token = boto_kwargs.get("aws_session_token")
+        if session_token is not None and (
+            not isinstance(session_token, str) or not session_token
+        ):
+            raise ConfigurationError(
+                "Raw boto credentials require aws_session_token to be a non-empty "
+                "string when provided"
+            )
+        return True
 
     resolved_auth = auth or Auth.disabled()
     if not resolved_auth.enabled:
