@@ -15,12 +15,15 @@
 """Tests for AsyncLiveNodesManager and AsyncPartitionKeyCache."""
 
 import asyncio
+import gc
+import warnings
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from alternator.async_client import AsyncPartitionKeyCache
+import alternator.async_client as async_client_module
+from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator.config import Config
 from alternator.core.live_nodes import AsyncLiveNodesManager, NoNodesAvailableError
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
@@ -399,7 +402,7 @@ class TestAsyncPartitionKeyCache:
     async def test_preload_returns_cached_value(self) -> None:
         """Test that preloaded values are returned without fetch."""
         client = MagicMock()
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         cache.preload({"my_table": "pk"})
 
@@ -407,6 +410,17 @@ class TestAsyncPartitionKeyCache:
         assert result == "pk"
         # Should not have called describe_table
         client.describe_table.assert_not_called()
+
+    def test_cached_lookup_without_running_loop_does_not_leak_coroutine(self) -> None:
+        """Synchronous cache probes fail quietly when no event loop is active."""
+        cache = async_client_module.AsyncPartitionKeyCache(MagicMock())
+
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter("always", RuntimeWarning)
+            assert cache.get_cached_pk_name("table") is None
+            gc.collect()
+
+        assert not [warning for warning in seen if warning.category is RuntimeWarning]
 
     @pytest.mark.asyncio
     async def test_fetch_and_cache(self) -> None:
@@ -421,7 +435,7 @@ class TestAsyncPartitionKeyCache:
             }
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         # First call should fetch
         result = await cache.get_pk_name("test_table")
@@ -440,7 +454,7 @@ class TestAsyncPartitionKeyCache:
         client = AsyncMock()
         client.describe_table.side_effect = Exception("Network error")
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         result = await cache.get_pk_name("test_table")
         assert result is None
@@ -457,7 +471,7 @@ class TestAsyncPartitionKeyCache:
             }
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         result = await cache.get_pk_name("test_table")
         assert result is None
@@ -470,7 +484,7 @@ class TestAsyncPartitionKeyCache:
             "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
         cache.preload({"table1": "pk1", "table2": "pk2"})
 
         await cache.clear()
@@ -498,7 +512,7 @@ class TestAsyncPartitionKeyCache:
         client = AsyncMock()
         client.describe_table = slow_describe_table
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         # Launch multiple concurrent requests
         tasks = [asyncio.create_task(cache.get_pk_name("test_table")) for _ in range(5)]
@@ -512,6 +526,42 @@ class TestAsyncPartitionKeyCache:
         assert fetch_count == 1
 
     @pytest.mark.asyncio
+    async def test_cancelled_owner_wakes_waiter_and_allows_retry(self) -> None:
+        """Cancellation clears pending discovery so a later call can retry."""
+        fetch_started = asyncio.Event()
+        never_complete = asyncio.Event()
+        fetch_count = 0
+
+        async def describe_table(TableName: str) -> dict[str, Any]:
+            nonlocal fetch_count
+            fetch_count += 1
+            if fetch_count == 1:
+                fetch_started.set()
+                await never_complete.wait()
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
+            }
+
+        client = AsyncMock()
+        client.describe_table = describe_table
+        cache = async_client_module.AsyncPartitionKeyCache(client)
+
+        owner = asyncio.create_task(cache.get_pk_name("test_table"))
+        await fetch_started.wait()
+        waiter = asyncio.create_task(cache.get_pk_name("test_table"))
+        await asyncio.sleep(0)
+        assert not waiter.done()
+
+        owner.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await owner
+
+        assert await asyncio.wait_for(waiter, timeout=1) is None
+        assert "test_table" not in cache._pending
+        assert await cache.get_pk_name("test_table") == "id"
+        assert fetch_count == 2
+
+    @pytest.mark.asyncio
     async def test_different_tables_fetch_independently(self) -> None:
         """Test that different tables are fetched independently."""
         client = AsyncMock()
@@ -519,9 +569,263 @@ class TestAsyncPartitionKeyCache:
             "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         await cache.get_pk_name("table1")
         await cache.get_pk_name("table2")
 
         assert client.describe_table.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_background_discovery_is_coalesced_and_cancelled_on_close(
+        self,
+    ) -> None:
+        """Request-path misses own one cancellable task per table."""
+        fetch_started = asyncio.Event()
+        fetch_cancelled = asyncio.Event()
+        fetch_count = 0
+
+        async def describe_table(TableName: str) -> dict[str, Any]:
+            nonlocal fetch_count
+            assert TableName == "test_table"
+            fetch_count += 1
+            fetch_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                fetch_cancelled.set()
+            return {}
+
+        client = AsyncMock()
+        client.describe_table = describe_table
+        cache = async_client_module.AsyncPartitionKeyCache(client)
+
+        for _ in range(25):
+            assert cache.get_cached_pk_name("test_table") is None
+        await fetch_started.wait()
+
+        assert fetch_count == 1
+        assert len(cache._background_tasks) == 1
+
+        await cache.close()
+
+        assert fetch_cancelled.is_set()
+        assert cache._background_tasks == {}
+        assert cache.get_cached_pk_name("test_table") is None
+
+
+@pytest.mark.asyncio
+async def test_create_manager_closes_fetcher_when_initial_refresh_cancelled(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancelled initial discovery closes its lazily-created HTTP session."""
+
+    class BlockingFetcher:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def __call__(self, url: str) -> list[str]:
+            self.started.set()
+            await asyncio.Event().wait()
+            return []
+
+        async def close(self) -> None:
+            self.closed.set()
+
+    fetcher = BlockingFetcher()
+
+    def create_fetcher(*args: object, **kwargs: object) -> BlockingFetcher:
+        return fetcher
+
+    monkeypatch.setattr(
+        async_client_module, "create_async_http_fetcher", create_fetcher
+    )
+
+    create_task = asyncio.create_task(async_client_module._create_async_manager(config))
+    await fetcher.started.wait()
+    create_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await create_task
+    assert fetcher.closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_repeated_cancellation_cannot_interrupt_manager_cleanup(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second cancellation still lets discovery cleanup finish."""
+
+    class BlockingCloseFetcher:
+        def __init__(self) -> None:
+            self.fetch_started = asyncio.Event()
+            self.close_started = asyncio.Event()
+            self.allow_close = asyncio.Event()
+            self.closed = asyncio.Event()
+
+        async def __call__(self, url: str) -> list[str]:
+            self.fetch_started.set()
+            await asyncio.Event().wait()
+            return []
+
+        async def close(self) -> None:
+            self.close_started.set()
+            await self.allow_close.wait()
+            self.closed.set()
+
+    fetcher = BlockingCloseFetcher()
+
+    def create_fetcher(*args: object, **kwargs: object) -> BlockingCloseFetcher:
+        return fetcher
+
+    monkeypatch.setattr(
+        async_client_module,
+        "create_async_http_fetcher",
+        create_fetcher,
+    )
+
+    create_task = asyncio.create_task(async_client_module._create_async_manager(config))
+    await fetcher.fetch_started.wait()
+    create_task.cancel()
+    await fetcher.close_started.wait()
+    create_task.cancel()
+    fetcher.allow_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await create_task
+    assert fetcher.closed.is_set()
+
+
+@pytest.mark.asyncio
+async def test_create_client_closes_manager_when_cancelled(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation during SDK client creation releases the manager."""
+    manager = AsyncMock(spec=AsyncLiveNodesManager)
+    client_creation_started = asyncio.Event()
+
+    async def create_manager(config: Config) -> AsyncLiveNodesManager:
+        return cast(AsyncLiveNodesManager, manager)
+
+    async def create_client(*args: object, **kwargs: object) -> object:
+        client_creation_started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("unreachable")
+
+    close_manager = AsyncMock()
+    monkeypatch.setattr(async_client_module, "_create_async_manager", create_manager)
+    monkeypatch.setattr(
+        async_client_module, "_create_async_client_with_manager", create_client
+    )
+    monkeypatch.setattr(async_client_module, "_close_async_manager", close_manager)
+
+    create_task = asyncio.create_task(async_client_module.create_async_client(config))
+    await client_creation_started.wait()
+    create_task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await create_task
+    manager.start.assert_awaited_once_with()
+    close_manager.assert_awaited_once_with(manager)
+
+
+@pytest.mark.asyncio
+async def test_entered_sdk_client_closes_when_setup_is_cancelled(
+    config: Config,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation after entering SDK context closes that context."""
+    aioboto3 = pytest.importorskip("aioboto3")
+    manager = MagicMock(spec=AsyncLiveNodesManager)
+    manager.next_node_uri.return_value = "http://127.0.0.1:8000"
+    client = MagicMock()
+    client.meta.events = MagicMock()
+    client_context = MagicMock()
+    client_context.__aenter__ = AsyncMock(return_value=client)
+    client_context.__aexit__ = AsyncMock(return_value=None)
+    session = MagicMock()
+    session.client.return_value = client_context
+
+    monkeypatch.setattr(aioboto3, "Session", lambda: session)
+
+    def cancel_setup(client: object) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(
+        async_client_module,
+        "enable_vector_support",
+        cancel_setup,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await async_client_module._create_async_client_with_manager(
+            config,
+            manager,
+            owns_manager=True,
+        )
+
+    client_context.__aenter__.assert_awaited_once_with()
+    client_context.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_close_async_client_stops_partition_key_discovery() -> None:
+    """Client closure stops its background partition-key tasks first."""
+    client = MagicMock()
+    client.__aexit__ = AsyncMock(return_value=None)
+    cache = MagicMock()
+    cache.close = AsyncMock(return_value=None)
+    setattr(client, MANAGER_ATTR, MagicMock())
+    setattr(client, MANAGER_OWNS_ATTR, False)
+    setattr(client, PK_CACHE_ATTR, cache)
+
+    await async_client_module.close_async_client(client)
+
+    cache.close.assert_awaited_once_with()
+    assert getattr(client, PK_CACHE_ATTR) is None
+    client.__aexit__.assert_awaited_once_with(None, None, None)
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_still_releases_all_client_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation cannot skip cache, manager, or SDK cleanup."""
+    cache_close_started = asyncio.Event()
+    allow_cache_close = asyncio.Event()
+    client = MagicMock()
+    client.__aexit__ = AsyncMock(return_value=None)
+    cache = MagicMock()
+    manager = MagicMock()
+
+    async def close_cache() -> None:
+        cache_close_started.set()
+        await allow_cache_close.wait()
+
+    cache.close = close_cache
+    setattr(client, PK_CACHE_ATTR, cache)
+    setattr(client, MANAGER_ATTR, manager)
+    setattr(client, MANAGER_OWNS_ATTR, True)
+    close_manager = AsyncMock()
+    monkeypatch.setattr(async_client_module, "_close_async_manager", close_manager)
+
+    close_task = asyncio.create_task(async_client_module.close_async_client(client))
+    await cache_close_started.wait()
+    close_task.cancel()
+    await asyncio.sleep(0)
+    close_task.cancel()
+    await asyncio.sleep(0)
+    allow_cache_close.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await close_task
+
+    close_manager.assert_awaited_once_with(manager)
+    assert getattr(client, PK_CACHE_ATTR) is None
+    assert getattr(client, MANAGER_ATTR) is None
+    assert getattr(client, MANAGER_OWNS_ATTR) is False
+    client.__aexit__.assert_awaited_once_with(None, None, None)

@@ -20,6 +20,7 @@ from hypothesis import strategies as st
 from alternator.core.hashing import hash_attribute_value, murmurhash3_x64_128
 from alternator.core.key_affinity import AffinitySelector
 from alternator.core.live_nodes import NodeList
+from alternator.core.query_plan import LazyQueryPlan
 
 
 class TestMurmur3Properties:
@@ -143,30 +144,16 @@ class TestAffinitySelectorProperties:
         result = selector.select(nodes, hash_value)
         assert result is None
 
-    @settings(max_examples=200)
-    @given(
-        st.lists(
-            st.integers(min_value=0, max_value=1000),
-            min_size=100,
-            max_size=100,
-            unique=True,
-        )
-    )
-    def test_distribution_across_nodes(self, hash_values: list[int]) -> None:
-        """Test that unique hash values distribute across nodes."""
+    @settings(max_examples=100)
+    @given(st.integers(min_value=-(2**63), max_value=2**63 - 1))
+    def test_selection_matches_canonical_plan(self, hash_value: int) -> None:
+        """Affinity selection uses canonical seeded query-plan ordering."""
         selector = AffinitySelector()
         nodes = NodeList(nodes=("n1", "n2", "n3", "n4"), scope_name="test")
 
-        # Count selections
-        counts: dict[str, int] = {}
-        for h in hash_values:
-            node = selector.select(nodes, h)
-            if node:
-                counts[node] = counts.get(node, 0) + 1
-
-        # With 100 unique integers across 4 nodes, we expect distribution
-        # At least 2 different nodes should be selected
-        assert len(counts) >= 2
+        assert selector.select(nodes, hash_value) == next(
+            LazyQueryPlan(nodes=nodes.nodes, seed=hash_value)
+        )
 
     @given(st.integers(min_value=-(2**63), max_value=2**63 - 1))
     def test_handles_extreme_hash_values(self, hash_value: int) -> None:

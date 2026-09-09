@@ -18,12 +18,16 @@ from __future__ import annotations
 
 import base64
 import binascii
+import contextlib
 import json
 import logging
+import queue
 import threading
+import weakref
 from collections import Counter
 from collections.abc import Callable, Iterable
-from typing import TYPE_CHECKING, Any, NamedTuple
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
 from alternator.core.hashing import hash_attribute_value
@@ -35,7 +39,20 @@ if TYPE_CHECKING:
     from alternator.core.live_nodes import NodeList
 
 logger = logging.getLogger("alternator")
-AffinityTarget = str | tuple[str, ...]
+
+_PK_DISCOVERY_QUEUE_CAPACITY = 64
+_PK_DISCOVERY_SHUTDOWN_TIMEOUT_SECONDS = 1.0
+_PK_DISCOVERY_STOP = object()
+
+
+@dataclass(frozen=True)
+class SeededAffinityPlan:
+    """Descriptor for a canonical partition-key-seeded query plan."""
+
+    seed: int
+
+
+AffinityTarget = SeededAffinityPlan | tuple[str, ...]
 
 
 class _BatchWriteRoutingTarget(NamedTuple):
@@ -58,25 +75,20 @@ class AffinitySelector:
     """
 
     def select(self, nodes: NodeList, hash_value: int) -> str | None:
-        """Select node based on hash value (deterministic)."""
+        """Select first node from the canonical seeded query plan."""
         if not nodes:
             return None
 
-        sorted_nodes = tuple(sorted(nodes.nodes))
-
-        # Use hash to deterministically select node
-        index = abs(hash_value) % len(sorted_nodes)
-        selected = sorted_nodes[index]
+        sorted_nodes = tuple(sorted(set(nodes.nodes)))
+        selected = next(LazyQueryPlan(nodes=sorted_nodes, seed=hash_value))
         logger.debug(
-            "Affinity selection: hash=%d -> node_index=%d -> %s (of %d nodes)",
+            "Affinity selection: hash=%d -> %s (of %d nodes)",
             hash_value,
-            index,
             selected,
             len(sorted_nodes),
             extra={
                 "event": "affinity_selection",
                 "hash_value": hash_value,
-                "node_index": index,
                 "selected_node": selected,
                 "node_count": len(sorted_nodes),
             },
@@ -93,7 +105,8 @@ def is_rmw_operation(operation_name: str, params: dict[str, Any]) -> bool:
     if operation_name not in {"UpdateItem", "PutItem", "DeleteItem"}:
         return False
 
-    if "Expected" in params:
+    expected = params.get("Expected")
+    if isinstance(expected, dict) and expected:
         return True
 
     if _non_empty_string(params.get("ConditionExpression")):
@@ -102,13 +115,13 @@ def is_rmw_operation(operation_name: str, params: dict[str, Any]) -> bool:
     return_values = params.get("ReturnValues")
 
     if operation_name in {"PutItem", "DeleteItem"}:
-        return return_values == "ALL_OLD"
+        return isinstance(return_values, str) and return_values not in ("", "NONE")
 
     if operation_name == "UpdateItem":
         if _non_empty_string(params.get("UpdateExpression")):
             return True
 
-        if return_values not in (None, "", "NONE", "UPDATED_NEW"):
+        if return_values in ("ALL_OLD", "UPDATED_OLD", "ALL_NEW"):
             return True
 
         return _attribute_updates_need_read(params.get("AttributeUpdates"))
@@ -128,6 +141,8 @@ def should_use_affinity(mode: str, operation_name: str, params: dict[str, Any]) 
     if mode == "RMW":
         return is_rmw_operation(operation_name, params)
     if mode == "ANY_WRITE":
+        if operation_name == "BatchWriteItem":
+            return any(_iter_batch_write_candidates(params))
         return is_write_operation(operation_name)
     return False
 
@@ -173,7 +188,7 @@ def select_affinity_node(
         logger.debug("Error hashing partition key: %s", e)
         return None
 
-    return AffinitySelector().select(nodes, hash_value)
+    return SeededAffinityPlan(seed=hash_value)
 
 
 def extract_partition_key(
@@ -204,16 +219,20 @@ def extract_partition_key(
 
 def _extract_typed_value(attr_value: dict[str, Any]) -> tuple[str, Any] | None:
     """Extract type and value from DynamoDB AttributeValue."""
-    for attr_type in ("S", "N", "B"):
-        if attr_type in attr_value:
-            value = attr_value[attr_type]
-            if attr_type == "B" and isinstance(value, str):
-                try:
-                    value = base64.b64decode(value, validate=True)
-                except binascii.Error:
-                    return None
-            return (attr_type, value)
-    return None
+    recognized_types = [
+        attr_type for attr_type in ("S", "N", "B") if attr_type in attr_value
+    ]
+    if len(recognized_types) != 1 or len(attr_value) != 1:
+        return None
+
+    attr_type = recognized_types[0]
+    value = attr_value[attr_type]
+    if attr_type == "B" and isinstance(value, str):
+        try:
+            value = base64.b64decode(value, validate=True)
+        except binascii.Error:
+            return None
+    return (attr_type, value)
 
 
 def _select_batch_write_affinity_node(
@@ -222,9 +241,15 @@ def _select_batch_write_affinity_node(
     get_pk_name: Callable[[str], str | None],
 ) -> tuple[str, ...] | None:
     votes: Counter[str] = Counter()
+    pk_names: dict[str, str | None] = {}
 
     for candidate in _iter_batch_write_candidates(params):
-        pk_name = get_pk_name(candidate.table_name)
+        if candidate.table_name not in pk_names:
+            # Keep metadata stable for the whole request.  In particular, a
+            # background lookup started by the first candidate must not make a
+            # timing-dependent suffix of a cold batch affinity-eligible.
+            pk_names[candidate.table_name] = get_pk_name(candidate.table_name)
+        pk_name = pk_names[candidate.table_name]
         if not pk_name:
             continue
 
@@ -261,7 +286,7 @@ def _select_query_plan_first_node(nodes: NodeList, hash_value: int) -> str | Non
     """Return first node from canonical seeded affinity query plan."""
     if not nodes:
         return None
-    return next(LazyQueryPlan(nodes=tuple(sorted(nodes.nodes)), seed=hash_value))
+    return next(LazyQueryPlan(nodes=tuple(sorted(set(nodes.nodes))), seed=hash_value))
 
 
 def _iter_batch_write_candidates(
@@ -325,17 +350,9 @@ def _attribute_updates_need_read(attribute_updates: object) -> bool:
         action = update.get("Action")
         if action == "ADD":
             return True
-        if action == "DELETE" and _attribute_update_value_is_non_empty(
-            update.get("Value")
-        ):
+        if action == "DELETE" and update.get("Value") is not None:
             return True
     return False
-
-
-def _attribute_update_value_is_non_empty(value: object) -> bool:
-    if not isinstance(value, dict):
-        return bool(value)
-    return any(bool(item) for item in value.values())
 
 
 def get_table_name(params: dict[str, Any]) -> str | None:
@@ -424,98 +441,210 @@ def _to_jsonable(value: object) -> object:
     return repr(value)
 
 
+class _PartitionKeyDiscoveryWorker:
+    """Bounded daemon worker which never owns its cache or boto client."""
+
+    def __init__(
+        self,
+        cache_ref: weakref.ReferenceType[PartitionKeyCache],
+        *,
+        queue_capacity: int,
+        shutdown_timeout_seconds: float,
+        thread_name: str,
+    ) -> None:
+        if queue_capacity < 1:
+            raise ValueError("queue_capacity must be at least 1")
+        if shutdown_timeout_seconds < 0:
+            raise ValueError("shutdown_timeout_seconds must not be negative")
+
+        self._cache_ref = cache_ref
+        self._queue: queue.Queue[str | object] = queue.Queue(maxsize=queue_capacity)
+        self._shutdown_timeout_seconds = shutdown_timeout_seconds
+        self._thread_name = thread_name
+        self._stopped = threading.Event()
+        self._lifecycle_lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+
+    def submit(self, table_name: str) -> bool:
+        """Queue one table without blocking, starting the worker lazily."""
+        with self._lifecycle_lock:
+            if self._stopped.is_set():
+                return False
+
+            if self._thread is None or not self._thread.is_alive():
+                thread = threading.Thread(
+                    target=self._run,
+                    name=self._thread_name,
+                    daemon=True,
+                )
+                try:
+                    thread.start()
+                except RuntimeError as e:
+                    logger.debug(
+                        "Failed to start partition key discovery worker: %s",
+                        e,
+                        extra={
+                            "event": "pk_discovery_worker_start_failed",
+                            "error_type": type(e).__name__,
+                        },
+                    )
+                    return False
+                self._thread = thread
+
+            try:
+                self._queue.put_nowait(table_name)
+            except queue.Full:
+                return False
+            return True
+
+    def shutdown(self) -> None:
+        """Cancel queued work and wait a bounded time for active work."""
+        with self._lifecycle_lock:
+            first_shutdown = not self._stopped.is_set()
+            self._stopped.set()
+            thread = self._thread
+
+            if first_shutdown and thread is not None:
+                while True:
+                    try:
+                        self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                self._queue.put_nowait(_PK_DISCOVERY_STOP)
+
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=self._shutdown_timeout_seconds)
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is _PK_DISCOVERY_STOP:
+                return
+            if self._stopped.is_set():
+                continue
+
+            cache = self._cache_ref()
+            if cache is None:
+                return
+            try:
+                cache._discover_pk_name(cast(str, item))
+            finally:
+                # Do not retain cache -> client while waiting for more work.
+                del cache
+
+
+def _shutdown_partition_key_worker(worker: _PartitionKeyDiscoveryWorker) -> None:
+    """Weakref callback safe for normal and interpreter-shutdown cleanup."""
+    with contextlib.suppress(Exception):
+        worker.shutdown()
+
+
 class PartitionKeyCache:
-    """
-    Thread-safe cache for partition key names discovered via DescribeTable.
+    """Thread-safe cache with non-blocking probes for request routing."""
 
-    This cache stores the partition key attribute name for each table,
-    avoiding repeated DescribeTable calls.
-    """
-
-    def __init__(self, client: DynamoDBClient) -> None:
-        """
-        Initialize the cache.
-
-        Args:
-            client: boto3 DynamoDB client for DescribeTable calls
-        """
+    def __init__(
+        self,
+        client: DynamoDBClient,
+        *,
+        queue_capacity: int = _PK_DISCOVERY_QUEUE_CAPACITY,
+        shutdown_timeout_seconds: float = _PK_DISCOVERY_SHUTDOWN_TIMEOUT_SECONDS,
+    ) -> None:
+        """Initialize background discovery using the supplied boto3 client."""
         self._client = client
         self._cache: dict[str, str] = {}
         self._pending: dict[str, threading.Event] = {}
+        self._closed = False
         self._lock = threading.Lock()
+        self._worker = _PartitionKeyDiscoveryWorker(
+            weakref.ref(self),
+            queue_capacity=queue_capacity,
+            shutdown_timeout_seconds=shutdown_timeout_seconds,
+            thread_name=f"alternator-pk-discovery-{id(self):x}",
+        )
+        # Callback owns only worker state.  Worker holds a weak cache reference,
+        # so this finalizer cannot keep the cache or client alive.
+        self._client_finalizer = weakref.finalize(
+            client,
+            _shutdown_partition_key_worker,
+            self._worker,
+        )
 
-    def get_pk_name(self, table_name: str) -> str | None:
-        """
-        Get partition key name for a table, using cache when available.
-
-        Uses a pending-state pattern to avoid duplicate DescribeTable calls
-        for concurrent requests to the same table.
-
-        Args:
-            table_name: Name of the DynamoDB table
-
-        Returns:
-            Partition key attribute name, or None if not found
-        """
-        should_fetch = False
-        event: threading.Event | None = None
-
+    def _lookup_or_schedule(
+        self,
+        table_name: str,
+        *,
+        schedule_in_background: bool,
+    ) -> tuple[str | None, threading.Event | None, bool]:
+        """Return cached metadata, pending event, and direct-fetch ownership."""
+        not_scheduled = False
         with self._lock:
-            if table_name in self._cache:
+            pk_name = self._cache.get(table_name)
+            if pk_name is not None:
                 logger.debug(
                     "Partition key cache hit: table=%s pk=%s",
                     table_name,
-                    self._cache[table_name],
+                    pk_name,
                     extra={
                         "event": "pk_cache_hit",
                         "table": table_name,
-                        "pk_name": self._cache[table_name],
+                        "pk_name": pk_name,
                     },
                 )
-                return self._cache[table_name]
+                return (pk_name, None, False)
 
-            if table_name in self._pending:
-                event = self._pending[table_name]
-            else:
-                event = threading.Event()
-                self._pending[table_name] = event
-                should_fetch = True
+            if self._closed:
+                return (None, None, False)
 
-        if should_fetch:
-            try:
-                pk_name = self._fetch_pk_name(table_name)
+            event = self._pending.get(table_name)
+            if event is not None:
+                return (None, event, False)
 
-                if pk_name:
-                    logger.info(
-                        "Discovered partition key for table %s: %s",
-                        table_name,
-                        pk_name,
-                        extra={
-                            "event": "pk_discovery",
-                            "table": table_name,
-                            "pk_name": pk_name,
-                        },
-                    )
-                    with self._lock:
-                        self._cache[table_name] = pk_name
-                else:
-                    logger.debug(
-                        "Failed to discover partition key for table %s",
-                        table_name,
-                        extra={
-                            "event": "pk_discovery_failed",
-                            "table": table_name,
-                        },
-                    )
-            finally:
-                with self._lock:
+            event = threading.Event()
+            self._pending[table_name] = event
+            if schedule_in_background:
+                scheduled = self._worker.submit(table_name)
+                if not scheduled:
                     self._pending.pop(table_name, None)
-                if event:
-                    event.set()
-            return self._cache.get(table_name)
+                    event = None
+                    not_scheduled = True
 
-        # Wait for in-progress fetch to complete (with timeout to avoid deadlock)
-        if event and not event.wait(timeout=PK_DISCOVERY_TIMEOUT_SECONDS):
+        if not_scheduled:
+            logger.debug(
+                "Partition key discovery unavailable for table %s",
+                table_name,
+                extra={
+                    "event": "pk_discovery_not_scheduled",
+                    "table": table_name,
+                },
+            )
+
+        owns_discovery = event is not None and not schedule_in_background
+        return (None, event, owns_discovery)
+
+    def get_cached_pk_name(self, table_name: str) -> str | None:
+        """Return cached metadata, scheduling a background lookup on a miss."""
+        pk_name, _, _ = self._lookup_or_schedule(
+            table_name,
+            schedule_in_background=True,
+        )
+
+        # This request must use random fallback even if discovery finishes now.
+        return pk_name
+
+    def get_pk_name(self, table_name: str) -> str | None:
+        """Return metadata, waiting for coalesced discovery on a cache miss."""
+        pk_name, event, owns_discovery = self._lookup_or_schedule(
+            table_name,
+            schedule_in_background=False,
+        )
+        if pk_name is not None or event is None:
+            return pk_name
+
+        if owns_discovery:
+            # Match the original synchronous API: the initiating diagnostic
+            # lookup is bounded by the SDK operation's own timeout/retry policy.
+            self._discover_pk_name(table_name)
+        elif not event.wait(timeout=PK_DISCOVERY_TIMEOUT_SECONDS):
             logger.warning(
                 "Timed out waiting for partition key discovery for table %s",
                 table_name,
@@ -525,7 +654,44 @@ class PartitionKeyCache:
                 },
             )
             return None
-        return self._cache.get(table_name)
+
+        with self._lock:
+            return self._cache.get(table_name)
+
+    def _discover_pk_name(self, table_name: str) -> None:
+        """Discover and publish one table's partition key in the worker."""
+        pk_name: str | None = None
+        try:
+            pk_name = self._fetch_pk_name(table_name)
+        finally:
+            with self._lock:
+                event = self._pending.pop(table_name, None)
+                if not self._closed and pk_name:
+                    # Explicitly preloaded metadata wins a race with discovery.
+                    self._cache.setdefault(table_name, pk_name)
+            if event is not None:
+                event.set()
+
+        if pk_name:
+            logger.info(
+                "Discovered partition key for table %s: %s",
+                table_name,
+                pk_name,
+                extra={
+                    "event": "pk_discovery",
+                    "table": table_name,
+                    "pk_name": pk_name,
+                },
+            )
+        else:
+            logger.debug(
+                "Failed to discover partition key for table %s",
+                table_name,
+                extra={
+                    "event": "pk_discovery_failed",
+                    "table": table_name,
+                },
+            )
 
     def _fetch_pk_name(self, table_name: str) -> str | None:
         """
@@ -570,4 +736,20 @@ class PartitionKeyCache:
             table_pk_map: Mapping of table name to partition key name
         """
         with self._lock:
-            self._cache.update(table_pk_map)
+            if not self._closed:
+                self._cache.update(table_pk_map)
+
+    def close(self) -> None:
+        """Stop background discovery without waiting indefinitely."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            pending_events = tuple(self._pending.values())
+            self._pending.clear()
+
+        for event in pending_events:
+            event.set()
+
+        # Invoking the finalizer is idempotent and disables its later GC run.
+        self._client_finalizer()

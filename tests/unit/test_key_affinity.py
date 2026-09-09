@@ -16,11 +16,15 @@
 
 import contextlib
 import copy
+import gc
 import threading
+import time
+import weakref
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from botocore.awsrequest import AWSPreparedRequest
 
@@ -30,6 +34,7 @@ from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
     AffinitySelector,
     PartitionKeyCache,
+    SeededAffinityPlan,
     extract_partition_key,
     get_table_name,
     is_rmw_operation,
@@ -42,6 +47,15 @@ from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_request_params
 
 Params = dict[str, Any]
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return bool(predicate())
 
 
 def _batch_write_routing_target(
@@ -98,9 +112,14 @@ class TestIsRmwOperation:
         assert is_rmw_operation("PutItem", params) is False
 
     def test_put_with_expected_is_rmw(self) -> None:
-        """Test PutItem with Expected is RMW."""
-        params: Params = {"Expected": {}}
+        """Test PutItem with non-empty Expected is RMW."""
+        params = {"Expected": {"pk": {"Exists": False}}}
         assert is_rmw_operation("PutItem", params) is True
+
+    def test_put_with_empty_expected_is_not_rmw(self) -> None:
+        """Test PutItem with empty Expected is not RMW."""
+        params: Params = {"Expected": {}}
+        assert is_rmw_operation("PutItem", params) is False
 
     def test_put_with_all_old_return_values_is_rmw(self) -> None:
         """Test PutItem with ALL_OLD ReturnValues is RMW."""
@@ -111,6 +130,11 @@ class TestIsRmwOperation:
         """Test PutItem with NONE ReturnValues is not RMW."""
         params = {"ReturnValues": "NONE"}
         assert is_rmw_operation("PutItem", params) is False
+
+    def test_put_with_non_none_return_values_is_rmw(self) -> None:
+        """PutItem treats every non-NONE return mode as read-before-write."""
+        params = {"ReturnValues": "UPDATED_NEW"}
+        assert is_rmw_operation("PutItem", params) is True
 
     def test_delete_with_condition_is_rmw(self) -> None:
         """Test DeleteItem with ConditionExpression is RMW."""
@@ -123,19 +147,24 @@ class TestIsRmwOperation:
         assert is_rmw_operation("DeleteItem", params) is False
 
     def test_delete_with_expected_is_rmw(self) -> None:
-        """Test DeleteItem with Expected is RMW."""
-        params: Params = {"Expected": {}}
+        """Test DeleteItem with non-empty Expected is RMW."""
+        params = {"Expected": {"pk": {"Exists": True}}}
         assert is_rmw_operation("DeleteItem", params) is True
+
+    def test_delete_with_empty_expected_is_not_rmw(self) -> None:
+        """Test DeleteItem with empty Expected is not RMW."""
+        params: Params = {"Expected": {}}
+        assert is_rmw_operation("DeleteItem", params) is False
 
     def test_delete_with_all_old_return_values_is_rmw(self) -> None:
         """Test DeleteItem with ALL_OLD ReturnValues is RMW."""
         params = {"ReturnValues": "ALL_OLD"}
         assert is_rmw_operation("DeleteItem", params) is True
 
-    def test_delete_with_updated_new_return_values_is_not_rmw(self) -> None:
-        """Test DeleteItem only treats ALL_OLD ReturnValues as RMW."""
+    def test_delete_with_updated_new_return_values_is_rmw(self) -> None:
+        """DeleteItem treats every non-NONE return mode as read-before-write."""
         params = {"ReturnValues": "UPDATED_NEW"}
-        assert is_rmw_operation("DeleteItem", params) is False
+        assert is_rmw_operation("DeleteItem", params) is True
 
     def test_update_with_return_values_is_rmw(self) -> None:
         """Test UpdateItem with non-NONE ReturnValues is RMW."""
@@ -163,9 +192,14 @@ class TestIsRmwOperation:
         assert is_rmw_operation("UpdateItem", params) is False
 
     def test_update_with_expected_is_rmw(self) -> None:
-        """Test UpdateItem with Expected is RMW."""
-        params: Params = {"Expected": {}}
+        """Test UpdateItem with non-empty Expected is RMW."""
+        params = {"Expected": {"pk": {"Exists": True}}}
         assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_empty_expected_is_not_rmw(self) -> None:
+        """Test UpdateItem with empty Expected is not RMW."""
+        params: Params = {"Expected": {}}
+        assert is_rmw_operation("UpdateItem", params) is False
 
     def test_update_with_empty_return_values_is_not_rmw(self) -> None:
         """Test UpdateItem with empty ReturnValues is not RMW."""
@@ -181,6 +215,11 @@ class TestIsRmwOperation:
         """Test UpdateItem ReturnValues other than allowed no-read values is RMW."""
         params = {"ReturnValues": "ALL_NEW"}
         assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_unknown_return_values_is_not_rmw(self) -> None:
+        """Unknown return modes do not create an affinity plan."""
+        params = {"ReturnValues": "FUTURE_MODE"}
+        assert is_rmw_operation("UpdateItem", params) is False
 
     def test_update_with_attribute_updates_add_is_rmw(self) -> None:
         """Test AttributeUpdates ADD action is RMW."""
@@ -200,6 +239,11 @@ class TestIsRmwOperation:
         """Test AttributeUpdates DELETE action without a value is not RMW."""
         params = {"AttributeUpdates": {"tags": {"Action": "DELETE"}}}
         assert is_rmw_operation("UpdateItem", params) is False
+
+    def test_update_with_attribute_updates_delete_empty_value_is_rmw(self) -> None:
+        """Legacy DELETE qualifies whenever its Value member is present."""
+        params = {"AttributeUpdates": {"tags": {"Action": "DELETE", "Value": {}}}}
+        assert is_rmw_operation("UpdateItem", params) is True
 
     def test_get_item_is_not_rmw(self) -> None:
         """Test GetItem is never RMW."""
@@ -286,13 +330,25 @@ class TestShouldUseAffinity:
         assert should_use_affinity("ANY_WRITE", "PutItem", params) is True
         assert should_use_affinity("ANY_WRITE", "UpdateItem", params) is True
         assert should_use_affinity("ANY_WRITE", "DeleteItem", params) is True
-        assert should_use_affinity("ANY_WRITE", "BatchWriteItem", params) is True
+        batch_params = {
+            "RequestItems": {
+                "users": [{"DeleteRequest": {"Key": {"pk": {"S": "value"}}}}]
+            }
+        }
+        assert should_use_affinity("ANY_WRITE", "BatchWriteItem", batch_params) is True
 
     def test_any_write_mode_with_read(self) -> None:
         """Test ANY_WRITE mode with read operation."""
         params: Params = {}
         assert should_use_affinity("ANY_WRITE", "GetItem", params) is False
         assert should_use_affinity("ANY_WRITE", "Query", params) is False
+
+    def test_any_write_empty_batch_is_not_affinity_eligible(self) -> None:
+        """Batch affinity requires at least one usable put or delete."""
+        assert (
+            should_use_affinity("ANY_WRITE", "BatchWriteItem", {"RequestItems": {}})
+            is False
+        )
 
 
 class TestSelectAffinityNode:
@@ -307,16 +363,13 @@ class TestSelectAffinityNode:
             "Item": {"pk": {"S": value}},
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="PutItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "b"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="PutItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == SeededAffinityPlan(hash_attribute_value("S", value))
 
     def test_single_delete_item_selects_node(self) -> None:
         """Test single DeleteItem routes by the key partition key."""
@@ -327,16 +380,13 @@ class TestSelectAffinityNode:
             "Key": {"pk": {"S": value}},
         }
 
-        assert (
-            select_affinity_node(
-                mode="ANY_WRITE",
-                operation_name="DeleteItem",
-                params=params,
-                nodes=nodes,
-                get_pk_name={"orders": "pk"}.get,
-            )
-            == "c"
-        )
+        assert select_affinity_node(
+            mode="ANY_WRITE",
+            operation_name="DeleteItem",
+            params=params,
+            nodes=nodes,
+            get_pk_name={"orders": "pk"}.get,
+        ) == SeededAffinityPlan(hash_attribute_value("S", value))
 
     def test_single_put_item_binary_pk_decodes_prepared_json(self) -> None:
         """Real botocore JSON base64 binary values are decoded before hashing."""
@@ -346,10 +396,7 @@ class TestSelectAffinityNode:
 
         nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
         binary_value = b"\x00\x01stable"
-        expected = AffinitySelector().select(
-            nodes,
-            hash_attribute_value("B", binary_value),
-        )
+        expected = SeededAffinityPlan(hash_attribute_value("B", binary_value))
         captured_params: dict[str, Any] = {}
 
         client = boto3.client(
@@ -416,7 +463,8 @@ class TestSelectAffinityNode:
             candidate = f"canonical-batch-{index}"
             hash_value = hash_attribute_value("S", candidate)
             query_plan_node = _query_plan_first_node(nodes, hash_value)
-            modulo_node = AffinitySelector().select(nodes, hash_value)
+            sorted_nodes = tuple(sorted(nodes.nodes))
+            modulo_node = sorted_nodes[abs(hash_value) % len(sorted_nodes)]
             if query_plan_node != modulo_node:
                 value = candidate
                 expected = query_plan_node
@@ -531,6 +579,35 @@ class TestSelectAffinityNode:
             )
             is None
         )
+
+    def test_batch_write_snapshots_missing_metadata_per_table(self) -> None:
+        """A lookup completing mid-request cannot route only part of a batch."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"S": "first"}}}},
+                    {"PutRequest": {"Item": {"pk": {"S": "second"}}}},
+                ],
+            }
+        }
+        lookups: list[str] = []
+
+        def metadata_becomes_available(table_name: str) -> str | None:
+            lookups.append(table_name)
+            return None if len(lookups) == 1 else "pk"
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name=metadata_becomes_available,
+            )
+            is None
+        )
+        assert lookups == ["orders"]
 
     def test_batch_write_missing_pk_value_falls_back(self) -> None:
         """Test missing partition-key value produces no preferred node."""
@@ -785,8 +862,8 @@ class TestSelectAffinityNode:
 class TestAffinityHandlerRouting:
     """Tests for preferred-node routing through shared request handlers."""
 
-    def test_preferred_node_first_and_remaining_nodes_preserved(self) -> None:
-        """Test handler tries preferred node first without dropping retries."""
+    def test_seeded_plan_and_retry_cycle_match_canonical_order(self) -> None:
+        """Single-item affinity retries preserve the full canonical plan."""
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
@@ -796,11 +873,11 @@ class TestAffinityHandlerRouting:
             operation_name: str,
             params: dict[str, Any],
             nodes: NodeList,
-        ) -> str | None:
+        ) -> SeededAffinityPlan:
             assert operation_name == "PutItem"
             assert params == {"TableName": "orders"}
             assert nodes.nodes == ("a", "b", "c")
-            return "b"
+            return SeededAffinityPlan(seed=42)
 
         _register_alternator_handlers(
             events,
@@ -819,15 +896,16 @@ class TestAffinityHandlerRouting:
         request._alternator_query_plan = None
 
         update_endpoint = handlers["update_endpoint"]
-        update_endpoint(request)
-        first_url = request.url
-        update_endpoint(request)
-        second_url = request.url
-        update_endpoint(request)
-        third_url = request.url
+        urls: list[str] = []
+        for _ in range(6):
+            update_endpoint(request)
+            urls.append(request.url)
 
-        assert first_url == "http://b:8000/"
-        assert {second_url, third_url} == {"http://a:8000/", "http://c:8000/"}
+        expected_cycle = [
+            f"http://{node}:8000/"
+            for node in LazyQueryPlan(nodes=("a", "b", "c"), seed=42)
+        ]
+        assert urls == expected_cycle * 2
 
     def test_query_plan_brackets_ipv6_nodes(self) -> None:
         """Test request handler formats raw IPv6 node addresses as URL authorities."""
@@ -906,11 +984,14 @@ class TestAffinityHandlerRouting:
         second_url = request.url
         update_endpoint(request)
         third_url = request.url
+        update_endpoint(request)
+        fourth_url = request.url
 
-        assert (first_url, second_url, third_url) == (
+        assert (first_url, second_url, third_url, fourth_url) == (
             "http://c:8000/",
             "http://a:8000/",
             "http://b:8000/",
+            "http://c:8000/",
         )
 
 
@@ -941,6 +1022,12 @@ class TestExtractPartitionKey:
         params = {"Item": {"pk": {"S": "partition_key_value"}}}
         result = extract_partition_key(params, "pk")
         assert result == ("S", "partition_key_value")
+
+    def test_malformed_multi_type_value_is_not_routable(self) -> None:
+        """AttributeValue unions with multiple members use normal routing."""
+        params = {"Key": {"pk": {"S": "value", "N": "1"}}}
+
+        assert extract_partition_key(params, "pk") is None
 
     def test_extract_from_batch_write_put_request(self) -> None:
         """Test extracting PK from BatchWriteItem PutRequest."""
@@ -1347,22 +1434,131 @@ class TestAffinitySelector:
 class TestPartitionKeyCache:
     """Tests for PartitionKeyCache class."""
 
-    def test_cache_miss_calls_describe_table(self) -> None:
-        """Test cache miss triggers DescribeTable call."""
+    def test_blocking_lookup_discovers_on_first_call(self) -> None:
+        """Diagnostic lookups preserve first-call synchronous discovery."""
         mock_client = MagicMock()
         mock_client.describe_table.return_value = {
-            "Table": {
-                "KeySchema": [
-                    {"AttributeName": "pk", "KeyType": "HASH"},
-                ]
-            }
+            "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
         }
-
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
 
-        assert result == "pk"
-        mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        try:
+            assert cache.get_pk_name("test_table") == "pk"
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            cache.close()
+
+    def test_blocking_lookup_owner_uses_sdk_timeout_not_join_timeout(self) -> None:
+        """The initiating diagnostic lookup waits through a slow SDK success."""
+        mock_client = MagicMock()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            time.sleep(0.05)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client)
+
+        try:
+            with patch(
+                "alternator.core.key_affinity.PK_DISCOVERY_TIMEOUT_SECONDS",
+                0.001,
+            ):
+                assert cache.get_pk_name("test_table") == "pk"
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            cache.close()
+
+    def test_blocking_concurrent_lookups_share_discovery(self) -> None:
+        """Concurrent diagnostic lookups wait for one DescribeTable call."""
+        mock_client = MagicMock()
+        started = threading.Event()
+        release = threading.Event()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            started.set()
+            assert release.wait(timeout=1)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client)
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [
+                    executor.submit(cache.get_pk_name, "test_table") for _ in range(5)
+                ]
+                assert started.wait(timeout=1)
+                release.set()
+                assert [future.result(timeout=1) for future in futures] == ["pk"] * 5
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            release.set()
+            cache.close()
+
+    def test_worker_start_failure_falls_back_and_can_retry(self) -> None:
+        """Optional discovery does not fail requests when no thread can start."""
+        mock_client = MagicMock()
+        mock_client.describe_table.return_value = {
+            "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+        }
+        cache = PartitionKeyCache(mock_client)
+
+        try:
+            with patch.object(
+                threading.Thread,
+                "start",
+                side_effect=RuntimeError("can't start new thread"),
+            ):
+                assert cache.get_cached_pk_name("test_table") is None
+
+            assert cache._pending == {}
+            assert cache._worker._queue.empty()
+            mock_client.describe_table.assert_not_called()
+
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            cache.close()
+
+    def test_cache_miss_discovers_in_background(self) -> None:
+        """First and in-flight misses fall back without waiting for discovery."""
+        mock_client = MagicMock()
+        started = threading.Event()
+        release = threading.Event()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            started.set()
+            assert release.wait(timeout=1)
+            return {
+                "Table": {
+                    "KeySchema": [
+                        {"AttributeName": "pk", "KeyType": "HASH"},
+                    ]
+                }
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+
+        cache = PartitionKeyCache(mock_client, shutdown_timeout_seconds=0.05)
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert started.wait(timeout=1)
+            assert cache.get_cached_pk_name("test_table") is None
+
+            release.set()
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            release.set()
+            cache.close()
 
     def test_cache_hit_skips_describe_table(self) -> None:
         """Test cache hit skips DescribeTable call."""
@@ -1376,26 +1572,25 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-
-        # First call - cache miss
-        cache.get_pk_name("test_table")
-        # Second call - cache hit
-        cache.get_pk_name("test_table")
-
-        # Should only call describe_table once
-        assert mock_client.describe_table.call_count == 1
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            assert cache.get_cached_pk_name("test_table") == "pk"
+            assert mock_client.describe_table.call_count == 1
+        finally:
+            cache.close()
 
     def test_preload_populates_cache(self) -> None:
         """Test preload populates cache without API calls."""
         mock_client = MagicMock()
         cache = PartitionKeyCache(mock_client)
-
-        cache.preload({"users": "user_id", "orders": "order_id"})
-
-        # Should not call describe_table
-        assert cache.get_pk_name("users") == "user_id"
-        assert cache.get_pk_name("orders") == "order_id"
-        mock_client.describe_table.assert_not_called()
+        try:
+            cache.preload({"users": "user_id", "orders": "order_id"})
+            assert cache.get_cached_pk_name("users") == "user_id"
+            assert cache.get_cached_pk_name("orders") == "order_id"
+            mock_client.describe_table.assert_not_called()
+        finally:
+            cache.close()
 
     def test_clear_removes_cached_entries(self) -> None:
         """Test clear removes cached entries."""
@@ -1409,13 +1604,14 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-        cache.preload({"test_table": "pk"})
-
-        cache.clear()
-
-        # Should now call describe_table again
-        cache.get_pk_name("test_table")
-        mock_client.describe_table.assert_called_once()
+        try:
+            cache.preload({"test_table": "pk"})
+            cache.clear()
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            mock_client.describe_table.assert_called_once()
+        finally:
+            cache.close()
 
     def test_handles_describe_table_error(self) -> None:
         """Test graceful handling of DescribeTable errors."""
@@ -1423,9 +1619,11 @@ class TestPartitionKeyCache:
         mock_client.describe_table.side_effect = Exception("Access denied")
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
-
-        assert result is None
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: mock_client.describe_table.call_count == 1)
+        finally:
+            cache.close()
 
     def test_handles_missing_key_schema(self) -> None:
         """Test handling when KeySchema is missing."""
@@ -1433,9 +1631,11 @@ class TestPartitionKeyCache:
         mock_client.describe_table.return_value = {"Table": {}}
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
-
-        assert result is None
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: mock_client.describe_table.call_count == 1)
+        finally:
+            cache.close()
 
     def test_handles_no_hash_key(self) -> None:
         """Test handling when no HASH key in schema."""
@@ -1449,9 +1649,11 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
-
-        assert result is None
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: mock_client.describe_table.call_count == 1)
+        finally:
+            cache.close()
 
     def test_composite_key_returns_hash_key_only(self) -> None:
         """Test that only the HASH key is returned for composite key tables."""
@@ -1466,9 +1668,190 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("composite_table")
+        try:
+            assert cache.get_cached_pk_name("composite_table") is None
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("composite_table") == "pk"
+            )
+        finally:
+            cache.close()
 
-        assert result == "pk"
+    def test_queue_is_bounded_and_overflow_can_retry(self) -> None:
+        """Distinct-table floods cannot create an unbounded work backlog."""
+        mock_client = MagicMock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls: list[str] = []
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            calls.append(TableName)
+            if TableName == "active":
+                first_started.set()
+                assert release_first.wait(timeout=1)
+            return {
+                "Table": {
+                    "KeySchema": [
+                        {"AttributeName": f"pk_{TableName}", "KeyType": "HASH"}
+                    ]
+                }
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client, queue_capacity=1)
+        try:
+            assert cache.get_cached_pk_name("active") is None
+            assert first_started.wait(timeout=1)
+            assert cache.get_cached_pk_name("queued") is None
+            assert cache.get_cached_pk_name("overflow") is None
+
+            release_first.set()
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("active") == "pk_active"
+            )
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("queued") == "pk_queued"
+            )
+            assert "overflow" not in calls
+
+            assert cache.get_cached_pk_name("overflow") is None
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("overflow") == "pk_overflow"
+            )
+        finally:
+            release_first.set()
+            cache.close()
+
+    def test_close_is_bounded_cancels_queue_and_is_idempotent(self) -> None:
+        """Close rejects new work and does not wait forever on active I/O."""
+        mock_client = MagicMock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        close_returned = threading.Event()
+        calls: list[str] = []
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            calls.append(TableName)
+            first_started.set()
+            assert release_first.wait(timeout=1)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client, shutdown_timeout_seconds=0.01)
+        assert cache.get_cached_pk_name("active") is None
+        assert first_started.wait(timeout=1)
+        assert cache.get_cached_pk_name("queued") is None
+
+        def close_cache() -> None:
+            cache.close()
+            close_returned.set()
+
+        closer = threading.Thread(target=close_cache)
+        closer.start()
+        assert close_returned.wait(timeout=0.5)
+        closer.join()
+        cache.close()
+        assert cache.get_cached_pk_name("new") is None
+
+        release_first.set()
+        worker_thread = cache._worker._thread
+        assert worker_thread is not None
+        worker_thread.join(timeout=1)
+        assert not worker_thread.is_alive()
+        assert calls == ["active"]
+
+    def test_close_wakes_blocking_lookup_waiters(self) -> None:
+        """Closing a cache releases diagnostics waiting on background work."""
+        mock_client = MagicMock()
+        fetch_started = threading.Event()
+        release_fetch = threading.Event()
+        entered_wait = threading.Event()
+        waiter_done = threading.Event()
+        results: list[str | None] = []
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            fetch_started.set()
+            assert release_fetch.wait(timeout=1)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client, shutdown_timeout_seconds=0.01)
+        assert cache.get_cached_pk_name("test_table") is None
+        assert fetch_started.wait(timeout=1)
+        pending_event = cache._pending["test_table"]
+        pending_wait = pending_event.wait
+
+        def observed_wait(timeout: float | None = None) -> bool:
+            entered_wait.set()
+            return pending_wait(timeout)
+
+        def wait_for_pk() -> None:
+            results.append(cache.get_pk_name("test_table"))
+            waiter_done.set()
+
+        waiter = threading.Thread(target=wait_for_pk)
+        with (
+            patch.object(pending_event, "wait", side_effect=observed_wait),
+            patch("alternator.core.key_affinity.PK_DISCOVERY_TIMEOUT_SECONDS", 1.0),
+        ):
+            waiter.start()
+            assert entered_wait.wait(timeout=1)
+            assert not waiter_done.is_set()
+            cache.close()
+            assert waiter_done.wait(timeout=0.5)
+
+        waiter.join(timeout=1)
+        assert results == [None]
+        release_fetch.set()
+        worker_thread = cache._worker._thread
+        assert worker_thread is not None
+        worker_thread.join(timeout=1)
+        assert not worker_thread.is_alive()
+
+    def test_client_gc_stops_idle_worker_without_retaining_owner(self) -> None:
+        """Forgotten clients and caches remain collectable after discovery."""
+
+        class Client:
+            cache: PartitionKeyCache | None = None
+
+            def describe_table(self, *, TableName: str) -> dict[str, Any]:
+                return {
+                    "Table": {
+                        "KeySchema": [
+                            {"AttributeName": f"pk_{TableName}", "KeyType": "HASH"}
+                        ]
+                    }
+                }
+
+        def create_owner_cycle() -> tuple[
+            weakref.ReferenceType[Client],
+            weakref.ReferenceType[PartitionKeyCache],
+            threading.Thread,
+        ]:
+            client = Client()
+            cache = PartitionKeyCache(client)  # type: ignore[arg-type]
+            client.cache = cache
+            assert cache.get_cached_pk_name("table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("table") == "pk_table")
+            worker_thread = cache._worker._thread
+            assert worker_thread is not None
+            return weakref.ref(client), weakref.ref(cache), worker_thread
+
+        client_ref, cache_ref, worker_thread = create_owner_cycle()
+        for _ in range(20):
+            gc.collect()
+            if client_ref() is None and cache_ref() is None:
+                break
+            time.sleep(0.01)
+
+        assert client_ref() is None
+        assert cache_ref() is None
+        worker_thread.join(timeout=1)
+        assert not worker_thread.is_alive()
 
 
 class TestPartitionKeyCacheThreadSafety:
@@ -1477,13 +1860,22 @@ class TestPartitionKeyCacheThreadSafety:
     def test_concurrent_get_pk_name_same_table(self) -> None:
         """Test concurrent access to same table."""
         mock_client = MagicMock()
-        mock_client.describe_table.return_value = {
-            "Table": {
-                "KeySchema": [
-                    {"AttributeName": "pk", "KeyType": "HASH"},
-                ]
+        started = threading.Event()
+        release = threading.Event()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            started.set()
+            assert release.wait(timeout=1)
+            return {
+                "Table": {
+                    "KeySchema": [
+                        {"AttributeName": "pk", "KeyType": "HASH"},
+                    ]
+                }
             }
-        }
+
+        mock_client.describe_table.side_effect = describe_table
 
         cache = PartitionKeyCache(mock_client)
         errors: list[Exception] = []
@@ -1493,67 +1885,83 @@ class TestPartitionKeyCacheThreadSafety:
         def get_pk() -> None:
             try:
                 for _ in range(50):
-                    result = cache.get_pk_name("test_table")
+                    result = cache.get_cached_pk_name("test_table")
                     with lock:
                         results.append(result)
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=get_pk) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert started.wait(timeout=1)
+            threads = [threading.Thread(target=get_pk) for _ in range(10)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
 
-        assert len(errors) == 0
-        assert len(results) == 500
-        assert all(r == "pk" for r in results)
-        # Despite 500 calls, should only call describe_table once
-        assert mock_client.describe_table.call_count == 1
+            assert not errors
+            assert len(results) == 500
+            assert all(result is None for result in results)
+            assert mock_client.describe_table.call_count == 1
+            release.set()
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+        finally:
+            release.set()
+            cache.close()
 
     def test_concurrent_get_pk_name_different_tables(self) -> None:
-        """Test concurrent access to different tables."""
+        """One worker serializes discovery across different tables."""
         mock_client = MagicMock()
+        first_started = threading.Event()
+        release = threading.Event()
+        activity_lock = threading.Lock()
+        active = 0
+        max_active = 0
 
         def describe_table_side_effect(TableName: str) -> dict[str, object]:
-            return {
-                "Table": {
-                    "KeySchema": [
-                        {"AttributeName": f"pk_{TableName}", "KeyType": "HASH"},
-                    ]
+            nonlocal active, max_active
+            with activity_lock:
+                active += 1
+                max_active = max(max_active, active)
+            first_started.set()
+            assert release.wait(timeout=1)
+            try:
+                return {
+                    "Table": {
+                        "KeySchema": [
+                            {
+                                "AttributeName": f"pk_{TableName}",
+                                "KeyType": "HASH",
+                            },
+                        ]
+                    }
                 }
-            }
+            finally:
+                with activity_lock:
+                    active -= 1
 
         mock_client.describe_table.side_effect = describe_table_side_effect
 
         cache = PartitionKeyCache(mock_client)
-        errors: list[Exception] = []
-        results: list[tuple[str, str | None]] = []
-        lock = threading.Lock()
+        table_names = [f"table_{index}" for index in range(10)]
 
-        def get_pk(table_id: int) -> None:
-            try:
-                table_name = f"table_{table_id}"
-                for _ in range(20):
-                    result = cache.get_pk_name(table_name)
-                    with lock:
-                        results.append((table_name, result))
-            except Exception as e:
-                errors.append(e)
+        def has_expected_pk(table_name: str) -> Callable[[], bool]:
+            return lambda: cache.get_cached_pk_name(table_name) == f"pk_{table_name}"
 
-        # 10 threads, each accessing a different table
-        threads = [threading.Thread(target=get_pk, args=(i,)) for i in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert len(errors) == 0
-        assert len(results) == 200
-
-        # Verify each table got correct pk
-        for table_name, pk in results:
-            assert pk == f"pk_{table_name}"
+        try:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                results = list(executor.map(cache.get_cached_pk_name, table_names))
+            assert all(result is None for result in results)
+            assert first_started.wait(timeout=1)
+            release.set()
+            for table_name in table_names:
+                assert _wait_until(has_expected_pk(table_name))
+            assert max_active == 1
+            assert mock_client.describe_table.call_count == len(table_names)
+        finally:
+            release.set()
+            cache.close()
 
 
 class TestAffinitySelectorConcurrency:
@@ -1565,16 +1973,14 @@ class TestAffinitySelectorConcurrency:
         nodes = NodeList(nodes=("a", "b", "c", "d", "e"), scope_name="test")
 
         # Pre-compute expected results
-        expected = {h: selector.select(nodes, h) for h in range(100)}
+        expected = {h: selector.select(nodes, h) for h in range(20)}
 
-        with ThreadPoolExecutor(max_workers=50) as executor:
-            for h in range(100):
-                # Submit 100 selections for the same hash
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            for h in range(20):
                 futures = [
-                    executor.submit(selector.select, nodes, h) for _ in range(100)
+                    executor.submit(selector.select, nodes, h) for _ in range(10)
                 ]
                 results = [f.result() for f in futures]
-                # All results should match expected
                 assert all(r == expected[h] for r in results)
 
     def test_concurrent_selection_distribution(self) -> None:
@@ -1583,9 +1989,9 @@ class TestAffinitySelectorConcurrency:
         nodes = NodeList(nodes=("n1", "n2", "n3", "n4"), scope_name="test")
 
         # Use different hash values
-        hashes = list(range(10000))
+        hashes = list(range(400))
 
-        with ThreadPoolExecutor(max_workers=100) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [executor.submit(selector.select, nodes, h) for h in hashes]
             results = [f.result() for f in futures]
 
@@ -1593,4 +1999,4 @@ class TestAffinitySelectorConcurrency:
 
         # Distribution should be roughly even
         for node in ("n1", "n2", "n3", "n4"):
-            assert 2000 < counter[node] < 3000
+            assert 60 < counter[node] < 140

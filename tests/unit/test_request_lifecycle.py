@@ -38,16 +38,22 @@ from alternator.config import (
     RequestCompressionConfig,
 )
 from alternator.core.handlers import _register_alternator_handlers
+from alternator.core.key_affinity import SeededAffinityPlan
 from alternator.core.live_nodes import NodeList
+from alternator.core.query_plan import LazyQueryPlan
 
 
 class _StaticManager:
     def __init__(self, nodes: tuple[str, ...]) -> None:
         self._nodes = NodeList(nodes=nodes, scope_name="cluster")
+        self.activity_count = 0
 
     @property
     def nodes(self) -> NodeList:
         return self._nodes
+
+    def mark_activity(self) -> None:
+        self.activity_count += 1
 
 
 class _CountingHTTPServer(HTTPServer):
@@ -172,6 +178,51 @@ def test_signed_request_url_and_compressed_body_are_final_before_signing() -> No
     assert seen["authorization"] is not None
 
 
+def test_header_filter_preserves_every_sigv4_signed_header() -> None:
+    """Header optimization cannot remove fields covered by Authorization."""
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        header_optimization=HeaderOptimizationConfig(enabled=True),
+    )
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url="http://seed:8000",
+        region_name="us-east-1",
+        aws_access_key_id="alternator",
+        aws_secret_access_key="secret",
+        config=BotoConfig(retries={"max_attempts": 0, "mode": "standard"}),
+    )
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("node-b",)),
+        config,
+        auth_enabled=True,
+    )
+    seen: dict[str, Any] = {}
+
+    def add_signed_header(request: AWSRequest, **_: object) -> None:
+        request.headers["X-Custom-Signed"] = "signed-value"
+
+    def capture_before_send(request: AWSPreparedRequest, **_: object) -> None:
+        seen["authorization"] = _header_text(request.headers["Authorization"])
+        seen["custom"] = request.headers.get("X-Custom-Signed")
+        raise RuntimeError("captured")
+
+    client.meta.events.register_first(
+        "before-sign.dynamodb.ListTables", add_signed_header
+    )
+    client.meta.events.register_last(
+        "before-send.dynamodb.ListTables", capture_before_send
+    )
+
+    with pytest.raises(RuntimeError, match="captured"):
+        client.list_tables()
+
+    assert "x-custom-signed" in seen["authorization"]
+    assert seen["custom"] == b"signed-value"
+
+
 def test_unset_user_agent_removes_sdk_user_agent_before_send() -> None:
     """Final request does not include User-Agent when Alternator value is unset."""
     config = Config(
@@ -266,20 +317,21 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
         ),
     )
 
-    def preferred_node(
+    def affinity_plan(
         operation_name: str,
         params: dict[str, Any],
         nodes: NodeList,
-    ) -> str | None:
+    ) -> SeededAffinityPlan:
         assert operation_name == "PutItem"
         assert nodes.nodes == ("node-a", "node-b", "node-c")
-        return "node-b"
+        return SeededAffinityPlan(seed=42)
 
+    manager = _StaticManager(("node-a", "node-b", "node-c"))
     _register_alternator_handlers(
         client.meta.events,
-        _StaticManager(("node-a", "node-b", "node-c")),
+        manager,
         config,
-        preferred_node,
+        affinity_plan,
         auth_enabled=False,
     )
     urls: list[str] = []
@@ -291,7 +343,7 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
         raise EndpointConnectionError(endpoint_url=request.url)
 
     def retry_without_sleep(attempts: int, **_: object) -> int | None:
-        return 0 if attempts < 3 else None
+        return 0 if attempts < 6 else None
 
     client.meta.events.register_last(
         "before-send.dynamodb.PutItem", capture_before_send
@@ -305,8 +357,15 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
     with pytest.raises(EndpointConnectionError):
         client.put_item(TableName="tbl", Item={"pk": {"S": "k"}})
 
-    assert urls[0] == "http://node-b:8000/"
-    assert set(urls[1:]) == {"http://node-a:8000/", "http://node-c:8000/"}
+    expected_cycle = [
+        f"http://{node}:8000/"
+        for node in LazyQueryPlan(
+            nodes=("node-a", "node-b", "node-c"),
+            seed=42,
+        )
+    ]
+    assert urls == expected_cycle * 2
+    assert manager.activity_count == len(urls)
 
 
 def test_dynamodb_non_success_responses_keep_connection_reusable() -> None:

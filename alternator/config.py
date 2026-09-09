@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from alternator._version import __version__
 from alternator.core.routing_scope import ClusterScope, RoutingScope
@@ -356,6 +356,25 @@ class KeyRouteAffinityConfig:
     # Table name -> partition key attribute name mapping
     # If not provided, will auto-discover via DescribeTable
     table_pk_attributes: Mapping[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        mode = cast(object, self.mode)
+        if mode is None:
+            object.__setattr__(self, "mode", KeyRouteAffinityMode.NONE)
+        elif not isinstance(mode, KeyRouteAffinityMode):
+            raise ConfigurationError(f"unsupported key affinity mode: {mode!r}")
+
+        normalized: dict[str, str] = {}
+        entries = cast(Mapping[object, object], self.table_pk_attributes)
+        for table_name, pk_name in entries.items():
+            if table_name is None or pk_name is None:
+                continue
+            if not isinstance(table_name, str) or not isinstance(pk_name, str):
+                raise ConfigurationError(
+                    "table_pk_attributes keys and values must be strings"
+                )
+            normalized[table_name] = pk_name
+        object.__setattr__(self, "table_pk_attributes", normalized)
 
 
 @dataclass(frozen=True)

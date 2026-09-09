@@ -50,8 +50,9 @@ authority for compatibility decisions.
   state. `BatchWriteItem` does not use affinity in `RMW` mode.
 - `ANY_WRITE` key-affinity mode selects a preferred node for single-item writes.
   For `BatchWriteItem`, valid put/delete entries vote for their preferred node.
-  Tied votes, missing partition-key metadata, unsupported key values, no active
-  nodes, or no eligible votes fall back to normal routing.
+  Voted nodes are ordered by descending count and then address. Missing
+  partition-key metadata and unsupported key values are skipped; no eligible
+  votes cause normal-routing fallback, while no active nodes fail locally.
 - The client owns the SDK config object, endpoint routing, auth-managed
   signature settings, TLS client certificate settings, retries, timeouts, and
   final wire `User-Agent` handling.

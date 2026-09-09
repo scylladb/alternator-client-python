@@ -207,6 +207,72 @@ def test_failed_sync_background_refresh_does_not_busy_loop() -> None:
     assert 2 <= calls <= 5
 
 
+def test_sync_activity_wakes_idle_refresh_loop() -> None:
+    """Resumed traffic does not wait for remaining idle polling delay."""
+    refreshed_twice = threading.Event()
+    calls = 0
+
+    def fetch(url: str) -> Sequence[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            refreshed_twice.set()
+        return ["127.0.0.1"]
+
+    config = Config(
+        seed_hosts=["seed.test"],
+        port=8000,
+        node_list_polling=NodeListPollingConfig(
+            active_interval_ms=20,
+            idle_interval_ms=1000,
+        ),
+    )
+    manager = SyncLiveNodesManager(config, fetch)
+    manager._core._last_activity = time.monotonic() - 2
+    manager.start()
+    try:
+        deadline = time.monotonic() + 1
+        while calls < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert calls == 1
+
+        assert manager.next_node_uri() == "http://127.0.0.1:8000"
+
+        assert refreshed_twice.wait(timeout=0.2)
+    finally:
+        manager.stop()
+
+
+def test_sync_sustained_activity_does_not_trigger_refresh_per_request() -> None:
+    """Active traffic keeps configured polling cadence instead of busy-looping."""
+    calls = 0
+
+    def fetch(url: str) -> Sequence[str]:
+        nonlocal calls
+        calls += 1
+        return ["127.0.0.1"]
+
+    config = Config(
+        seed_hosts=["seed.test"],
+        port=8000,
+        node_list_polling=NodeListPollingConfig(
+            active_interval_ms=50,
+            idle_interval_ms=1000,
+        ),
+    )
+    manager = SyncLiveNodesManager(config, fetch)
+    manager.start()
+    try:
+        deadline = time.monotonic() + 0.16
+        while time.monotonic() < deadline:
+            manager.mark_activity()
+            time.sleep(0.001)
+    finally:
+        manager.stop()
+
+    assert 2 <= calls <= 6
+
+
 @pytest.mark.asyncio
 async def test_failed_async_background_refresh_does_not_busy_loop() -> None:
     """Async failures wait for configured polling interval."""
@@ -231,3 +297,123 @@ async def test_failed_async_background_refresh_does_not_busy_loop() -> None:
     await manager.stop()
 
     assert 2 <= calls <= 5
+
+
+@pytest.mark.asyncio
+async def test_async_activity_wakes_idle_refresh_loop() -> None:
+    """Async traffic wakes discovery from its idle polling delay."""
+    refreshed_twice = asyncio.Event()
+    calls = 0
+
+    async def fetch(url: str) -> Sequence[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            refreshed_twice.set()
+        return ["127.0.0.1"]
+
+    config = Config(
+        seed_hosts=["seed.test"],
+        port=8000,
+        node_list_polling=NodeListPollingConfig(
+            active_interval_ms=20,
+            idle_interval_ms=1000,
+        ),
+    )
+    manager = AsyncLiveNodesManager(config, fetch)
+    manager._core._last_activity = time.monotonic() - 2
+    await manager.start()
+    try:
+        deadline = asyncio.get_running_loop().time() + 1
+        while calls < 1 and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        assert calls == 1
+
+        assert manager.next_node_uri() == "http://127.0.0.1:8000"
+
+        await asyncio.wait_for(refreshed_twice.wait(), timeout=0.2)
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.parametrize(
+    ("selection_method", "expected"),
+    (
+        ("next_node", "127.0.0.1"),
+        ("next_node_uri", "http://127.0.0.1:8000"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_async_worker_thread_activity_wakes_idle_refresh_loop(
+    selection_method: str,
+    expected: str,
+) -> None:
+    """Worker-thread selection safely wakes an idle asyncio refresh loop."""
+    refreshed_twice = asyncio.Event()
+    calls = 0
+
+    async def fetch(url: str) -> Sequence[str]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            refreshed_twice.set()
+        return ["127.0.0.1"]
+
+    config = Config(
+        seed_hosts=["seed.test"],
+        port=8000,
+        node_list_polling=NodeListPollingConfig(
+            active_interval_ms=20,
+            idle_interval_ms=1000,
+        ),
+    )
+    manager = AsyncLiveNodesManager(config, fetch)
+    manager._core._last_activity = time.monotonic() - 2
+    loop = asyncio.get_running_loop()
+    previous_debug = loop.get_debug()
+    loop.set_debug(True)
+    await manager.start()
+    try:
+        deadline = loop.time() + 1
+        while not manager._wake_event._waiters and loop.time() < deadline:
+            await asyncio.sleep(0.005)
+        assert manager._wake_event._waiters
+
+        result = await asyncio.to_thread(getattr(manager, selection_method))
+
+        assert result == expected
+        await asyncio.wait_for(refreshed_twice.wait(), timeout=0.2)
+    finally:
+        await manager.stop()
+        loop.set_debug(previous_debug)
+
+
+@pytest.mark.asyncio
+async def test_async_sustained_activity_does_not_trigger_refresh_per_request() -> None:
+    """Async active traffic retains configured polling cadence."""
+    calls = 0
+
+    async def fetch(url: str) -> Sequence[str]:
+        nonlocal calls
+        calls += 1
+        return ["127.0.0.1"]
+
+    config = Config(
+        seed_hosts=["seed.test"],
+        port=8000,
+        node_list_polling=NodeListPollingConfig(
+            active_interval_ms=50,
+            idle_interval_ms=1000,
+        ),
+    )
+    manager = AsyncLiveNodesManager(config, fetch)
+    await manager.start()
+    try:
+        deadline = asyncio.get_running_loop().time() + 0.16
+        while asyncio.get_running_loop().time() < deadline:
+            manager.mark_activity()
+            await asyncio.sleep(0.001)
+    finally:
+        await manager.stop()
+
+    assert 2 <= calls <= 6
