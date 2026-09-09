@@ -24,7 +24,6 @@ import pytest
 
 import alternator.async_client as async_client_module
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
-from alternator.async_client import AsyncPartitionKeyCache, close_async_client
 from alternator.config import Config
 from alternator.core.live_nodes import AsyncLiveNodesManager, NoNodesAvailableError
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
@@ -403,7 +402,7 @@ class TestAsyncPartitionKeyCache:
     async def test_preload_returns_cached_value(self) -> None:
         """Test that preloaded values are returned without fetch."""
         client = MagicMock()
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         cache.preload({"my_table": "pk"})
 
@@ -414,7 +413,7 @@ class TestAsyncPartitionKeyCache:
 
     def test_cached_lookup_without_running_loop_does_not_leak_coroutine(self) -> None:
         """Synchronous cache probes fail quietly when no event loop is active."""
-        cache = AsyncPartitionKeyCache(MagicMock())
+        cache = async_client_module.AsyncPartitionKeyCache(MagicMock())
 
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter("always", RuntimeWarning)
@@ -436,7 +435,7 @@ class TestAsyncPartitionKeyCache:
             }
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         # First call should fetch
         result = await cache.get_pk_name("test_table")
@@ -455,7 +454,7 @@ class TestAsyncPartitionKeyCache:
         client = AsyncMock()
         client.describe_table.side_effect = Exception("Network error")
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         result = await cache.get_pk_name("test_table")
         assert result is None
@@ -472,7 +471,7 @@ class TestAsyncPartitionKeyCache:
             }
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         result = await cache.get_pk_name("test_table")
         assert result is None
@@ -485,7 +484,7 @@ class TestAsyncPartitionKeyCache:
             "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
         cache.preload({"table1": "pk1", "table2": "pk2"})
 
         await cache.clear()
@@ -513,7 +512,7 @@ class TestAsyncPartitionKeyCache:
         client = AsyncMock()
         client.describe_table = slow_describe_table
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         # Launch multiple concurrent requests
         tasks = [asyncio.create_task(cache.get_pk_name("test_table")) for _ in range(5)]
@@ -545,7 +544,7 @@ class TestAsyncPartitionKeyCache:
 
         client = AsyncMock()
         client.describe_table = describe_table
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         owner = asyncio.create_task(cache.get_pk_name("test_table"))
         await fetch_started.wait()
@@ -570,7 +569,7 @@ class TestAsyncPartitionKeyCache:
             "Table": {"KeySchema": [{"AttributeName": "id", "KeyType": "HASH"}]}
         }
 
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         await cache.get_pk_name("table1")
         await cache.get_pk_name("table2")
@@ -599,7 +598,7 @@ class TestAsyncPartitionKeyCache:
 
         client = AsyncMock()
         client.describe_table = describe_table
-        cache = AsyncPartitionKeyCache(client)
+        cache = async_client_module.AsyncPartitionKeyCache(client)
 
         for _ in range(25):
             assert cache.get_cached_pk_name("test_table") is None
@@ -784,7 +783,7 @@ async def test_close_async_client_stops_partition_key_discovery() -> None:
     setattr(client, MANAGER_OWNS_ATTR, False)
     setattr(client, PK_CACHE_ATTR, cache)
 
-    await close_async_client(client)
+    await async_client_module.close_async_client(client)
 
     cache.close.assert_awaited_once_with()
     assert getattr(client, PK_CACHE_ATTR) is None
@@ -814,7 +813,7 @@ async def test_cancelled_close_still_releases_all_client_resources(
     close_manager = AsyncMock()
     monkeypatch.setattr(async_client_module, "_close_async_manager", close_manager)
 
-    close_task = asyncio.create_task(close_async_client(client))
+    close_task = asyncio.create_task(async_client_module.close_async_client(client))
     await cache_close_started.wait()
     close_task.cancel()
     await asyncio.sleep(0)
