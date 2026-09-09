@@ -25,6 +25,7 @@ from functools import partial
 from types import TracebackType
 from typing import TYPE_CHECKING, Any, cast
 
+from alternator._async_sdk import _SessionAdapter as _SdkSession
 from alternator._constants import (
     MANAGER_ATTR,
     MANAGER_OWNS_ATTR,
@@ -409,14 +410,6 @@ async def _create_async_client_with_manager(
     **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
 ) -> AsyncDynamoDBClient:
     """Create an aiobotocore client using an already initialized manager."""
-    try:
-        from aiobotocore.session import get_session
-    except ImportError as e:
-        raise ImportError(
-            "aiobotocore is required for async support. "
-            "Install with: pip install alternator-client[async]"
-        ) from e
-
     # Get initial endpoint
     initial_endpoint = manager.next_node_uri()
 
@@ -431,8 +424,8 @@ async def _create_async_client_with_manager(
     # Alternator doesn't use AWS regions, but the AWS SDK requires one;
     # default to "us-east-1" unless the caller overrides it.
     boto_kwargs.setdefault("region_name", config.aws_region)
-    session = get_session()
-    client_ctx = session.create_client(
+    session = _SdkSession()
+    client_ctx = session.client(
         "dynamodb",
         endpoint_url=initial_endpoint,
         config=boto_config,

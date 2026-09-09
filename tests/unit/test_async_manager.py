@@ -18,7 +18,7 @@ import asyncio
 import gc
 import warnings
 from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -38,23 +38,6 @@ def config() -> Config:
         port=8000,
         scheme="http",
     )
-
-
-@pytest.mark.asyncio
-async def test_missing_aiobotocore_error_names_async_extra(config: Config) -> None:
-    """The missing-dependency hint names the installable distribution."""
-    with (
-        patch.dict("sys.modules", {"aiobotocore.session": None}),
-        pytest.raises(
-            ImportError,
-            match=r"pip install alternator-client\[async\]",
-        ),
-    ):
-        await async_client_module._create_async_client_with_manager(
-            config,
-            MagicMock(),
-            owns_manager=True,
-        )
 
 
 class TestAsyncLiveNodesManager:
@@ -756,7 +739,6 @@ async def test_entered_sdk_client_closes_when_setup_is_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Cancellation after entering SDK context closes that context."""
-    aiobotocore_session = pytest.importorskip("aiobotocore.session")
     manager = MagicMock(spec=AsyncLiveNodesManager)
     manager.next_node_uri.return_value = "http://127.0.0.1:8000"
     client = MagicMock()
@@ -765,9 +747,9 @@ async def test_entered_sdk_client_closes_when_setup_is_cancelled(
     client_context.__aenter__ = AsyncMock(return_value=client)
     client_context.__aexit__ = AsyncMock(return_value=None)
     session = MagicMock()
-    session.create_client.return_value = client_context
+    session.client.return_value = client_context
 
-    monkeypatch.setattr(aiobotocore_session, "get_session", lambda: session)
+    monkeypatch.setattr(async_client_module, "_SdkSession", lambda: session)
 
     def cancel_setup(*args: object, **kwargs: object) -> None:
         raise asyncio.CancelledError
