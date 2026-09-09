@@ -98,9 +98,14 @@ class TestIsRmwOperation:
         assert is_rmw_operation("PutItem", params) is False
 
     def test_put_with_expected_is_rmw(self) -> None:
-        """Test PutItem with Expected is RMW."""
-        params: Params = {"Expected": {}}
+        """Test PutItem with non-empty Expected is RMW."""
+        params = {"Expected": {"pk": {"Exists": False}}}
         assert is_rmw_operation("PutItem", params) is True
+
+    def test_put_with_empty_expected_is_not_rmw(self) -> None:
+        """Test PutItem with empty Expected is not RMW."""
+        params: Params = {"Expected": {}}
+        assert is_rmw_operation("PutItem", params) is False
 
     def test_put_with_all_old_return_values_is_rmw(self) -> None:
         """Test PutItem with ALL_OLD ReturnValues is RMW."""
@@ -111,6 +116,11 @@ class TestIsRmwOperation:
         """Test PutItem with NONE ReturnValues is not RMW."""
         params = {"ReturnValues": "NONE"}
         assert is_rmw_operation("PutItem", params) is False
+
+    def test_put_with_non_none_return_values_is_rmw(self) -> None:
+        """PutItem treats every non-NONE return mode as read-before-write."""
+        params = {"ReturnValues": "UPDATED_NEW"}
+        assert is_rmw_operation("PutItem", params) is True
 
     def test_delete_with_condition_is_rmw(self) -> None:
         """Test DeleteItem with ConditionExpression is RMW."""
@@ -123,19 +133,24 @@ class TestIsRmwOperation:
         assert is_rmw_operation("DeleteItem", params) is False
 
     def test_delete_with_expected_is_rmw(self) -> None:
-        """Test DeleteItem with Expected is RMW."""
-        params: Params = {"Expected": {}}
+        """Test DeleteItem with non-empty Expected is RMW."""
+        params = {"Expected": {"pk": {"Exists": True}}}
         assert is_rmw_operation("DeleteItem", params) is True
+
+    def test_delete_with_empty_expected_is_not_rmw(self) -> None:
+        """Test DeleteItem with empty Expected is not RMW."""
+        params: Params = {"Expected": {}}
+        assert is_rmw_operation("DeleteItem", params) is False
 
     def test_delete_with_all_old_return_values_is_rmw(self) -> None:
         """Test DeleteItem with ALL_OLD ReturnValues is RMW."""
         params = {"ReturnValues": "ALL_OLD"}
         assert is_rmw_operation("DeleteItem", params) is True
 
-    def test_delete_with_updated_new_return_values_is_not_rmw(self) -> None:
-        """Test DeleteItem only treats ALL_OLD ReturnValues as RMW."""
+    def test_delete_with_updated_new_return_values_is_rmw(self) -> None:
+        """DeleteItem treats every non-NONE return mode as read-before-write."""
         params = {"ReturnValues": "UPDATED_NEW"}
-        assert is_rmw_operation("DeleteItem", params) is False
+        assert is_rmw_operation("DeleteItem", params) is True
 
     def test_update_with_return_values_is_rmw(self) -> None:
         """Test UpdateItem with non-NONE ReturnValues is RMW."""
@@ -163,9 +178,14 @@ class TestIsRmwOperation:
         assert is_rmw_operation("UpdateItem", params) is False
 
     def test_update_with_expected_is_rmw(self) -> None:
-        """Test UpdateItem with Expected is RMW."""
-        params: Params = {"Expected": {}}
+        """Test UpdateItem with non-empty Expected is RMW."""
+        params = {"Expected": {"pk": {"Exists": True}}}
         assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_empty_expected_is_not_rmw(self) -> None:
+        """Test UpdateItem with empty Expected is not RMW."""
+        params: Params = {"Expected": {}}
+        assert is_rmw_operation("UpdateItem", params) is False
 
     def test_update_with_empty_return_values_is_not_rmw(self) -> None:
         """Test UpdateItem with empty ReturnValues is not RMW."""
@@ -181,6 +201,11 @@ class TestIsRmwOperation:
         """Test UpdateItem ReturnValues other than allowed no-read values is RMW."""
         params = {"ReturnValues": "ALL_NEW"}
         assert is_rmw_operation("UpdateItem", params) is True
+
+    def test_update_with_unknown_return_values_is_not_rmw(self) -> None:
+        """Unknown return modes do not create an affinity plan."""
+        params = {"ReturnValues": "FUTURE_MODE"}
+        assert is_rmw_operation("UpdateItem", params) is False
 
     def test_update_with_attribute_updates_add_is_rmw(self) -> None:
         """Test AttributeUpdates ADD action is RMW."""
@@ -200,6 +225,11 @@ class TestIsRmwOperation:
         """Test AttributeUpdates DELETE action without a value is not RMW."""
         params = {"AttributeUpdates": {"tags": {"Action": "DELETE"}}}
         assert is_rmw_operation("UpdateItem", params) is False
+
+    def test_update_with_attribute_updates_delete_empty_value_is_rmw(self) -> None:
+        """Legacy DELETE qualifies whenever its Value member is present."""
+        params = {"AttributeUpdates": {"tags": {"Action": "DELETE", "Value": {}}}}
+        assert is_rmw_operation("UpdateItem", params) is True
 
     def test_get_item_is_not_rmw(self) -> None:
         """Test GetItem is never RMW."""
@@ -286,13 +316,25 @@ class TestShouldUseAffinity:
         assert should_use_affinity("ANY_WRITE", "PutItem", params) is True
         assert should_use_affinity("ANY_WRITE", "UpdateItem", params) is True
         assert should_use_affinity("ANY_WRITE", "DeleteItem", params) is True
-        assert should_use_affinity("ANY_WRITE", "BatchWriteItem", params) is True
+        batch_params = {
+            "RequestItems": {
+                "users": [{"DeleteRequest": {"Key": {"pk": {"S": "value"}}}}]
+            }
+        }
+        assert should_use_affinity("ANY_WRITE", "BatchWriteItem", batch_params) is True
 
     def test_any_write_mode_with_read(self) -> None:
         """Test ANY_WRITE mode with read operation."""
         params: Params = {}
         assert should_use_affinity("ANY_WRITE", "GetItem", params) is False
         assert should_use_affinity("ANY_WRITE", "Query", params) is False
+
+    def test_any_write_empty_batch_is_not_affinity_eligible(self) -> None:
+        """Batch affinity requires at least one usable put or delete."""
+        assert (
+            should_use_affinity("ANY_WRITE", "BatchWriteItem", {"RequestItems": {}})
+            is False
+        )
 
 
 class TestSelectAffinityNode:
@@ -531,6 +573,35 @@ class TestSelectAffinityNode:
             )
             is None
         )
+
+    def test_batch_write_snapshots_missing_metadata_per_table(self) -> None:
+        """A lookup completing mid-request cannot route only part of a batch."""
+        nodes = NodeList(nodes=("a", "b", "c"), scope_name="test")
+        params = {
+            "RequestItems": {
+                "orders": [
+                    {"PutRequest": {"Item": {"pk": {"S": "first"}}}},
+                    {"PutRequest": {"Item": {"pk": {"S": "second"}}}},
+                ],
+            }
+        }
+        lookups: list[str] = []
+
+        def metadata_becomes_available(table_name: str) -> str | None:
+            lookups.append(table_name)
+            return None if len(lookups) == 1 else "pk"
+
+        assert (
+            select_affinity_node(
+                mode="ANY_WRITE",
+                operation_name="BatchWriteItem",
+                params=params,
+                nodes=nodes,
+                get_pk_name=metadata_becomes_available,
+            )
+            is None
+        )
+        assert lookups == ["orders"]
 
     def test_batch_write_missing_pk_value_falls_back(self) -> None:
         """Test missing partition-key value produces no preferred node."""
@@ -941,6 +1012,12 @@ class TestExtractPartitionKey:
         params = {"Item": {"pk": {"S": "partition_key_value"}}}
         result = extract_partition_key(params, "pk")
         assert result == ("S", "partition_key_value")
+
+    def test_malformed_multi_type_value_is_not_routable(self) -> None:
+        """AttributeValue unions with multiple members use normal routing."""
+        params = {"Key": {"pk": {"S": "value", "N": "1"}}}
+
+        assert extract_partition_key(params, "pk") is None
 
     def test_extract_from_batch_write_put_request(self) -> None:
         """Test extracting PK from BatchWriteItem PutRequest."""

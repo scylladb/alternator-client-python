@@ -93,7 +93,8 @@ def is_rmw_operation(operation_name: str, params: dict[str, Any]) -> bool:
     if operation_name not in {"UpdateItem", "PutItem", "DeleteItem"}:
         return False
 
-    if "Expected" in params:
+    expected = params.get("Expected")
+    if isinstance(expected, dict) and expected:
         return True
 
     if _non_empty_string(params.get("ConditionExpression")):
@@ -102,13 +103,13 @@ def is_rmw_operation(operation_name: str, params: dict[str, Any]) -> bool:
     return_values = params.get("ReturnValues")
 
     if operation_name in {"PutItem", "DeleteItem"}:
-        return return_values == "ALL_OLD"
+        return isinstance(return_values, str) and return_values not in ("", "NONE")
 
     if operation_name == "UpdateItem":
         if _non_empty_string(params.get("UpdateExpression")):
             return True
 
-        if return_values not in (None, "", "NONE", "UPDATED_NEW"):
+        if return_values in ("ALL_OLD", "UPDATED_OLD", "ALL_NEW"):
             return True
 
         return _attribute_updates_need_read(params.get("AttributeUpdates"))
@@ -128,6 +129,8 @@ def should_use_affinity(mode: str, operation_name: str, params: dict[str, Any]) 
     if mode == "RMW":
         return is_rmw_operation(operation_name, params)
     if mode == "ANY_WRITE":
+        if operation_name == "BatchWriteItem":
+            return any(_iter_batch_write_candidates(params))
         return is_write_operation(operation_name)
     return False
 
@@ -204,16 +207,20 @@ def extract_partition_key(
 
 def _extract_typed_value(attr_value: dict[str, Any]) -> tuple[str, Any] | None:
     """Extract type and value from DynamoDB AttributeValue."""
-    for attr_type in ("S", "N", "B"):
-        if attr_type in attr_value:
-            value = attr_value[attr_type]
-            if attr_type == "B" and isinstance(value, str):
-                try:
-                    value = base64.b64decode(value, validate=True)
-                except binascii.Error:
-                    return None
-            return (attr_type, value)
-    return None
+    recognized_types = [
+        attr_type for attr_type in ("S", "N", "B") if attr_type in attr_value
+    ]
+    if len(recognized_types) != 1 or len(attr_value) != 1:
+        return None
+
+    attr_type = recognized_types[0]
+    value = attr_value[attr_type]
+    if attr_type == "B" and isinstance(value, str):
+        try:
+            value = base64.b64decode(value, validate=True)
+        except binascii.Error:
+            return None
+    return (attr_type, value)
 
 
 def _select_batch_write_affinity_node(
@@ -222,9 +229,15 @@ def _select_batch_write_affinity_node(
     get_pk_name: Callable[[str], str | None],
 ) -> tuple[str, ...] | None:
     votes: Counter[str] = Counter()
+    pk_names: dict[str, str | None] = {}
 
     for candidate in _iter_batch_write_candidates(params):
-        pk_name = get_pk_name(candidate.table_name)
+        if candidate.table_name not in pk_names:
+            # Keep metadata stable for the whole request.  In particular, a
+            # background lookup started by the first candidate must not make a
+            # timing-dependent suffix of a cold batch affinity-eligible.
+            pk_names[candidate.table_name] = get_pk_name(candidate.table_name)
+        pk_name = pk_names[candidate.table_name]
         if not pk_name:
             continue
 
@@ -325,17 +338,9 @@ def _attribute_updates_need_read(attribute_updates: object) -> bool:
         action = update.get("Action")
         if action == "ADD":
             return True
-        if action == "DELETE" and _attribute_update_value_is_non_empty(
-            update.get("Value")
-        ):
+        if action == "DELETE" and update.get("Value") is not None:
             return True
     return False
-
-
-def _attribute_update_value_is_non_empty(value: object) -> bool:
-    if not isinstance(value, dict):
-        return bool(value)
-    return any(bool(item) for item in value.values())
 
 
 def get_table_name(params: dict[str, Any]) -> str | None:
