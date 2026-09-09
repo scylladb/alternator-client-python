@@ -28,7 +28,6 @@ from unittest.mock import patch
 
 import pytest
 
-import alternator._http as http_helpers
 from alternator._http import (
     AsyncNodeFetcher,
     create_ssl_context,
