@@ -16,11 +16,15 @@
 
 import contextlib
 import copy
+import gc
 import threading
+import time
+import weakref
 from collections import Counter
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from botocore.awsrequest import AWSPreparedRequest
 
@@ -43,6 +47,15 @@ from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_request_params
 
 Params = dict[str, Any]
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 1.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return bool(predicate())
 
 
 def _batch_write_routing_target(
@@ -1421,22 +1434,131 @@ class TestAffinitySelector:
 class TestPartitionKeyCache:
     """Tests for PartitionKeyCache class."""
 
-    def test_cache_miss_calls_describe_table(self) -> None:
-        """Test cache miss triggers DescribeTable call."""
+    def test_blocking_lookup_discovers_on_first_call(self) -> None:
+        """Diagnostic lookups preserve first-call synchronous discovery."""
         mock_client = MagicMock()
         mock_client.describe_table.return_value = {
-            "Table": {
-                "KeySchema": [
-                    {"AttributeName": "pk", "KeyType": "HASH"},
-                ]
-            }
+            "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
         }
-
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
 
-        assert result == "pk"
-        mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        try:
+            assert cache.get_pk_name("test_table") == "pk"
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            cache.close()
+
+    def test_blocking_lookup_owner_uses_sdk_timeout_not_join_timeout(self) -> None:
+        """The initiating diagnostic lookup waits through a slow SDK success."""
+        mock_client = MagicMock()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            time.sleep(0.05)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client)
+
+        try:
+            with patch(
+                "alternator.core.key_affinity.PK_DISCOVERY_TIMEOUT_SECONDS",
+                0.001,
+            ):
+                assert cache.get_pk_name("test_table") == "pk"
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            cache.close()
+
+    def test_blocking_concurrent_lookups_share_discovery(self) -> None:
+        """Concurrent diagnostic lookups wait for one DescribeTable call."""
+        mock_client = MagicMock()
+        started = threading.Event()
+        release = threading.Event()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            started.set()
+            assert release.wait(timeout=1)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client)
+        try:
+            with ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [
+                    executor.submit(cache.get_pk_name, "test_table") for _ in range(5)
+                ]
+                assert started.wait(timeout=1)
+                release.set()
+                assert [future.result(timeout=1) for future in futures] == ["pk"] * 5
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            release.set()
+            cache.close()
+
+    def test_worker_start_failure_falls_back_and_can_retry(self) -> None:
+        """Optional discovery does not fail requests when no thread can start."""
+        mock_client = MagicMock()
+        mock_client.describe_table.return_value = {
+            "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+        }
+        cache = PartitionKeyCache(mock_client)
+
+        try:
+            with patch.object(
+                threading.Thread,
+                "start",
+                side_effect=RuntimeError("can't start new thread"),
+            ):
+                assert cache.get_cached_pk_name("test_table") is None
+
+            assert cache._pending == {}
+            assert cache._worker._queue.empty()
+            mock_client.describe_table.assert_not_called()
+
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            cache.close()
+
+    def test_cache_miss_discovers_in_background(self) -> None:
+        """First and in-flight misses fall back without waiting for discovery."""
+        mock_client = MagicMock()
+        started = threading.Event()
+        release = threading.Event()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            started.set()
+            assert release.wait(timeout=1)
+            return {
+                "Table": {
+                    "KeySchema": [
+                        {"AttributeName": "pk", "KeyType": "HASH"},
+                    ]
+                }
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+
+        cache = PartitionKeyCache(mock_client, shutdown_timeout_seconds=0.05)
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert started.wait(timeout=1)
+            assert cache.get_cached_pk_name("test_table") is None
+
+            release.set()
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            mock_client.describe_table.assert_called_once_with(TableName="test_table")
+        finally:
+            release.set()
+            cache.close()
 
     def test_cache_hit_skips_describe_table(self) -> None:
         """Test cache hit skips DescribeTable call."""
@@ -1450,26 +1572,25 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-
-        # First call - cache miss
-        cache.get_pk_name("test_table")
-        # Second call - cache hit
-        cache.get_pk_name("test_table")
-
-        # Should only call describe_table once
-        assert mock_client.describe_table.call_count == 1
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            assert cache.get_cached_pk_name("test_table") == "pk"
+            assert mock_client.describe_table.call_count == 1
+        finally:
+            cache.close()
 
     def test_preload_populates_cache(self) -> None:
         """Test preload populates cache without API calls."""
         mock_client = MagicMock()
         cache = PartitionKeyCache(mock_client)
-
-        cache.preload({"users": "user_id", "orders": "order_id"})
-
-        # Should not call describe_table
-        assert cache.get_pk_name("users") == "user_id"
-        assert cache.get_pk_name("orders") == "order_id"
-        mock_client.describe_table.assert_not_called()
+        try:
+            cache.preload({"users": "user_id", "orders": "order_id"})
+            assert cache.get_cached_pk_name("users") == "user_id"
+            assert cache.get_cached_pk_name("orders") == "order_id"
+            mock_client.describe_table.assert_not_called()
+        finally:
+            cache.close()
 
     def test_clear_removes_cached_entries(self) -> None:
         """Test clear removes cached entries."""
@@ -1483,13 +1604,14 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-        cache.preload({"test_table": "pk"})
-
-        cache.clear()
-
-        # Should now call describe_table again
-        cache.get_pk_name("test_table")
-        mock_client.describe_table.assert_called_once()
+        try:
+            cache.preload({"test_table": "pk"})
+            cache.clear()
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+            mock_client.describe_table.assert_called_once()
+        finally:
+            cache.close()
 
     def test_handles_describe_table_error(self) -> None:
         """Test graceful handling of DescribeTable errors."""
@@ -1497,9 +1619,11 @@ class TestPartitionKeyCache:
         mock_client.describe_table.side_effect = Exception("Access denied")
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
-
-        assert result is None
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: mock_client.describe_table.call_count == 1)
+        finally:
+            cache.close()
 
     def test_handles_missing_key_schema(self) -> None:
         """Test handling when KeySchema is missing."""
@@ -1507,9 +1631,11 @@ class TestPartitionKeyCache:
         mock_client.describe_table.return_value = {"Table": {}}
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
-
-        assert result is None
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: mock_client.describe_table.call_count == 1)
+        finally:
+            cache.close()
 
     def test_handles_no_hash_key(self) -> None:
         """Test handling when no HASH key in schema."""
@@ -1523,9 +1649,11 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("test_table")
-
-        assert result is None
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert _wait_until(lambda: mock_client.describe_table.call_count == 1)
+        finally:
+            cache.close()
 
     def test_composite_key_returns_hash_key_only(self) -> None:
         """Test that only the HASH key is returned for composite key tables."""
@@ -1540,9 +1668,190 @@ class TestPartitionKeyCache:
         }
 
         cache = PartitionKeyCache(mock_client)
-        result = cache.get_pk_name("composite_table")
+        try:
+            assert cache.get_cached_pk_name("composite_table") is None
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("composite_table") == "pk"
+            )
+        finally:
+            cache.close()
 
-        assert result == "pk"
+    def test_queue_is_bounded_and_overflow_can_retry(self) -> None:
+        """Distinct-table floods cannot create an unbounded work backlog."""
+        mock_client = MagicMock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        calls: list[str] = []
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            calls.append(TableName)
+            if TableName == "active":
+                first_started.set()
+                assert release_first.wait(timeout=1)
+            return {
+                "Table": {
+                    "KeySchema": [
+                        {"AttributeName": f"pk_{TableName}", "KeyType": "HASH"}
+                    ]
+                }
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client, queue_capacity=1)
+        try:
+            assert cache.get_cached_pk_name("active") is None
+            assert first_started.wait(timeout=1)
+            assert cache.get_cached_pk_name("queued") is None
+            assert cache.get_cached_pk_name("overflow") is None
+
+            release_first.set()
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("active") == "pk_active"
+            )
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("queued") == "pk_queued"
+            )
+            assert "overflow" not in calls
+
+            assert cache.get_cached_pk_name("overflow") is None
+            assert _wait_until(
+                lambda: cache.get_cached_pk_name("overflow") == "pk_overflow"
+            )
+        finally:
+            release_first.set()
+            cache.close()
+
+    def test_close_is_bounded_cancels_queue_and_is_idempotent(self) -> None:
+        """Close rejects new work and does not wait forever on active I/O."""
+        mock_client = MagicMock()
+        first_started = threading.Event()
+        release_first = threading.Event()
+        close_returned = threading.Event()
+        calls: list[str] = []
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            calls.append(TableName)
+            first_started.set()
+            assert release_first.wait(timeout=1)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client, shutdown_timeout_seconds=0.01)
+        assert cache.get_cached_pk_name("active") is None
+        assert first_started.wait(timeout=1)
+        assert cache.get_cached_pk_name("queued") is None
+
+        def close_cache() -> None:
+            cache.close()
+            close_returned.set()
+
+        closer = threading.Thread(target=close_cache)
+        closer.start()
+        assert close_returned.wait(timeout=0.5)
+        closer.join()
+        cache.close()
+        assert cache.get_cached_pk_name("new") is None
+
+        release_first.set()
+        worker_thread = cache._worker._thread
+        assert worker_thread is not None
+        worker_thread.join(timeout=1)
+        assert not worker_thread.is_alive()
+        assert calls == ["active"]
+
+    def test_close_wakes_blocking_lookup_waiters(self) -> None:
+        """Closing a cache releases diagnostics waiting on background work."""
+        mock_client = MagicMock()
+        fetch_started = threading.Event()
+        release_fetch = threading.Event()
+        entered_wait = threading.Event()
+        waiter_done = threading.Event()
+        results: list[str | None] = []
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            fetch_started.set()
+            assert release_fetch.wait(timeout=1)
+            return {
+                "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+            }
+
+        mock_client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(mock_client, shutdown_timeout_seconds=0.01)
+        assert cache.get_cached_pk_name("test_table") is None
+        assert fetch_started.wait(timeout=1)
+        pending_event = cache._pending["test_table"]
+        pending_wait = pending_event.wait
+
+        def observed_wait(timeout: float | None = None) -> bool:
+            entered_wait.set()
+            return pending_wait(timeout)
+
+        def wait_for_pk() -> None:
+            results.append(cache.get_pk_name("test_table"))
+            waiter_done.set()
+
+        waiter = threading.Thread(target=wait_for_pk)
+        with (
+            patch.object(pending_event, "wait", side_effect=observed_wait),
+            patch("alternator.core.key_affinity.PK_DISCOVERY_TIMEOUT_SECONDS", 1.0),
+        ):
+            waiter.start()
+            assert entered_wait.wait(timeout=1)
+            assert not waiter_done.is_set()
+            cache.close()
+            assert waiter_done.wait(timeout=0.5)
+
+        waiter.join(timeout=1)
+        assert results == [None]
+        release_fetch.set()
+        worker_thread = cache._worker._thread
+        assert worker_thread is not None
+        worker_thread.join(timeout=1)
+        assert not worker_thread.is_alive()
+
+    def test_client_gc_stops_idle_worker_without_retaining_owner(self) -> None:
+        """Forgotten clients and caches remain collectable after discovery."""
+
+        class Client:
+            cache: PartitionKeyCache | None = None
+
+            def describe_table(self, *, TableName: str) -> dict[str, Any]:
+                return {
+                    "Table": {
+                        "KeySchema": [
+                            {"AttributeName": f"pk_{TableName}", "KeyType": "HASH"}
+                        ]
+                    }
+                }
+
+        def create_owner_cycle() -> tuple[
+            weakref.ReferenceType[Client],
+            weakref.ReferenceType[PartitionKeyCache],
+            threading.Thread,
+        ]:
+            client = Client()
+            cache = PartitionKeyCache(client)  # type: ignore[arg-type]
+            client.cache = cache
+            assert cache.get_cached_pk_name("table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("table") == "pk_table")
+            worker_thread = cache._worker._thread
+            assert worker_thread is not None
+            return weakref.ref(client), weakref.ref(cache), worker_thread
+
+        client_ref, cache_ref, worker_thread = create_owner_cycle()
+        for _ in range(20):
+            gc.collect()
+            if client_ref() is None and cache_ref() is None:
+                break
+            time.sleep(0.01)
+
+        assert client_ref() is None
+        assert cache_ref() is None
+        worker_thread.join(timeout=1)
+        assert not worker_thread.is_alive()
 
 
 class TestPartitionKeyCacheThreadSafety:
@@ -1551,13 +1860,22 @@ class TestPartitionKeyCacheThreadSafety:
     def test_concurrent_get_pk_name_same_table(self) -> None:
         """Test concurrent access to same table."""
         mock_client = MagicMock()
-        mock_client.describe_table.return_value = {
-            "Table": {
-                "KeySchema": [
-                    {"AttributeName": "pk", "KeyType": "HASH"},
-                ]
+        started = threading.Event()
+        release = threading.Event()
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            assert TableName == "test_table"
+            started.set()
+            assert release.wait(timeout=1)
+            return {
+                "Table": {
+                    "KeySchema": [
+                        {"AttributeName": "pk", "KeyType": "HASH"},
+                    ]
+                }
             }
-        }
+
+        mock_client.describe_table.side_effect = describe_table
 
         cache = PartitionKeyCache(mock_client)
         errors: list[Exception] = []
@@ -1567,67 +1885,83 @@ class TestPartitionKeyCacheThreadSafety:
         def get_pk() -> None:
             try:
                 for _ in range(50):
-                    result = cache.get_pk_name("test_table")
+                    result = cache.get_cached_pk_name("test_table")
                     with lock:
                         results.append(result)
             except Exception as e:
                 errors.append(e)
 
-        threads = [threading.Thread(target=get_pk) for _ in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        try:
+            assert cache.get_cached_pk_name("test_table") is None
+            assert started.wait(timeout=1)
+            threads = [threading.Thread(target=get_pk) for _ in range(10)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
 
-        assert len(errors) == 0
-        assert len(results) == 500
-        assert all(r == "pk" for r in results)
-        # Despite 500 calls, should only call describe_table once
-        assert mock_client.describe_table.call_count == 1
+            assert not errors
+            assert len(results) == 500
+            assert all(result is None for result in results)
+            assert mock_client.describe_table.call_count == 1
+            release.set()
+            assert _wait_until(lambda: cache.get_cached_pk_name("test_table") == "pk")
+        finally:
+            release.set()
+            cache.close()
 
     def test_concurrent_get_pk_name_different_tables(self) -> None:
-        """Test concurrent access to different tables."""
+        """One worker serializes discovery across different tables."""
         mock_client = MagicMock()
+        first_started = threading.Event()
+        release = threading.Event()
+        activity_lock = threading.Lock()
+        active = 0
+        max_active = 0
 
         def describe_table_side_effect(TableName: str) -> dict[str, object]:
-            return {
-                "Table": {
-                    "KeySchema": [
-                        {"AttributeName": f"pk_{TableName}", "KeyType": "HASH"},
-                    ]
+            nonlocal active, max_active
+            with activity_lock:
+                active += 1
+                max_active = max(max_active, active)
+            first_started.set()
+            assert release.wait(timeout=1)
+            try:
+                return {
+                    "Table": {
+                        "KeySchema": [
+                            {
+                                "AttributeName": f"pk_{TableName}",
+                                "KeyType": "HASH",
+                            },
+                        ]
+                    }
                 }
-            }
+            finally:
+                with activity_lock:
+                    active -= 1
 
         mock_client.describe_table.side_effect = describe_table_side_effect
 
         cache = PartitionKeyCache(mock_client)
-        errors: list[Exception] = []
-        results: list[tuple[str, str | None]] = []
-        lock = threading.Lock()
+        table_names = [f"table_{index}" for index in range(10)]
 
-        def get_pk(table_id: int) -> None:
-            try:
-                table_name = f"table_{table_id}"
-                for _ in range(20):
-                    result = cache.get_pk_name(table_name)
-                    with lock:
-                        results.append((table_name, result))
-            except Exception as e:
-                errors.append(e)
+        def has_expected_pk(table_name: str) -> Callable[[], bool]:
+            return lambda: cache.get_cached_pk_name(table_name) == f"pk_{table_name}"
 
-        # 10 threads, each accessing a different table
-        threads = [threading.Thread(target=get_pk, args=(i,)) for i in range(10)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
-
-        assert len(errors) == 0
-        assert len(results) == 200
-
-        # Verify each table got correct pk
-        for table_name, pk in results:
-            assert pk == f"pk_{table_name}"
+        try:
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                results = list(executor.map(cache.get_cached_pk_name, table_names))
+            assert all(result is None for result in results)
+            assert first_started.wait(timeout=1)
+            release.set()
+            for table_name in table_names:
+                assert _wait_until(has_expected_pk(table_name))
+            assert max_active == 1
+            assert mock_client.describe_table.call_count == len(table_names)
+        finally:
+            release.set()
+            cache.close()
 
 
 class TestAffinitySelectorConcurrency:

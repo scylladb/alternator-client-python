@@ -220,7 +220,7 @@ def _create_affinity_node_computer(
             operation_name=operation_name,
             params=params,
             nodes=nodes,
-            get_pk_name=pk_cache.get_pk_name,
+            get_pk_name=pk_cache.get_cached_pk_name,
         )
 
     return compute_affinity_node
@@ -478,6 +478,14 @@ def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
     Args:
         client: Client or resource created by create_client or create_resource
     """
+    # Stop metadata discovery before closing its SDK transport. Registered
+    # request handlers retain the cache even after its client attribute clears.
+    meta = getattr(client, "meta", None)
+    service_client = getattr(meta, "client", None)
+    _close_partition_key_cache(client)
+    if service_client is not None and service_client is not client:
+        _close_partition_key_cache(service_client)
+
     manager = getattr(client, MANAGER_ATTR, None)
     if manager is not None:
         owns_manager = bool(getattr(client, MANAGER_OWNS_ATTR, True))
@@ -487,14 +495,6 @@ def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
         setattr(client, MANAGER_ATTR, None)
         setattr(client, MANAGER_OWNS_ATTR, False)
 
-    # Clear PK cache reference
-    if hasattr(client, PK_CACHE_ATTR):
-        setattr(client, PK_CACHE_ATTR, None)
-    meta = getattr(client, "meta", None)
-    service_client = getattr(meta, "client", None)
-    if service_client is not None and hasattr(service_client, PK_CACHE_ATTR):
-        setattr(service_client, PK_CACHE_ATTR, None)
-
     sdk_close = getattr(client, "close", None)
     if callable(sdk_close):
         sdk_close()
@@ -503,6 +503,20 @@ def close_client(client: DynamoDBClient | DynamoDBServiceResource) -> None:
     service_client_close = getattr(service_client, "close", None)
     if callable(service_client_close):
         service_client_close()
+
+
+def _close_partition_key_cache(owner: object) -> None:
+    """Close and detach one client's background metadata cache."""
+    if not hasattr(owner, PK_CACHE_ATTR):
+        return
+
+    pk_cache = getattr(owner, PK_CACHE_ATTR, None)
+    try:
+        cache_close = getattr(pk_cache, "close", None)
+        if callable(cache_close):
+            cache_close()
+    finally:
+        setattr(owner, PK_CACHE_ATTR, None)
 
 
 class Helper:

@@ -23,10 +23,17 @@ from urllib.parse import urlsplit
 import pytest
 
 import alternator
-from alternator import Auth, Config, Helper, close_client, create_client
-from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR
+from alternator import (
+    Auth,
+    Config,
+    Helper,
+    close_client,
+    create_client,
+)
+from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator.async_client import AsyncHelper
-from alternator.config import KeyRouteAffinityConfig
+from alternator.config import KeyRouteAffinityConfig, KeyRouteAffinityMode
+from alternator.core.key_affinity import PartitionKeyCache
 from alternator.core.routing_scope import (
     ClusterScope,
     DatacenterScope,
@@ -164,6 +171,31 @@ def test_helper_partition_key_diagnostics_from_config(
     assert helper.get_partition_key_name("missing") is None
 
 
+def test_helper_partition_key_diagnostics_discover_on_first_call(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    """Sync diagnostics wait for metadata while request routing stays nonblocking."""
+    helper = Helper(
+        _config_for_server(
+            fake_alternator_server,
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.ANY_WRITE),
+        )
+    )
+    sdk_client = Mock()
+    sdk_client.describe_table.return_value = {
+        "Table": {"KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}]}
+    }
+    cache = PartitionKeyCache(sdk_client)
+    setattr(sdk_client, PK_CACHE_ATTR, cache)
+    helper._clients.append(sdk_client)
+
+    try:
+        assert helper.get_partition_key_name("orders") == "pk"
+        sdk_client.describe_table.assert_called_once_with(TableName="orders")
+    finally:
+        cache.close()
+
+
 def test_no_fallback_scope_does_not_use_seed_hosts(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
@@ -198,21 +230,27 @@ def test_create_client_uses_configured_aws_region(
 def test_close_client_closes_underlying_boto_client() -> None:
     """close_client releases the botocore HTTP session for clients."""
     manager = SimpleNamespace(stop=Mock())
+    pk_cache = SimpleNamespace(close=Mock())
     client = SimpleNamespace(close=Mock())
     setattr(client, MANAGER_ATTR, manager)
     setattr(client, MANAGER_OWNS_ATTR, True)
+    setattr(client, PK_CACHE_ATTR, pk_cache)
 
     close_client(client)  # type: ignore[arg-type] # lightweight boto client stub
     close_client(client)  # type: ignore[arg-type] # idempotency check
 
     assert manager.stop.call_count == 1
+    pk_cache.close.assert_called_once_with()
+    assert getattr(client, PK_CACHE_ATTR) is None
     assert client.close.call_count == 2
 
 
 def test_close_resource_closes_underlying_boto_client() -> None:
     """close_client releases the botocore HTTP session for resources."""
     manager = SimpleNamespace(stop=Mock())
+    pk_cache = SimpleNamespace(close=Mock())
     service_client = SimpleNamespace(close=Mock())
+    setattr(service_client, PK_CACHE_ATTR, pk_cache)
     resource = SimpleNamespace(meta=SimpleNamespace(client=service_client))
     setattr(resource, MANAGER_ATTR, manager)
     setattr(resource, MANAGER_OWNS_ATTR, True)
@@ -220,6 +258,8 @@ def test_close_resource_closes_underlying_boto_client() -> None:
     close_client(resource)  # type: ignore[arg-type] # lightweight resource stub
 
     manager.stop.assert_called_once_with()
+    pk_cache.close.assert_called_once_with()
+    assert getattr(service_client, PK_CACHE_ATTR) is None
     service_client.close.assert_called_once_with()
 
 
