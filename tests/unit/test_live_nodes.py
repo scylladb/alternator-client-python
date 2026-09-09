@@ -184,6 +184,15 @@ class TestLiveNodesManagerCore:
         interval = manager.get_refresh_interval_seconds()
         assert interval == 0.1  # 100ms
 
+    def test_mark_activity_does_not_advance_round_robin(self, config: Config) -> None:
+        """Activity tracking is independent from diagnostic node selection."""
+        manager = LiveNodesManagerCore(config)
+        manager.update_nodes(["a", "b"], ClusterScope())
+
+        manager.mark_activity()
+
+        assert manager.next_node() == "a"
+
     def test_update_nodes_deduplicates_candidates(self, config: Config) -> None:
         """Each physical endpoint appears once in a request query plan."""
         manager = LiveNodesManagerCore(config)

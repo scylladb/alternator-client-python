@@ -126,9 +126,21 @@ class LiveNodesManagerCore:
 
     def next_node(self) -> str | None:
         """Get next node using round-robin (thread-safe)."""
-        with self._nodes_lock:
-            self._last_activity = time.monotonic()
+        self.mark_activity()
+        return self.select_node()
+
+    def select_node(self) -> str | None:
+        """Get next node without changing activity state."""
         return self._selector.select(self.nodes)
+
+    def mark_activity(self) -> bool:
+        """Record activity and report whether the client was previously idle."""
+        with self._nodes_lock:
+            now = time.monotonic()
+            idle_threshold = self._config.node_list_polling.idle_interval_ms / 1000.0
+            was_idle = now - self._last_activity >= idle_threshold
+            self._last_activity = now
+        return was_idle
 
     def get_refresh_interval_seconds(self) -> float:
         """Get appropriate refresh interval based on activity."""
@@ -294,6 +306,7 @@ class SyncLiveNodesManager:
         self._config = config
         self._http_fetch = http_fetch
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
         self._lifecycle_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
         self._refresh_thread: threading.Thread | None = None
@@ -305,13 +318,15 @@ class SyncLiveNodesManager:
                 return
 
             stop_event = threading.Event()
+            wake_event = threading.Event()
             refresh_thread = threading.Thread(
                 target=self._refresh_loop,
-                args=(stop_event,),
+                args=(stop_event, wake_event),
                 daemon=True,
                 name="alternator-node-refresh",
             )
             self._stop_event = stop_event
+            self._wake_event = wake_event
             self._refresh_thread = refresh_thread
             refresh_thread.start()
 
@@ -319,8 +334,10 @@ class SyncLiveNodesManager:
         """Stop background refresh thread."""
         with self._lifecycle_lock:
             stop_event = self._stop_event
+            wake_event = self._wake_event
             refresh_thread = self._refresh_thread
             stop_event.set()
+            wake_event.set()
 
         if refresh_thread:
             refresh_thread.join(timeout=self._config.timeouts.discovery_seconds + 1.0)
@@ -338,7 +355,14 @@ class SyncLiveNodesManager:
 
     def next_node(self) -> str | None:
         """Get next node hostname using round-robin."""
-        return self._core.next_node()
+        self.mark_activity()
+        return self._core.select_node()
+
+    def mark_activity(self) -> None:
+        """Record client request activity for adaptive polling."""
+        if self._core.mark_activity():
+            with self._lifecycle_lock:
+                self._wake_event.set()
 
     def set_fallback_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
         """
@@ -360,7 +384,8 @@ class SyncLiveNodesManager:
         Raises:
             NoNodesAvailableError: If no nodes are available
         """
-        node = self._core.next_node()
+        self.mark_activity()
+        node = self._core.select_node()
         if not node:
             raise NoNodesAvailableError(
                 "No nodes available for routing",
@@ -401,9 +426,14 @@ class SyncLiveNodesManager:
             return True
         raise _no_nodes_for_scope_error(scope)
 
-    def _refresh_loop(self, stop_event: threading.Event) -> None:
+    def _refresh_loop(
+        self,
+        stop_event: threading.Event,
+        wake_event: threading.Event,
+    ) -> None:
         """Background thread that refreshes node list."""
         while not stop_event.is_set():
+            wake_event.clear()
             with self._refresh_lock:
                 if stop_event.is_set():
                     return
@@ -411,7 +441,7 @@ class SyncLiveNodesManager:
                     self._refresh_nodes()
 
             interval = self._core.get_refresh_interval_seconds()
-            stop_event.wait(timeout=interval)
+            wake_event.wait(timeout=interval)
 
     def _refresh_nodes(self) -> bool:
         """
@@ -505,15 +535,19 @@ class AsyncLiveNodesManager:
         self._config = config
         self._http_fetch = http_fetch
         self._refresh_task: asyncio.Task[None] | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event = asyncio.Event()
+        self._wake_event = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Start background refresh task."""
         if self._refresh_task is not None and not self._refresh_task.done():
             return
+        loop = asyncio.get_running_loop()
         self._stop_event.clear()
-        self._refresh_task = asyncio.create_task(
+        self._loop = loop
+        self._refresh_task = loop.create_task(
             self._refresh_loop(),
             name="alternator-node-refresh",
         )
@@ -521,11 +555,13 @@ class AsyncLiveNodesManager:
     async def stop(self) -> None:
         """Stop background refresh task."""
         self._stop_event.set()
+        self._wake_event.set()
         if self._refresh_task:
             self._refresh_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._refresh_task
             self._refresh_task = None
+        self._loop = None
 
     @property
     def nodes(self) -> NodeList:
@@ -534,7 +570,18 @@ class AsyncLiveNodesManager:
 
     def next_node(self) -> str | None:
         """Get next node hostname using round-robin."""
-        return self._core.next_node()
+        self.mark_activity()
+        return self._core.select_node()
+
+    def mark_activity(self) -> None:
+        """Record client request activity for adaptive polling."""
+        if self._core.mark_activity():
+            loop = self._loop
+            if loop is not None:
+                # Node selection is allowed from worker threads, while asyncio
+                # synchronization primitives must be touched by their owner loop.
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(self._wake_event.set)
 
     def set_fallback_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
         """
@@ -556,7 +603,8 @@ class AsyncLiveNodesManager:
         Raises:
             NoNodesAvailableError: If no nodes are available
         """
-        node = self._core.next_node()
+        self.mark_activity()
+        node = self._core.select_node()
         if not node:
             raise NoNodesAvailableError(
                 "No nodes available for routing",
@@ -600,13 +648,14 @@ class AsyncLiveNodesManager:
     async def _refresh_loop(self) -> None:
         """Background task that refreshes node list."""
         while not self._stop_event.is_set():
+            self._wake_event.clear()
             with contextlib.suppress(Exception):
                 await self.refresh_nodes()
 
             interval = self._core.get_refresh_interval_seconds()
             with contextlib.suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(
-                    self._stop_event.wait(),
+                    self._wake_event.wait(),
                     timeout=interval,
                 )
 

@@ -46,10 +46,14 @@ from alternator.core.query_plan import LazyQueryPlan
 class _StaticManager:
     def __init__(self, nodes: tuple[str, ...]) -> None:
         self._nodes = NodeList(nodes=nodes, scope_name="cluster")
+        self.activity_count = 0
 
     @property
     def nodes(self) -> NodeList:
         return self._nodes
+
+    def mark_activity(self) -> None:
+        self.activity_count += 1
 
 
 class _CountingHTTPServer(HTTPServer):
@@ -361,6 +365,7 @@ def test_sdk_retries_advance_shared_query_plan(monkeypatch: pytest.MonkeyPatch) 
         )
     ]
     assert urls == expected_cycle * 2
+    assert manager.activity_count == len(urls)
 
 
 def test_dynamodb_non_success_responses_keep_connection_reusable() -> None:

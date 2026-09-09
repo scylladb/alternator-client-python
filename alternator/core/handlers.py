@@ -131,6 +131,10 @@ def _register_alternator_handlers(
         **kwargs: Any,  # noqa: ANN401 -- botocore event handler signature
     ) -> None:
         """Update request URL based on routing strategy."""
+        mark_activity = getattr(manager, "mark_activity", None)
+        if callable(mark_activity):
+            mark_activity()
+
         # Get or create query plan
         context = getattr(request, "context", None)
         plan: Iterator[str] | None
