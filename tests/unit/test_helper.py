@@ -65,16 +65,16 @@ def test_helper_lifecycle_and_node_diagnostics(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
     """Helper exposes explicit lifecycle and live-node inspection."""
-    fake_alternator_server.set_localnodes(["node2", "node1"])
+    fake_alternator_server.set_localnodes(["127.0.0.2", "127.0.0.1"])
     helper = Helper(_config_for_server(fake_alternator_server))
 
     assert helper.get_nodes() == []
     assert helper.update_live_nodes() is True
-    assert helper.get_nodes() == ["node1", "node2"]
-    assert helper.get_active_nodes() == ["node1", "node2"]
+    assert helper.get_nodes() == ["127.0.0.1", "127.0.0.2"]
+    assert helper.get_active_nodes() == ["127.0.0.1", "127.0.0.2"]
     assert helper.get_quarantined_nodes() == []
-    assert helper.next_node() == "node1"
-    assert helper.next_node() == "node2"
+    assert helper.next_node() == "127.0.0.1"
+    assert helper.next_node() == "127.0.0.2"
 
     helper.start()
     helper.start()
@@ -87,7 +87,7 @@ def test_helper_created_clients_borrow_helper_manager(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
     """Closing a helper-created client does not stop the helper manager."""
-    fake_alternator_server.set_localnodes(["node1"])
+    fake_alternator_server.set_localnodes(["127.0.0.1"])
 
     with Helper(_config_for_server(fake_alternator_server)) as helper:
         client = helper.client()
@@ -118,8 +118,8 @@ def test_helper_update_returns_new_helper(
 
 def test_helper_topology_checks(fake_alternator_server: FakeAlternatorServer) -> None:
     """Helper exposes lightweight topology configuration checks."""
-    fake_alternator_server.set_localnodes(["node1"], query="dc=dc1")
-    fake_alternator_server.set_localnodes(["node1"], query="dc=dc1&rack=rack1")
+    fake_alternator_server.set_localnodes(["127.0.0.1"], query="dc=dc1")
+    fake_alternator_server.set_localnodes(["127.0.0.1"], query="dc=dc1&rack=rack1")
 
     assert Helper(
         _config_for_server(fake_alternator_server, routing_scope=ClusterScope())
@@ -181,7 +181,7 @@ def test_create_client_uses_configured_aws_region(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
     """Config aws_region is passed to the generated boto3 client."""
-    fake_alternator_server.set_localnodes(["node1"])
+    fake_alternator_server.set_localnodes(["127.0.0.1"])
     base_config = _config_for_server(fake_alternator_server)
     config = Config(
         seed_hosts=base_config.seed_hosts,
@@ -228,15 +228,15 @@ async def test_async_helper_lifecycle_and_node_diagnostics(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
     """AsyncHelper exposes async lifecycle and live-node inspection."""
-    fake_alternator_server.set_localnodes(["node2", "node1"])
+    fake_alternator_server.set_localnodes(["127.0.0.2", "127.0.0.1"])
     helper = AsyncHelper(_config_for_server(fake_alternator_server))
 
     assert helper.get_nodes() == []
     assert await helper.update_live_nodes() is True
-    assert helper.get_nodes() == ["node1", "node2"]
-    assert helper.get_active_nodes() == ["node1", "node2"]
+    assert helper.get_nodes() == ["127.0.0.1", "127.0.0.2"]
+    assert helper.get_active_nodes() == ["127.0.0.1", "127.0.0.2"]
     assert helper.get_quarantined_nodes() == []
-    assert await helper.next_node() == "node1"
+    assert await helper.next_node() == "127.0.0.1"
 
     await helper.start()
     await helper.start()

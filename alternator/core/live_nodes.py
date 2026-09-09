@@ -294,26 +294,42 @@ class SyncLiveNodesManager:
         self._config = config
         self._http_fetch = http_fetch
         self._stop_event = threading.Event()
+        self._lifecycle_lock = threading.Lock()
+        self._refresh_lock = threading.Lock()
         self._refresh_thread: threading.Thread | None = None
 
     def start(self) -> None:
         """Start background refresh thread."""
-        if self._refresh_thread is not None and self._refresh_thread.is_alive():
-            return
-        self._stop_event.clear()
-        self._refresh_thread = threading.Thread(
-            target=self._refresh_loop,
-            daemon=True,
-            name="alternator-node-refresh",
-        )
-        self._refresh_thread.start()
+        with self._lifecycle_lock:
+            if self._refresh_thread is not None and self._refresh_thread.is_alive():
+                return
+
+            stop_event = threading.Event()
+            refresh_thread = threading.Thread(
+                target=self._refresh_loop,
+                args=(stop_event,),
+                daemon=True,
+                name="alternator-node-refresh",
+            )
+            self._stop_event = stop_event
+            self._refresh_thread = refresh_thread
+            refresh_thread.start()
 
     def stop(self) -> None:
         """Stop background refresh thread."""
-        self._stop_event.set()
-        if self._refresh_thread:
-            self._refresh_thread.join(timeout=5.0)
-            self._refresh_thread = None
+        with self._lifecycle_lock:
+            stop_event = self._stop_event
+            refresh_thread = self._refresh_thread
+            stop_event.set()
+
+        if refresh_thread:
+            refresh_thread.join(timeout=self._config.timeouts.discovery_seconds + 1.0)
+            with self._lifecycle_lock:
+                if (
+                    self._refresh_thread is refresh_thread
+                    and not refresh_thread.is_alive()
+                ):
+                    self._refresh_thread = None
 
     @property
     def nodes(self) -> NodeList:
@@ -361,7 +377,8 @@ class SyncLiveNodesManager:
         Returns:
             True if nodes were successfully fetched, False otherwise
         """
-        return self._refresh_nodes()
+        with self._refresh_lock:
+            return self._refresh_nodes()
 
     def check_rack_datacenter_feature_supported(self) -> bool:
         """Report whether scoped rack/datacenter discovery appears supported."""
@@ -384,14 +401,17 @@ class SyncLiveNodesManager:
             return True
         raise _no_nodes_for_scope_error(scope)
 
-    def _refresh_loop(self) -> None:
+    def _refresh_loop(self, stop_event: threading.Event) -> None:
         """Background thread that refreshes node list."""
-        while not self._stop_event.is_set():
-            with contextlib.suppress(Exception):
-                self._refresh_nodes()
+        while not stop_event.is_set():
+            with self._refresh_lock:
+                if stop_event.is_set():
+                    return
+                with contextlib.suppress(Exception):
+                    self._refresh_nodes()
 
             interval = self._core.get_refresh_interval_seconds()
-            self._stop_event.wait(timeout=interval)
+            stop_event.wait(timeout=interval)
 
     def _refresh_nodes(self) -> bool:
         """
@@ -486,6 +506,7 @@ class AsyncLiveNodesManager:
         self._http_fetch = http_fetch
         self._refresh_task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        self._refresh_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Start background refresh task."""
@@ -552,7 +573,8 @@ class AsyncLiveNodesManager:
         Returns:
             True if nodes were successfully fetched, False otherwise
         """
-        return await self._refresh_nodes()
+        async with self._refresh_lock:
+            return await self._refresh_nodes()
 
     async def check_rack_datacenter_feature_supported(self) -> bool:
         """Report whether scoped rack/datacenter discovery appears supported."""
@@ -579,7 +601,7 @@ class AsyncLiveNodesManager:
         """Background task that refreshes node list."""
         while not self._stop_event.is_set():
             with contextlib.suppress(Exception):
-                await self._refresh_nodes()
+                await self.refresh_nodes()
 
             interval = self._core.get_refresh_interval_seconds()
             with contextlib.suppress(asyncio.TimeoutError):
