@@ -16,7 +16,7 @@
 Alternator Load Balancing Client for Python.
 
 A library that provides client-side load balancing for ScyllaDB Alternator,
-wrapping boto3/aioboto3 to transparently distribute requests across cluster nodes.
+wrapping boto3/aiobotocore to transparently distribute requests across cluster nodes.
 
 Quick Start
 -----------

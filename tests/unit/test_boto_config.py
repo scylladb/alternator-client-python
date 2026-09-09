@@ -21,6 +21,7 @@ from unittest.mock import patch
 
 import pytest
 from botocore import UNSIGNED
+from botocore.session import Session
 
 from alternator.client import _create_boto_config
 from alternator.config import (
@@ -31,6 +32,31 @@ from alternator.config import (
     RetryMode,
     TimeoutConfig,
 )
+
+
+def test_dynamodb_service_model_includes_native_vector_api() -> None:
+    """The installed Botocore model must include 1.43.64 vector support."""
+    service_model = Session().get_service_model("dynamodb")
+
+    assert "SearchVectors" in service_model.operation_names
+
+    search_vectors = service_model.operation_model("SearchVectors")
+    assert search_vectors.input_shape is not None
+    assert search_vectors.input_shape.name == "SearchVectorsInput"
+    assert {"SearchVector", "TopK"} <= search_vectors.input_shape.members.keys()
+    assert search_vectors.output_shape is not None
+    assert search_vectors.output_shape.name == "SearchVectorsOutput"
+
+    create_table = service_model.operation_model("CreateTable")
+    assert create_table.input_shape is not None
+    assert create_table.input_shape.members["VectorIndexes"].name == "VectorIndexList"
+
+    update_table = service_model.operation_model("UpdateTable")
+    assert update_table.input_shape is not None
+    assert (
+        update_table.input_shape.members["VectorIndexUpdates"].name
+        == "VectorIndexUpdateList"
+    )
 
 
 class TestCreateBotoConfig:

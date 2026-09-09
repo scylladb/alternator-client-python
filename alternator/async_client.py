@@ -46,6 +46,7 @@ from alternator.core.key_affinity import (
 from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
 
 if TYPE_CHECKING:
+    from aiobotocore.config import AioConfig
     from types_aiobotocore_dynamodb import DynamoDBClient as AsyncDynamoDBClient
 
     from alternator.config import Auth, Config
@@ -82,7 +83,7 @@ class AsyncPartitionKeyCache:
         Initialize the cache.
 
         Args:
-            client: aioboto3 DynamoDB client for DescribeTable calls
+            client: aiobotocore DynamoDB client for DescribeTable calls
         """
         self._client = client
         self._cache: dict[str, str] = {}
@@ -380,7 +381,7 @@ async def _close_async_manager(manager: AsyncLiveNodesManager) -> None:
             await result
 
 
-def _create_aio_config(config: Config, *, auth_enabled: bool) -> object:
+def _create_aio_config(config: Config, *, auth_enabled: bool) -> AioConfig:
     """Create aiobotocore AioConfig from Config settings."""
     try:
         from aiobotocore.config import AioConfig
@@ -405,14 +406,14 @@ async def _create_async_client_with_manager(
     *,
     auth: Auth | None = None,
     owns_manager: bool,
-    **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+    **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
 ) -> AsyncDynamoDBClient:
-    """Create an aioboto3 client using an already initialized manager."""
+    """Create an aiobotocore client using an already initialized manager."""
     try:
-        import aioboto3
+        from aiobotocore.session import get_session
     except ImportError as e:
         raise ImportError(
-            "aioboto3 is required for async support. "
+            "aiobotocore is required for async support. "
             "Install with: pip install alternator-client[async]"
         ) from e
 
@@ -426,12 +427,12 @@ async def _create_async_client_with_manager(
     boto_config = _create_aio_config(config, auth_enabled=auth_enabled)
     user_agent = getattr(boto_config, "user_agent", None)
 
-    # Create aioboto3 session and client
-    # Alternator doesn't use AWS regions, but boto3 requires one;
+    # Create an aiobotocore session and client
+    # Alternator doesn't use AWS regions, but the AWS SDK requires one;
     # default to "us-east-1" unless the caller overrides it.
     boto_kwargs.setdefault("region_name", config.aws_region)
-    session = aioboto3.Session()
-    client_ctx = session.client(
+    session = get_session()
+    client_ctx = session.create_client(
         "dynamodb",
         endpoint_url=initial_endpoint,
         config=boto_config,
@@ -465,19 +466,19 @@ async def _create_async_client_with_manager(
         await _finish_cleanup(client_ctx.__aexit__(None, None, None))
         raise
 
-    return cast("AsyncDynamoDBClient", client)
+    return client
 
 
 async def create_async_client(
     config: Config,
     *,
     auth: Auth | None = None,
-    **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+    **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
 ) -> AsyncDynamoDBClient:
     """
     Create a load-balanced async DynamoDB client for Alternator.
 
-    The returned client is an aioboto3 DynamoDB client that
+    The returned client is an aiobotocore DynamoDB client that
     transparently distributes requests across cluster nodes.
 
     Note:
@@ -488,7 +489,7 @@ async def create_async_client(
     Args:
         config: Alternator configuration
         auth: Explicit Alternator auth settings. Defaults to disabled auth.
-        **boto_kwargs: Additional arguments passed to aioboto3.client()
+        **boto_kwargs: Additional arguments passed to aiobotocore's create_client()
 
     Returns:
         An async DynamoDB client with load balancing enabled
@@ -503,7 +504,7 @@ async def create_async_client(
         )
         client = await create_async_client(config)
 
-        # Use like a normal aioboto3 client
+        # Use like a normal aiobotocore client
         response = await client.list_tables()
     """
     manager = await _create_async_manager(config)
@@ -564,7 +565,7 @@ class AsyncHelper:
     Async facade for Alternator client lifecycle and diagnostics.
 
     The helper owns one async live-node manager and can create standard
-    aioboto3 DynamoDB clients that share that discovery state.
+    aiobotocore DynamoDB clients that share that discovery state.
     """
 
     def __init__(
@@ -572,7 +573,7 @@ class AsyncHelper:
         config: Config,
         *,
         auth: Auth | None = None,
-        **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+        **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
     ) -> None:
         self._config = config
         self._auth = auth
@@ -602,7 +603,7 @@ class AsyncHelper:
         config: Config | None = None,
         *,
         auth: Auth | None | object = _AUTH_UNSET,
-        **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+        **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
     ) -> AsyncHelper:
         """Return a new async helper with updated config, auth, or boto kwargs."""
         next_auth = self._auth if auth is _AUTH_UNSET else cast("Auth | None", auth)
@@ -627,9 +628,9 @@ class AsyncHelper:
 
     async def client(
         self,
-        **boto_kwargs: Any,  # noqa: ANN401 -- aioboto3 kwargs are untyped
+        **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
     ) -> AsyncDynamoDBClient:
-        """Create a standard aioboto3 DynamoDB client using this helper."""
+        """Create a standard aiobotocore DynamoDB client using this helper."""
         manager = await self._ensure_manager()
         await manager.start()
         client = await _create_async_client_with_manager(
@@ -729,7 +730,7 @@ class AsyncAlternatorClient:
         config: Config,
         *,
         auth: Auth | None = None,
-        **boto_kwargs: Any,  # noqa: ANN401 -- boto3 kwargs are untyped
+        **boto_kwargs: Any,  # noqa: ANN401 -- aiobotocore kwargs are untyped
     ) -> None:
         self._config = config
         self._auth = auth
@@ -752,7 +753,7 @@ class AsyncAlternatorClient:
 
     @property
     def client(self) -> AsyncDynamoDBClient:
-        """Access the underlying aioboto3 client."""
+        """Access the underlying aiobotocore client."""
         if self._client is None:
             raise RuntimeError("Client not initialized. Use as async context manager.")
         return self._client

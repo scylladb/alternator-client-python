@@ -1,6 +1,6 @@
 # Alternator Load Balancing Client for Python
 
-A Python library that provides client-side load balancing for [ScyllaDB Alternator](https://docs.scylladb.com/stable/alternator/), wrapping boto3/aioboto3 to transparently distribute requests across cluster nodes.
+A Python library that provides client-side load balancing for [ScyllaDB Alternator](https://docs.scylladb.com/stable/alternator/), wrapping boto3/aiobotocore to transparently distribute requests across cluster nodes.
 
 ## Features
 
@@ -12,7 +12,7 @@ A Python library that provides client-side load balancing for [ScyllaDB Alternat
 - **Response Compression**: Optional gzip/deflate response decompression
 - **Header Optimization**: Filters unnecessary headers to reduce request overhead
 - **TLS Support**: Full TLS/SSL support with custom CA certificates
-- **Async Support**: Full async/await support via aioboto3
+- **Async Support**: Full async/await support via aiobotocore
 
 See the
 [capability matrix](https://github.com/scylladb/alternator-client-python/blob/main/docs/CAPABILITY_MATRIX.md)
@@ -101,7 +101,7 @@ async def main():
     )
 
     async with AsyncAlternatorClient(config) as client:
-        # Use like a normal aioboto3 DynamoDB client
+        # Use like a normal aiobotocore DynamoDB client
         response = await client.list_tables()
         print(response["TableNames"])
 
@@ -481,7 +481,7 @@ payload.
 
 Response compression is disabled by default. When enabled, the client sends
 `Accept-Encoding` with the configured encodings and decodes `Content-Encoding:
-gzip` or `Content-Encoding: deflate` responses before boto3/aioboto3 parses the
+gzip` or `Content-Encoding: deflate` responses before boto3/aiobotocore parses the
 DynamoDB JSON body. Use `.without_response_compression()` to disable it again in
 builder chains.
 

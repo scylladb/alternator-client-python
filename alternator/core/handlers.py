@@ -73,12 +73,12 @@ def _register_alternator_handlers(
     user_agent: str | None = DEFAULT_USER_AGENT,
 ) -> None:
     """
-    Register all Alternator event handlers on a boto3/aioboto3 client.
+    Register all Alternator event handlers on a boto3/aiobotocore client.
 
     This is shared between sync and async clients to avoid code duplication.
 
     Args:
-        events: The boto3/aioboto3 events object to register handlers on
+        events: The boto3/aiobotocore events object to register handlers on
         manager: Object with a ``nodes`` property returning a ``NodeList``
         config: Alternator configuration
         compute_affinity_node: Optional function to select a preferred affinity node
