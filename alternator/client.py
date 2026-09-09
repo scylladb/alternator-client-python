@@ -40,7 +40,6 @@ from alternator.core.key_affinity import (
 )
 from alternator.core.live_nodes import NodeList, SyncLiveNodesManager
 from alternator.exceptions import ConfigurationError
-from alternator.vector import enable_vector_support
 
 if TYPE_CHECKING:
     from mypy_boto3_dynamodb import DynamoDBClient
@@ -269,9 +268,6 @@ def _create_client_with_manager(
     setattr(client, MANAGER_ATTR, manager)
     setattr(client, MANAGER_OWNS_ATTR, owns_manager)
 
-    # Enable Alternator vector search extensions before registering finalizers.
-    enable_vector_support(client)
-
     if owns_manager:
         _register_manager(manager, client)
 
@@ -460,9 +456,6 @@ def _create_resource_with_manager(
     setattr(resource, MANAGER_OWNS_ATTR, owns_manager)
     setattr(resource.meta.client, MANAGER_ATTR, manager)
     setattr(resource.meta.client, MANAGER_OWNS_ATTR, owns_manager)
-
-    # Enable Alternator vector search extensions before registering finalizers.
-    enable_vector_support(resource)
 
     if owns_manager:
         # Derived resources such as ``resource.Table(...)`` retain the service

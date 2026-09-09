@@ -4,10 +4,9 @@
 
 Version 2.0.0 is a major release because it changes the default topology
 fallback behavior and the concrete type returned by
-`AlternatorConfigBuilder.build()`. It also adds vector search, higher-level
-lifecycle helpers, explicit configuration and authentication APIs, compression
-controls, IPv6 and DNS recovery, and substantial routing and lifecycle
-correctness fixes.
+`AlternatorConfigBuilder.build()`. It also adds higher-level lifecycle helpers,
+explicit configuration and authentication APIs, compression controls, IPv6 and
+DNS recovery, and substantial routing and lifecycle correctness fixes.
 
 ### Breaking Changes
 
@@ -67,11 +66,6 @@ security vulnerabilities in older releases.
 
 ### Added
 
-- Added ScyllaDB Alternator vector search support to all sync and async clients
-  and resources, including vector index request shapes, the `FLOAT32VECTOR`
-  wire type, and the high-level `alternator.vector.Vector` value type. Vector
-  search currently requires a ScyllaDB Cloud cluster with the feature enabled;
-  it is not provided by the stock local ScyllaDB image or AWS DynamoDB.
 - Added the top-level `alternator.client(...)` context manager and the `Helper`
   and `AsyncHelper` lifecycle facades. Helpers own clients/resources and expose
   node refresh, node inspection, topology validation, and partition-key cache
@@ -148,11 +142,9 @@ security vulnerabilities in older releases.
 5. Confirm request and response compression support in the target ScyllaDB
    version before enabling either feature.
 6. Upgrade `aiohttp` to 3.14.3 or later when using the `async` extra.
-7. Confirm that ScyllaDB Cloud vector search is enabled before using vector
-   indexes, `VectorSearch`, or `FLOAT32VECTOR`.
-8. Preload `table_pk_map` if key affinity must apply to a table's first request,
+7. Preload `table_pk_map` if key affinity must apply to a table's first request,
    and review the updated `RMW` and `BatchWriteItem` behavior.
-9. Treat SDK connect/read timeouts as per-attempt settings; apply an
+8. Treat SDK connect/read timeouts as per-attempt settings; apply an
    application-level deadline when a whole-operation limit is required.
 
 ### Intentionally Deferred
