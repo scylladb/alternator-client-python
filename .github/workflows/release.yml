@@ -20,7 +20,29 @@ jobs:
     permissions:
       actions: read
       contents: read
+      issues: read
     steps:
+      - name: Block release with open release blockers
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          blocker=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label release-blocker \
+            --limit 1 \
+            --json title,url \
+            --jq '.[0] // empty')
+          if [[ -n "$blocker" ]]; then
+            blocker_title=$(jq -r '.title' <<< "$blocker")
+            blocker_url=$(jq -r '.url' <<< "$blocker")
+            echo "Release blocked by open release blocker:"
+            echo "${blocker_title} (${blocker_url})"
+            exit 1
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
@@ -167,6 +189,7 @@ jobs:
     needs: build
     permissions:
       contents: write
+      issues: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -187,6 +210,31 @@ jobs:
         run: |
           git tag -s "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
           git tag --verify "v${RELEASE_VERSION}"
+
+      - name: Block release with open release blockers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          blocker=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label release-blocker \
+            --limit 1 \
+            --json title,url \
+            --jq '.[0] // empty')
+          if [[ -n "$blocker" ]]; then
+            blocker_title=$(jq -r '.title' <<< "$blocker")
+            blocker_url=$(jq -r '.url' <<< "$blocker")
+            echo "Release blocked by open release blocker:"
+            echo "${blocker_title} (${blocker_url})"
+            exit 1
+          fi
+
+      - name: Push signed tag
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
           git push origin "v${RELEASE_VERSION}"
 
   publish-testpypi:
@@ -221,6 +269,7 @@ jobs:
     needs: [build, tag-release]
     permissions:
       id-token: write
+      issues: read
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -233,6 +282,26 @@ jobs:
           rm -f dist/*.asc dist/SHA256SUMS 2>/dev/null || true
           ls -la dist/
 
+      - name: Block release with open release blockers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          blocker=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label release-blocker \
+            --limit 1 \
+            --json title,url \
+            --jq '.[0] // empty')
+          if [[ -n "$blocker" ]]; then
+            blocker_title=$(jq -r '.title' <<< "$blocker")
+            blocker_url=$(jq -r '.url' <<< "$blocker")
+            echo "Release blocked by open release blocker:"
+            echo "${blocker_title} (${blocker_url})"
+            exit 1
+          fi
+
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
 
@@ -243,6 +312,7 @@ jobs:
     needs: publish
     permissions:
       contents: write
+      issues: read
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -281,6 +351,26 @@ jobs:
             printf 'gpg --verify SHA256SUMS.asc SHA256SUMS\n'
             printf '```\n'
           } > release-body.md
+
+      - name: Block release with open release blockers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          blocker=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label release-blocker \
+            --limit 1 \
+            --json title,url \
+            --jq '.[0] // empty')
+          if [[ -n "$blocker" ]]; then
+            blocker_title=$(jq -r '.title' <<< "$blocker")
+            blocker_url=$(jq -r '.url' <<< "$blocker")
+            echo "Release blocked by open release blocker:"
+            echo "${blocker_title} (${blocker_url})"
+            exit 1
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
