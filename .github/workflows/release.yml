@@ -20,7 +20,29 @@ jobs:
     permissions:
       actions: read
       contents: read
+      issues: read
     steps:
+      - name: Block release with open release blockers
+        if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          blocker=$(gh issue list \
+            --repo "$GITHUB_REPOSITORY" \
+            --state open \
+            --label release-blocker \
+            --limit 1 \
+            --json title,url \
+            --jq '.[0] // empty')
+          if [[ -n "$blocker" ]]; then
+            blocker_title=$(jq -r '.title' <<< "$blocker")
+            blocker_url=$(jq -r '.url' <<< "$blocker")
+            echo "Release blocked by open release blocker:"
+            echo "${blocker_title} (${blocker_url})"
+            exit 1
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
