@@ -18,7 +18,7 @@ These tests verify that the client properly reuses TCP connections for both
 serial and parallel requests over HTTP and HTTPS.
 
 These tests require a running Scylla cluster with Alternator enabled.
-Start a local cluster with: make scylla-start
+Run with a native CCM cluster using: make test-integration
 """
 
 import threading
@@ -34,7 +34,8 @@ from alternator import (
     AlternatorConfigBuilder,
     Config,
 )
-from tests.integration import (
+from tests.integration.config import (
+    SCYLLA_CA_CERT_PATH,
     SCYLLA_HOST,
     SCYLLA_HTTPS_PORT,
     SCYLLA_PORT,
@@ -60,9 +61,9 @@ def http_config() -> Config:
 @pytest.fixture
 def https_config() -> Config | None:
     """Create HTTPS test configuration with trust-all for self-signed certs."""
-    ca_path = Path(__file__).resolve().parents[1] / "scylla" / "db.crt"
-    if not ca_path.exists():
-        pytest.skip("Self-signed certificate not found (run 'make scylla-start')")
+    ca_path = SCYLLA_CA_CERT_PATH
+    if ca_path is None or not ca_path.exists():
+        pytest.skip("CCM cluster CA certificate is unavailable")
     return (
         AlternatorConfigBuilder()
         .with_seeds(SCYLLA_HOST)
@@ -75,10 +76,9 @@ def https_config() -> Config | None:
 @pytest.fixture
 def ca_path() -> Path:
     """Get CA cert path, skip if not available."""
-    path = Path(__file__).resolve().parents[1] / "scylla" / "db.crt"
-    if not path.exists():
-        pytest.skip("Self-signed certificate not found (run 'make scylla-start')")
-    return path
+    if SCYLLA_CA_CERT_PATH is None or not SCYLLA_CA_CERT_PATH.exists():
+        pytest.skip("CCM cluster CA certificate is unavailable")
+    return SCYLLA_CA_CERT_PATH
 
 
 class TestHttpConnectionReuseSerial:

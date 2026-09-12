@@ -18,7 +18,7 @@ Tests TLS session caching for both ALN (node discovery) and DynamoDB API request
 and SSLKEYLOGFILE support.
 
 These tests require a running Scylla cluster with Alternator HTTPS enabled.
-Start a local cluster with: make scylla-start
+Run with a native CCM cluster using: make test-integration
 """
 
 import os
@@ -35,7 +35,12 @@ from alternator import (
     AlternatorConfigBuilder,
 )
 from alternator.config import TlsSessionCacheConfig
-from tests.integration import SCYLLA_HOST, SCYLLA_HTTPS_PORT, SKIP_INTEGRATION
+from tests.integration.config import (
+    SCYLLA_CA_CERT_PATH,
+    SCYLLA_HOST,
+    SCYLLA_HTTPS_PORT,
+    SKIP_INTEGRATION,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -46,10 +51,9 @@ pytestmark = [
 @pytest.fixture
 def ca_path() -> Path:
     """Get CA cert path, skip if not available."""
-    path = Path(__file__).resolve().parents[1] / "scylla" / "db.crt"
-    if not path.exists():
-        pytest.skip("Self-signed certificate not found (run 'make scylla-start')")
-    return path
+    if SCYLLA_CA_CERT_PATH is None or not SCYLLA_CA_CERT_PATH.exists():
+        pytest.skip("CCM cluster CA certificate is unavailable")
+    return SCYLLA_CA_CERT_PATH
 
 
 @pytest.fixture

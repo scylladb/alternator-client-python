@@ -27,7 +27,7 @@ from alternator import (
     create_client,
 )
 from alternator.async_client import close_async_client, create_async_client
-from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+from tests.integration.config import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
     pytest.mark.integration,

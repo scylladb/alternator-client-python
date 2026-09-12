@@ -18,7 +18,7 @@ These tests verify that the client gracefully handles incorrect datacenter
 and rack configurations when broader fallback scopes are configured.
 
 These tests require a running Scylla cluster with Alternator enabled.
-Start a local cluster with: make scylla-start
+Run with a native CCM cluster using: make test-integration
 """
 
 import pytest
@@ -34,7 +34,12 @@ from alternator import (
     RackScope,
 )
 from alternator.exceptions import ConfigurationError
-from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+from tests.integration.config import (
+    SCYLLA_DATACENTER,
+    SCYLLA_HOST,
+    SCYLLA_PORT,
+    SKIP_INTEGRATION,
+)
 
 pytestmark = [
     pytest.mark.integration,
@@ -104,9 +109,9 @@ class TestWrongRack:
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
             routing_scope=RackScope(
-                "datacenter1",
+                SCYLLA_DATACENTER,
                 "nonexistent_rack_12345",
-                fallback=DatacenterScope("datacenter1", fallback=ClusterScope()),
+                fallback=DatacenterScope(SCYLLA_DATACENTER, fallback=ClusterScope()),
             ),
         )
 
@@ -141,9 +146,9 @@ class TestWrongRack:
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
             routing_scope=RackScope(
-                "datacenter1",
+                SCYLLA_DATACENTER,
                 "bad_rack",
-                fallback=DatacenterScope("datacenter1", fallback=ClusterScope()),
+                fallback=DatacenterScope(SCYLLA_DATACENTER, fallback=ClusterScope()),
             ),
         )
 
@@ -186,15 +191,12 @@ class TestRackDatacenterFeatureSupport:
             assert "TableNames" in response
 
     def test_correct_datacenter_works(self) -> None:
-        """Test that the correct datacenter name works without fallback.
-
-        The default Scylla docker-compose uses 'datacenter1'.
-        """
+        """Test that the provisioned datacenter works without fallback."""
         config = (
             AlternatorConfigBuilder()
             .with_seeds(SCYLLA_HOST)
             .with_port(SCYLLA_PORT)
-            .with_datacenter("datacenter1")
+            .with_datacenter(SCYLLA_DATACENTER)
             .build()
         )
 
@@ -207,7 +209,7 @@ class TestRackDatacenterFeatureSupport:
         config = Config(
             seed_hosts=[SCYLLA_HOST],
             port=SCYLLA_PORT,
-            routing_scope=DatacenterScope("datacenter1", fallback=None),
+            routing_scope=DatacenterScope(SCYLLA_DATACENTER, fallback=None),
         )
 
         assert Helper(config).check_rack_and_datacenter_set_correctly()

@@ -15,7 +15,7 @@
 """Integration tests for asynchronous client.
 
 These tests require a running Scylla cluster with Alternator enabled.
-Start a local cluster with: make scylla-start
+Run with a native CCM cluster using: make test-integration
 
 """
 
@@ -26,7 +26,7 @@ from collections.abc import Callable
 import pytest
 
 from alternator import Config
-from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+from tests.integration.config import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
     pytest.mark.integration,

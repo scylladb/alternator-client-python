@@ -15,7 +15,7 @@
 """Integration tests for tables with composite keys (HASH + RANGE).
 
 These tests require a running Scylla cluster with Alternator enabled.
-Start a local cluster with: make scylla-start
+Run with a native CCM cluster using: make test-integration
 
 """
 
@@ -29,7 +29,7 @@ from alternator import (
     Config,
     KeyRouteAffinityMode,
 )
-from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+from tests.integration.config import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
     pytest.mark.integration,

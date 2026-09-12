@@ -158,10 +158,8 @@ Thumbs.db
 *.pem
 credentials.json
 .env.local
-
-# Generated TLS certificates for integration tests
-tests/scylla/db.key
-tests/scylla/db.crt
+/bin/scylla-ccm-*
+/test-results/
 
 TODO.md
 
