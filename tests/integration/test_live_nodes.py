@@ -25,7 +25,7 @@ from alternator import AlternatorConfigBuilder, Auth, Helper, KeyRouteAffinityMo
 from alternator._http import create_sync_http_fetcher
 from alternator.async_client import AsyncHelper
 from tests.conftest import FakeAlternatorServer
-from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+from tests.integration.config import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
 pytestmark = [
     pytest.mark.integration,

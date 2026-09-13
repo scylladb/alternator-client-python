@@ -1,5 +1,8 @@
 name: CI
 
+env:
+  SCYLLA_VERSION: release:2025.2.5
+
 on:
   push:
     branches: [main, master]
@@ -62,8 +65,28 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Start 3-node Scylla cluster with TLS
-        run: make scylla-start
+      - name: Cache Scylla relocatable package
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/.ccm/scylla-repository
+          key: scylla-ccm-relocatable-${{ runner.os }}-${{ runner.arch }}-d15a2fab9d22fffad8a30c806a7c8e1632e58aae-release-2025.2.5
 
       - name: Run integration tests
+        timeout-minutes: 30
         run: make test-integration
+
+      - name: Upload CCM diagnostics
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: ccm-diagnostics-python-3.11
+          path: test-results/ccm/**
+          if-no-files-found: ignore
+
+      - name: Upload integration test results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: integration-test-results-python-3.11
+          path: test-results/*.xml
+          if-no-files-found: ignore

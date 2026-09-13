@@ -6,14 +6,13 @@
 
 _non-code: &non-code
   - all-globs-to-all-files:
-      - "{tests/**,.github/**,Makefile,docker-compose.yml,.pre-commit-config.yaml,**/*.md,docs/**,LICENSE,.gitignore,.editorconfig,.ruff.toml,ruff.toml,mypy.ini,.mypy.ini,pyproject.toml,requirements*.txt}"
+      - "{tests/**,.github/**,Makefile,.pre-commit-config.yaml,**/*.md,docs/**,LICENSE,.gitignore,.editorconfig,.ruff.toml,ruff.toml,mypy.ini,.mypy.ini,pyproject.toml,requirements*.txt}"
 
 ci:
   - changed-files:
       - any-glob-to-any-file:
           - .github/**
           - Makefile
-          - docker-compose.yml
           - .pre-commit-config.yaml
   - changed-files: *non-code
 

@@ -43,7 +43,9 @@ dev = [
     "pytest-timeout>=2.0",
     "hypothesis>=6.0",
     "mypy>=1.0",
+    "PyYAML>=6.0",
     "ruff>=0.16.0",
+    "types-PyYAML>=6.0",
     "types-aiobotocore[dynamodb]>=3.9.1",
     "boto3-stubs[dynamodb]>=1.43.64",
 ]

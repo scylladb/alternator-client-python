@@ -70,6 +70,11 @@ class TestScyllaVersion:
         assert version.minor == 4
         assert version.patch == 0
 
+    def test_parse_ccm_release_selector(self) -> None:
+        """Test parsing the pinned CCM relocatable-package selector."""
+        version = ScyllaVersion.parse("release:2025.2.5")
+        assert version == ScyllaVersion(2025, 2, 5)
+
     def test_parse_old_style_version(self) -> None:
         """Test parsing old-style version (6.x)."""
         version = ScyllaVersion.parse("6.2.3")

@@ -714,7 +714,7 @@ Async clients created by `create_async_client` / `AsyncAlternatorClient` are saf
 - **Gzip Compression Levels**: Python's gzip module supports levels `0` through `9`; this client does not expose alternative compression algorithms or custom compressor objects.
 - **TLS Session Cache Settings**: The `cache_size` and `timeout_seconds` parameters in `TlsSessionCacheConfig` are not currently used by Python's `ssl` module. Only the `enabled` flag controls session ticket behavior.
 - **TLS Key Logs**: Key log file support depends on Python/OpenSSL runtime support for `SSLContext.keylog_filename` and should only be used in protected debugging environments.
-- **mTLS Integration Fixtures**: The local Scylla fixture in this repository does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
+- **mTLS Integration Fixtures**: The CCM-provisioned Scylla cluster does not require client certificate authentication, so automated tests cover configuration propagation and SSL context setup rather than a full mutual-TLS handshake.
 - **Key Affinity Discovery**: For sync and async clients, partition key auto-discovery happens in the background. The first request for an unknown table uses normal routing while discovery runs; subsequent requests use affinity. Preloading via `table_pk_map` avoids this initial miss.
 - **Batch Operations**: `BatchWriteItem` key affinity in `ANY_WRITE` mode uses preferred-node voting across eligible put/delete entries. Tied nodes use address order; missing partition-key metadata and unsupported key values are skipped. No eligible votes cause normal-routing fallback; no active nodes fail locally. Batches are not split by affinity target.
 - **Node Health**: Node health, quarantine behavior, decommission handling, and dead-node handling are planning-only. `get_quarantined_nodes()` returns an empty list until a future implementation is explicitly added.
@@ -734,7 +734,7 @@ for the changes and migration steps in 2.0.0.
 
 ## Development
 
-```bash
+```console
 # Clone the repository
 git clone https://github.com/scylladb/alternator-client-python.git
 cd alternator-client-python
@@ -751,11 +751,23 @@ make lint
 # Run mypy type checks
 make typecheck
 
-# Start local Scylla cluster for integration tests
-make scylla-start
+# Install pinned scylla-ccm and run native-cluster integration tests
+make ccm-install
 make test-integration
-make scylla-stop
 ```
+
+Integration tests use native Scylla relocatable packages through a pinned
+[`scylla-ccm`](https://github.com/scylladb/scylla-ccm) revision. They require
+Linux, `uv`, and OpenSSL; no container runtime is needed. The harness owns
+cluster startup, generated TLS certificates, lease-scoped table cleanup, diagnostics,
+normal shutdown, and stale-run recovery.
+
+Default Scylla selector is `release:2025.2.5`. `SCYLLA_VERSION` selects another
+relocatable package, `SCYLLA_CCM_PATH` selects a validated CCM executable,
+`SCYLLA_CCM_MAX_NODES` may lower the nine-node limit, `SCYLLA_CCM_ROOT` selects
+the shared per-user ownership root, and `SCYLLA_CCM_DIAGNOSTICS_DIR` selects the
+artifact directory. See [CCM integration contract](feature-specs/ccm-integration.md) for
+lease API and recovery guarantees.
 
 ## License
 

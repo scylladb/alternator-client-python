@@ -18,10 +18,12 @@ from __future__ import annotations
 
 import contextlib
 import json
+import sys
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -31,6 +33,29 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
 
     from tests.integration.scylla_version import ScyllaVersion
+
+
+_TESTS_ROOT = Path(__file__).resolve().parent
+
+
+def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
+    """Exclude Linux-only CCM suites before their POSIX imports are evaluated."""
+    if sys.platform.startswith("linux"):
+        return None
+    try:
+        relative = collection_path.resolve().relative_to(_TESTS_ROOT)
+    except ValueError:
+        return None
+    if relative.parts and relative.parts[0] == "integration":
+        return True
+    if (
+        len(relative.parts) == 2
+        and relative.parts[0] == "unit"
+        and relative.name.startswith("test_ccm_")
+        and relative.suffix == ".py"
+    ):
+        return True
+    return None
 
 
 @dataclass(frozen=True)
@@ -181,6 +206,25 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
+def pytest_sessionfinish(
+    session: pytest.Session, exitstatus: int | pytest.ExitCode
+) -> None:
+    """Remove process-owned CCM state after every pytest phase."""
+    if not sys.platform.startswith("linux"):
+        return
+
+    try:
+        from tests.testinfra.pool import TestClusters
+
+        TestClusters.close_all()
+    except BaseException as exception:
+        reporter = session.config.pluginmanager.get_plugin("terminalreporter")
+        if reporter is not None:
+            reporter.write_sep("=", "CCM cleanup failed")
+            reporter.write_line(f"{type(exception).__name__}: {exception}")
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.fixture(scope="session")
 def scylla_version() -> ScyllaVersion | None:
     """Get the running ScyllaDB version.
@@ -216,7 +260,7 @@ def scylla_version() -> ScyllaVersion | None:
         return env_version
 
     # Try auto-detection with a temporary client
-    from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+    from tests.integration.config import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 
     if SKIP_INTEGRATION:
         return None

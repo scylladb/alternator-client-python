@@ -14,13 +14,14 @@
 
 """Integration tests for alternator package."""
 
+from __future__ import annotations
+
 import os
 
-SCYLLA_HOST = os.environ.get("SCYLLA_HOST", "localhost")
-SCYLLA_PORT = int(os.environ.get("SCYLLA_PORT", "9998"))
-SCYLLA_HTTPS_PORT = int(os.environ.get("SCYLLA_HTTPS_PORT", "9999"))
-SKIP_INTEGRATION = os.environ.get("SKIP_INTEGRATION_TESTS", "").lower() in (
-    "1",
-    "true",
-    "yes",
-)
+
+def integration_tests_enabled() -> bool:
+    """Return whether integration phases are enabled without an explicit skip."""
+    enabled_values = {"1", "true", "yes"}
+    enabled = os.environ.get("INTEGRATION_TESTS", "").lower() in enabled_values
+    skipped = os.environ.get("SKIP_INTEGRATION_TESTS", "").lower() in enabled_values
+    return enabled and not skipped

@@ -22,6 +22,7 @@ overridden via SCYLLA_VERSION environment variable.
 
 Examples:
     SCYLLA_VERSION=2025.4.0 pytest tests/integration/
+    SCYLLA_VERSION=release:2025.2.5 pytest tests/integration/
     SCYLLA_VERSION=2026.1.0 pytest tests/integration/
 """
 
@@ -60,7 +61,7 @@ class ScyllaVersion:
 
     @classmethod
     def parse(cls, version_str: str) -> ScyllaVersion | None:
-        """Parse version string like '2025.4.0' or '6.2.3'.
+        """Parse version string like '2025.4.0' or 'release:2025.2.5'.
 
         Also handles version strings with suffixes like:
         - '2026.1.0-rc0'
@@ -74,7 +75,7 @@ class ScyllaVersion:
 
         # Clean the version string - extract just the version numbers
         # Handle formats: "2025.4.0", "2025.4.0-rc0", "2025.4.0~rc1", "5.4.0-0.20240101"
-        match = re.match(r"(\d+)\.(\d+)(?:\.(\d+))?", version_str.strip())
+        match = re.match(r"(?:release:)?(\d+)\.(\d+)(?:\.(\d+))?", version_str.strip())
         if not match:
             return None
 

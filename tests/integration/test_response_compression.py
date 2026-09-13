@@ -28,7 +28,7 @@ from alternator import (
     close_client,
     create_client,
 )
-from tests.integration import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
+from tests.integration.config import SCYLLA_HOST, SCYLLA_PORT, SKIP_INTEGRATION
 from tests.integration.wire_capture import (
     capture_prepared_requests,
     capture_raw_responses,
