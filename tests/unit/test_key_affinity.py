@@ -28,7 +28,11 @@ from unittest.mock import MagicMock, patch
 
 from botocore.awsrequest import AWSPreparedRequest
 
-from alternator.config import Config
+from alternator.config import (
+    Config,
+    KeyRouteAffinityConfig,
+    KeyRouteAffinityMode,
+)
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.key_affinity import (
@@ -45,6 +49,7 @@ from alternator.core.key_affinity import (
 from alternator.core.live_nodes import NodeList
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_request_params
+from alternator.core.routing_scope import RackScope
 
 Params = dict[str, Any]
 
@@ -867,6 +872,7 @@ class TestAffinityHandlerRouting:
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
+        manager.cluster_nodes = manager.nodes
         events = MagicMock()
 
         def compute_affinity_node(
@@ -942,6 +948,7 @@ class TestAffinityHandlerRouting:
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
+        manager.cluster_nodes = manager.nodes
         events = MagicMock()
         params = {
             "RequestItems": {
@@ -993,6 +1000,139 @@ class TestAffinityHandlerRouting:
             "http://b:8000/",
             "http://c:8000/",
         )
+
+    def test_rmw_affinity_uses_cluster_nodes_across_rack_views(self) -> None:
+        """The same conditional write chooses one coordinator across racks."""
+        cluster_nodes = NodeList(
+            nodes=("rack1-node", "rack2-node", "rack3-node"),
+            scope_name="Cluster",
+        )
+
+        def first_url(rack: str, rack_node: str) -> str:
+            config = Config(
+                seed_hosts=["seed"],
+                port=8000,
+                routing_scope=RackScope("dc1", rack),
+                key_affinity=KeyRouteAffinityConfig(
+                    mode=KeyRouteAffinityMode.RMW,
+                    table_pk_attributes={"orders": "pk"},
+                ),
+            )
+            manager = MagicMock()
+            manager.nodes = NodeList(nodes=(rack_node,), scope_name="Rack")
+            manager.cluster_nodes = cluster_nodes
+            events = MagicMock()
+
+            def compute_affinity_node(
+                operation_name: str,
+                params: dict[str, Any],
+                nodes: NodeList,
+            ) -> SeededAffinityPlan | tuple[str, ...] | None:
+                return select_affinity_node(
+                    mode=config.key_affinity.mode.name,
+                    operation_name=operation_name,
+                    params=params,
+                    nodes=nodes,
+                    get_pk_name=config.key_affinity.table_pk_attributes.get,
+                )
+
+            _register_alternator_handlers(
+                events,
+                manager,
+                config,
+                compute_affinity_node,
+            )
+            update_endpoint = next(
+                call[0][1]
+                for call in events.register.call_args_list
+                if call[0][1].__name__ == "update_endpoint"
+            )
+            request = MagicMock()
+            request.url = "http://seed:8000/"
+            request.headers = {"X-Amz-Target": "DynamoDB_20120810.PutItem"}
+            request.body = (
+                b'{"TableName":"orders","Item":{"pk":{"S":"order-1"}},'
+                b'"ConditionExpression":"attribute_not_exists(pk)"}'
+            )
+            request._alternator_query_plan = None
+
+            update_endpoint(request)
+            return str(request.url)
+
+        rack1_url = first_url("rack1", "rack1-node")
+        rack2_url = first_url("rack2", "rack2-node")
+
+        assert rack1_url == rack2_url
+        assert rack1_url.removeprefix("http://").removesuffix(":8000/") in (
+            cluster_nodes.nodes
+        )
+
+    def test_affinity_fallback_stays_in_configured_rack(self) -> None:
+        """Normal and unavailable-affinity routing remain rack scoped."""
+        config = Config(
+            seed_hosts=["seed"],
+            port=8000,
+            routing_scope=RackScope("dc1", "rack1"),
+            key_affinity=KeyRouteAffinityConfig(
+                mode=KeyRouteAffinityMode.RMW,
+                table_pk_attributes={"orders": "pk"},
+            ),
+        )
+        manager = MagicMock()
+        manager.nodes = NodeList(nodes=("rack1-node",), scope_name="Rack")
+        manager.cluster_nodes = NodeList(
+            nodes=("rack1-node", "rack2-node", "rack3-node"),
+            scope_name="Cluster",
+        )
+        events = MagicMock()
+
+        def compute_affinity_node(
+            operation_name: str,
+            params: dict[str, Any],
+            nodes: NodeList,
+        ) -> SeededAffinityPlan | tuple[str, ...] | None:
+            return select_affinity_node(
+                mode=config.key_affinity.mode.name,
+                operation_name=operation_name,
+                params=params,
+                nodes=nodes,
+                get_pk_name=config.key_affinity.table_pk_attributes.get,
+            )
+
+        _register_alternator_handlers(
+            events,
+            manager,
+            config,
+            compute_affinity_node,
+        )
+        update_endpoint = next(
+            call[0][1]
+            for call in events.register.call_args_list
+            if call[0][1].__name__ == "update_endpoint"
+        )
+        request = MagicMock()
+        request.url = "http://seed:8000/"
+        request.headers = {"X-Amz-Target": "DynamoDB_20120810.PutItem"}
+        request.body = b'{"TableName":"orders","Item":{"pk":{"S":"order-1"}}}'
+        request._alternator_query_plan = None
+
+        update_endpoint(request)
+
+        assert request.url == "http://rack1-node:8000/"
+
+        manager.cluster_nodes = NodeList(nodes=(), scope_name="Cluster")
+        conditional_request = MagicMock()
+        conditional_request.url = "http://seed:8000/"
+        conditional_request.headers = {"X-Amz-Target": "DynamoDB_20120810.PutItem"}
+        conditional_request.body = (
+            b'{"TableName":"orders","Item":{"pk":{"S":"order-1"}},'
+            b'"ConditionExpression":"attribute_not_exists(pk)"}'
+        )
+        conditional_request._alternator_query_plan = None
+
+        update_endpoint(conditional_request)
+
+        assert conditional_request.url == "http://rack1-node:8000/"
 
 
 class TestExtractPartitionKey:

@@ -24,7 +24,7 @@ import pytest
 
 import alternator.async_client as async_client_module
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
-from alternator.config import Config
+from alternator.config import Config, KeyRouteAffinityConfig, KeyRouteAffinityMode
 from alternator.core.live_nodes import AsyncLiveNodesManager, NoNodesAvailableError
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from alternator.exceptions import ConfigurationError
@@ -147,6 +147,7 @@ class TestAsyncLiveNodesManager:
             "dc2-node1",
             "dc2-node2",
         )
+        assert manager.cluster_nodes == manager.nodes
 
     @pytest.mark.asyncio
     async def test_cluster_scope_aggregates_reachable_seed_localnodes(self) -> None:
@@ -166,6 +167,40 @@ class TestAsyncLiveNodesManager:
 
         assert await manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
+
+    @pytest.mark.asyncio
+    async def test_rack_scope_tracks_cluster_nodes_for_key_affinity(self) -> None:
+        """Rack routing retains a cluster-wide snapshot for affinity plans."""
+        call_urls: list[str] = []
+
+        async def mock_fetch(url: str) -> list[str]:
+            call_urls.append(url)
+            if "rack=" in url:
+                return ["rack1-node"]
+            if "seed-dc1" in url:
+                return ["rack1-node", "rack2-node"]
+            return ["rack3-node"]
+
+        config = Config(
+            seed_hosts=["seed-dc1", "seed-dc2"],
+            port=8000,
+            routing_scope=RackScope("dc1", "rack1"),
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+        )
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+
+        assert await manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("rack1-node",)
+        assert manager.cluster_nodes.nodes == (
+            "rack1-node",
+            "rack2-node",
+            "rack3-node",
+        )
+        assert call_urls == [
+            "http://seed-dc1:8000/localnodes?dc=dc1&rack=rack1",
+            "http://seed-dc1:8000/localnodes",
+            "http://seed-dc2:8000/localnodes",
+        ]
 
     @pytest.mark.asyncio
     async def test_url_construction(self, config: Config) -> None:

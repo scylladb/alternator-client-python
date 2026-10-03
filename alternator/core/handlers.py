@@ -59,6 +59,9 @@ class _HasNodes(Protocol):
     @property
     def nodes(self) -> NodeList: ...
 
+    @property
+    def cluster_nodes(self) -> NodeList: ...
+
 
 def _register_alternator_handlers(
     events: BaseEventHooks,
@@ -173,13 +176,14 @@ def _register_alternator_handlers(
     def _create_request_query_plan(
         request: AWSRequest | AWSPreparedRequest,
     ) -> Iterator[str]:
-        nodes = manager.nodes
-        if not nodes:
+        scoped_nodes = manager.nodes
+        if not scoped_nodes:
             raise NoNodesAvailableError(
                 "No nodes available",
                 scope_name=scope_name,
             )
 
+        plan_nodes = scoped_nodes
         affinity_target: AffinityTarget | None = None
         if compute_affinity_node is not None:
             # Check operation name first (cheap header read) before
@@ -187,12 +191,16 @@ def _register_alternator_handlers(
             operation_name = extract_operation_name(request)
             if operation_name in _affinity_operations:
                 params = extract_request_params(request)
-                affinity_target = compute_affinity_node(
-                    operation_name,
-                    params,
-                    nodes,
-                )
-        return create_query_plan(nodes, affinity_target)
+                cluster_nodes = manager.cluster_nodes
+                if cluster_nodes:
+                    affinity_target = compute_affinity_node(
+                        operation_name,
+                        params,
+                        cluster_nodes,
+                    )
+                    if affinity_target is not None:
+                        plan_nodes = cluster_nodes
+        return create_query_plan(plan_nodes, affinity_target)
 
     def _store_query_plan(
         request: AWSRequest | AWSPreparedRequest,

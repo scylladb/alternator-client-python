@@ -382,6 +382,13 @@ then address, followed by remaining nodes. Missing partition-key metadata and
 unsupported key values are skipped; absence of usable votes falls back to
 normal routing.
 
+When key affinity is combined with datacenter- or rack-aware routing,
+affinity-eligible requests use a separately refreshed cluster-wide node
+snapshot so every client computes the same coordinator. Requests that are not
+affinity eligible remain within the configured routing scope. If no
+cluster-wide snapshot is available, the request falls back to normal scoped
+routing.
+
 ## TLS Configuration
 
 ```python
