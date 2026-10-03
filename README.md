@@ -385,9 +385,10 @@ normal routing.
 When key affinity is combined with datacenter- or rack-aware routing,
 affinity-eligible requests use a separately refreshed cluster-wide node
 snapshot so every client computes the same coordinator. Requests that are not
-affinity eligible remain within the configured routing scope. If no
-cluster-wide snapshot is available, the request falls back to normal scoped
-routing.
+affinity eligible remain within the configured routing scope. The cluster
+snapshot is published only after every configured seed returns usable data; an
+incomplete refresh invalidates it so requests fall back to normal scoped
+routing rather than use a partial or stale affinity ring.
 
 ## TLS Configuration
 

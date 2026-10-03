@@ -163,6 +163,7 @@ class TestSyncLiveNodesManager:
 
         assert manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
+        assert not manager.cluster_nodes
 
     def test_rack_scope_tracks_cluster_nodes_for_key_affinity(self) -> None:
         """Rack routing retains a cluster-wide snapshot for affinity plans."""
@@ -196,6 +197,51 @@ class TestSyncLiveNodesManager:
             "http://seed-dc1:8000/localnodes",
             "http://seed-dc2:8000/localnodes",
         ]
+
+    @pytest.mark.parametrize(
+        "failed_cluster_seeds",
+        [
+            frozenset({"seed-dc1"}),
+            frozenset({"seed-dc1", "seed-dc2"}),
+        ],
+        ids=("partial", "all-failed"),
+    )
+    def test_incomplete_affinity_refresh_invalidates_cluster_snapshot(
+        self,
+        failed_cluster_seeds: frozenset[str],
+    ) -> None:
+        """Incomplete cluster discovery cannot leave a stale affinity ring."""
+        failures: set[str] = set()
+
+        def mock_fetch(url: str) -> Sequence[str]:
+            if "rack=" in url:
+                return ["rack1-node"]
+            if any(seed in url for seed in failures):
+                raise OSError("seed unavailable")
+            if "seed-dc1" in url:
+                return ["rack1-node", "rack2-node"]
+            return ["rack3-node"]
+
+        config = Config(
+            seed_hosts=["seed-dc1", "seed-dc2"],
+            port=8000,
+            routing_scope=RackScope("dc1", "rack1"),
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+        )
+        manager = SyncLiveNodesManager(config, mock_fetch)
+
+        assert manager.refresh_nodes() is True
+        assert manager.cluster_nodes.nodes == (
+            "rack1-node",
+            "rack2-node",
+            "rack3-node",
+        )
+
+        failures.update(failed_cluster_seeds)
+
+        assert manager.refresh_nodes() is True
+        assert manager.nodes.nodes == ("rack1-node",)
+        assert not manager.cluster_nodes
 
     def test_dns_entrypoint_discovers_dns_node_records(
         self,

@@ -58,6 +58,14 @@ class NodeList:
         return bool(self.nodes)
 
 
+@dataclass(frozen=True)
+class _ClusterDiscoveryResult:
+    """Cluster nodes collected from seeds and whether every seed succeeded."""
+
+    nodes: tuple[str, ...]
+    complete: bool
+
+
 class RoundRobinSelector:
     """
     Thread-safe round-robin node selector.
@@ -130,8 +138,6 @@ class LiveNodesManagerCore:
         )
         with self._nodes_lock:
             self._nodes = new_list
-            if _uses_cluster_scope(scope):
-                self._cluster_nodes = new_list
 
     def update_cluster_nodes(self, nodes: Sequence[str]) -> None:
         """Update the cluster-wide key-affinity node snapshot."""
@@ -141,6 +147,11 @@ class LiveNodesManagerCore:
         )
         with self._nodes_lock:
             self._cluster_nodes = new_list
+
+    def invalidate_cluster_nodes(self) -> None:
+        """Discard a cluster snapshot that is no longer known to be complete."""
+        with self._nodes_lock:
+            self._cluster_nodes = NodeList(nodes=(), scope_name="Cluster")
 
     def next_node(self) -> str | None:
         """Get next node using round-robin (thread-safe)."""
@@ -501,13 +512,19 @@ class SyncLiveNodesManager:
                     self._core.log_fetch_error(scope, e)
             scope = scope.fallback
 
+        self._core.invalidate_cluster_nodes()
         self._core.log_all_scopes_failed()
         return False
 
     def _refresh_cluster_scope_nodes(self, scope: RoutingScope) -> bool:
         """Fetch cluster scope by aggregating local node lists from every seed."""
-        discovered = self._fetch_cluster_scope_nodes(scope)
-        return self._core.process_fetch_result(discovered, scope)
+        result = self._fetch_cluster_scope_nodes(scope)
+        refreshed = self._core.process_fetch_result(result.nodes, scope)
+        if refreshed and result.complete:
+            self._core.update_cluster_nodes(result.nodes)
+        else:
+            self._core.invalidate_cluster_nodes()
+        return refreshed
 
     def _refresh_cluster_nodes_for_affinity(self, scope: RoutingScope) -> None:
         """Refresh the cluster snapshot when affinity overrides a narrow scope."""
@@ -516,14 +533,20 @@ class SyncLiveNodesManager:
 
         from alternator.core.routing_scope import ClusterScope
 
-        discovered = self._fetch_cluster_scope_nodes(ClusterScope())
-        if discovered:
-            self._core.update_cluster_nodes(discovered)
+        result = self._fetch_cluster_scope_nodes(ClusterScope())
+        if result.complete and result.nodes:
+            self._core.update_cluster_nodes(result.nodes)
+        else:
+            self._core.invalidate_cluster_nodes()
 
-    def _fetch_cluster_scope_nodes(self, scope: RoutingScope) -> list[str]:
+    def _fetch_cluster_scope_nodes(
+        self,
+        scope: RoutingScope,
+    ) -> _ClusterDiscoveryResult:
         """Fetch and union cluster-scope node lists from every seed."""
         discovered: list[str] = []
         seen: set[str] = set()
+        complete = True
 
         for seed in self._config.seed_hosts:
             url = self._core.build_localnodes_url(scope, seed)
@@ -531,6 +554,11 @@ class SyncLiveNodesManager:
                 nodes = self._http_fetch(url)
             except Exception as e:
                 self._core.log_fetch_error(scope, e)
+                complete = False
+                continue
+
+            if not nodes:
+                complete = False
                 continue
 
             for node in nodes:
@@ -539,7 +567,7 @@ class SyncLiveNodesManager:
                 seen.add(node)
                 discovered.append(node)
 
-        return discovered
+        return _ClusterDiscoveryResult(nodes=tuple(discovered), complete=complete)
 
     def _fetch_scope_nodes(self, scope: RoutingScope) -> list[str]:
         """Fetch nodes for one scope without updating current routing state."""
@@ -739,13 +767,19 @@ class AsyncLiveNodesManager:
                     self._core.log_fetch_error(scope, e)
             scope = scope.fallback
 
+        self._core.invalidate_cluster_nodes()
         self._core.log_all_scopes_failed()
         return False
 
     async def _refresh_cluster_scope_nodes(self, scope: RoutingScope) -> bool:
         """Fetch cluster scope by aggregating local node lists from every seed."""
-        discovered = await self._fetch_cluster_scope_nodes(scope)
-        return self._core.process_fetch_result(discovered, scope)
+        result = await self._fetch_cluster_scope_nodes(scope)
+        refreshed = self._core.process_fetch_result(result.nodes, scope)
+        if refreshed and result.complete:
+            self._core.update_cluster_nodes(result.nodes)
+        else:
+            self._core.invalidate_cluster_nodes()
+        return refreshed
 
     async def _refresh_cluster_nodes_for_affinity(
         self,
@@ -757,14 +791,20 @@ class AsyncLiveNodesManager:
 
         from alternator.core.routing_scope import ClusterScope
 
-        discovered = await self._fetch_cluster_scope_nodes(ClusterScope())
-        if discovered:
-            self._core.update_cluster_nodes(discovered)
+        result = await self._fetch_cluster_scope_nodes(ClusterScope())
+        if result.complete and result.nodes:
+            self._core.update_cluster_nodes(result.nodes)
+        else:
+            self._core.invalidate_cluster_nodes()
 
-    async def _fetch_cluster_scope_nodes(self, scope: RoutingScope) -> list[str]:
+    async def _fetch_cluster_scope_nodes(
+        self,
+        scope: RoutingScope,
+    ) -> _ClusterDiscoveryResult:
         """Fetch and union cluster-scope node lists from every seed."""
         discovered: list[str] = []
         seen: set[str] = set()
+        complete = True
 
         for seed in self._config.seed_hosts:
             url = self._core.build_localnodes_url(scope, seed)
@@ -772,6 +812,11 @@ class AsyncLiveNodesManager:
                 nodes = await self._http_fetch(url)
             except Exception as e:
                 self._core.log_fetch_error(scope, e)
+                complete = False
+                continue
+
+            if not nodes:
+                complete = False
                 continue
 
             for node in nodes:
@@ -780,7 +825,7 @@ class AsyncLiveNodesManager:
                 seen.add(node)
                 discovered.append(node)
 
-        return discovered
+        return _ClusterDiscoveryResult(nodes=tuple(discovered), complete=complete)
 
     async def _fetch_scope_nodes(self, scope: RoutingScope) -> list[str]:
         """Fetch nodes for one scope without updating current routing state."""
