@@ -44,14 +44,20 @@ class LazyQueryPlan(Iterator[str]):
         seed: int,
     ) -> None:
         self._nodes = list(nodes)
-        self._rng = DeterministicRand(seed)
+        self._rng = DeterministicRand(seed) if len(self._nodes) > 1 else None
 
     def __next__(self) -> str:
         if not self._nodes:
             raise StopIteration
 
+        # There is no choice to randomize, including the last node of a retry
+        # plan. Avoid constructing a generator for empty and one-node snapshots.
+        if len(self._nodes) == 1:
+            return self._nodes.pop()
+
         # Cross-client-compatible pick-and-remove: pick from the current pool,
         # return that node, then fill its slot with the last remaining node.
+        assert self._rng is not None
         pick = self._rng.intn(len(self._nodes))
         node = self._nodes[pick]
         last = self._nodes.pop()
