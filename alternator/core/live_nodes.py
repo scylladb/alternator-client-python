@@ -289,7 +289,9 @@ def _affinity_scopes(scope: RoutingScope) -> Iterator[RoutingScope]:
     from alternator.core.routing_scope import DatacenterScope, RackScope
 
     current: RoutingScope | None = scope
-    while current is not None:
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
         yield (
             DatacenterScope(current.datacenter)
             if isinstance(current, RackScope)

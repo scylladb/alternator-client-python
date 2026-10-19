@@ -28,7 +28,12 @@ from alternator.core.live_nodes import (
     RoundRobinSelector,
     _affinity_scopes,
 )
-from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
+from alternator.core.routing_scope import (
+    ClusterScope,
+    DatacenterScope,
+    RackScope,
+    RoutingScope,
+)
 
 
 class TestNodeList:
@@ -348,3 +353,18 @@ def test_affinity_chain_preserves_custom_queries_and_configured_scopes() -> None
     assert configured.fallback is custom
     assert custom.fallback is last
     assert last.fallback is None
+
+
+def test_affinity_chain_terminates_a_custom_fallback_cycle() -> None:
+    """Unused cyclic fallbacks cannot hang a successful ordinary rack refresh."""
+
+    class CyclicScope(DatacenterScope):
+        @property
+        def fallback(self) -> RoutingScope:
+            return self
+
+    configured = RackScope("dc1", "rack1", fallback=CyclicScope("custom"))
+    assert [scope.get_localnodes_query() for scope in _affinity_scopes(configured)] == [
+        "dc=dc1",
+        "dc=custom",
+    ]
