@@ -582,24 +582,33 @@ class TestSyncLiveNodesManager:
         assert hosts == ["node1", "node2", "node3", "node1", "node2", "node3"]
 
     def test_refresh_failure_keeps_existing_nodes(self, config: Config) -> None:
-        """Test failed refresh keeps existing nodes."""
-        call_count = 0
+        """Ordinary exhaustion retains nodes and skips even a healthy affinity DC."""
+        rack_available = True
+        calls: list[str] = []
 
-        def mock_fetch(url: str) -> Sequence[str]:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 1:
-                return ["node1", "node2"]
-            return []  # Subsequent calls fail
+        def mock_fetch(url: str) -> list[str]:
+            query = url.split("?", 1)[1]
+            calls.append(query)
+            if "rack=" in query:
+                return ["rack-node"] if rack_available else []
+            return ["rack-node", "dc-node"]
 
-        manager = SyncLiveNodesManager(config, mock_fetch)
-        manager.refresh_nodes()  # Succeeds
-
-        initial_nodes = manager.nodes.nodes
-        manager.refresh_nodes()  # Fails, but keeps nodes
-
-        # Nodes should still be available
-        assert manager.nodes.nodes == initial_nodes
+        scoped_config = Config(
+            seed_hosts=["seed"],
+            port=config.port,
+            routing_scope=RackScope("dc1", "rack1"),
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+        )
+        manager = SyncLiveNodesManager(scoped_config, mock_fetch)
+        assert manager.refresh_nodes() is True
+        assert manager.cluster_nodes.nodes == ("dc-node", "rack-node")
+        initial_nodes = manager.nodes
+        calls.clear()
+        rack_available = False
+        assert manager.refresh_nodes() is False
+        assert manager.nodes == initial_nodes
+        assert not manager.cluster_nodes
+        assert calls == ["dc=dc1&rack=rack1"]
 
     def test_topology_validation_uses_scope_without_state_update(self) -> None:
         """Validation queries one scoped endpoint without replacing live nodes."""

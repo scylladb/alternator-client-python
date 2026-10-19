@@ -590,26 +590,33 @@ class TestAsyncLiveNodesManager:
 
     @pytest.mark.asyncio
     async def test_refresh_failure_keeps_existing_nodes(self, config: Config) -> None:
-        """Test that refresh failure preserves existing node list."""
-        first_call = True
+        """Ordinary exhaustion retains nodes and skips even a healthy affinity DC."""
+        rack_available = True
+        calls: list[str] = []
 
         async def mock_fetch(url: str) -> list[str]:
-            nonlocal first_call
-            if first_call:
-                first_call = False
-                return ["node1", "node2"]
-            return []  # Simulates failure
+            query = url.split("?", 1)[1]
+            calls.append(query)
+            if "rack=" in query:
+                return ["rack-node"] if rack_available else []
+            return ["rack-node", "dc-node"]
 
-        manager = AsyncLiveNodesManager(config, mock_fetch)
-
-        # First fetch succeeds
-        await manager.refresh_nodes()
-        initial_nodes = manager.nodes.nodes
-        assert len(initial_nodes) == 2
-
-        # Second fetch fails but nodes remain
-        await manager.refresh_nodes()
-        assert manager.nodes.nodes == initial_nodes
+        scoped_config = Config(
+            seed_hosts=["seed"],
+            port=config.port,
+            routing_scope=RackScope("dc1", "rack1"),
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+        )
+        manager = AsyncLiveNodesManager(scoped_config, mock_fetch)
+        assert await manager.refresh_nodes() is True
+        assert manager.cluster_nodes.nodes == ("dc-node", "rack-node")
+        initial_nodes = manager.nodes
+        calls.clear()
+        rack_available = False
+        assert await manager.refresh_nodes() is False
+        assert manager.nodes == initial_nodes
+        assert not manager.cluster_nodes
+        assert calls == ["dc=dc1&rack=rack1"]
 
     @pytest.mark.asyncio
     async def test_topology_validation_uses_scope_without_state_update(self) -> None:

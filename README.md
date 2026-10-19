@@ -406,6 +406,11 @@ Successful discovery replaces it; an exhausted affinity scope chain invalidates
 it so new eligible requests fall back to ordinary scoped routing. Existing
 requests retain their captured query plans. Startup behavior is unchanged.
 
+If ordinary discovery exhausts its configured scopes, the manager retains its
+ordinary snapshot, reports an unsuccessful refresh and clears affinity without
+trying the derived scope chain. This remains true when a DC query could succeed.
+Changing that failure branch is outside this PR.
+
 ## TLS Configuration
 
 ```python
