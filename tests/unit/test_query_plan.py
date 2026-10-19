@@ -57,6 +57,37 @@ class TestLazyQueryPlanBasic:
         assert len(nodes) == 3
         assert set(nodes) == {"a", "b", "c"}
 
+    @pytest.mark.parametrize("nodes", [[], ["only-node"]])
+    @pytest.mark.parametrize("seed", [0, -1, 42, (1 << 63) - 1])
+    def test_no_generator_for_trivial_plans(
+        self, monkeypatch: pytest.MonkeyPatch, nodes: list[str], seed: int
+    ) -> None:
+        """Empty and one-node snapshots must not pay for PRNG initialization."""
+
+        def unexpected_generator(seed: int) -> None:
+            pytest.fail("trivial query plan constructed a random generator")
+
+        monkeypatch.setattr(
+            "alternator.core.query_plan.DeterministicRand", unexpected_generator
+        )
+        plan = LazyQueryPlan(nodes, seed)
+        assert list(plan) == nodes
+        with pytest.raises(StopIteration):
+            next(plan)
+
+    def test_last_node_needs_no_further_random_draw(self) -> None:
+        """Once retries leave one candidate, its selection is deterministic."""
+        plan = LazyQueryPlan(["first", "last"], seed=42)
+        first = next(plan)
+        # Clearing the private generator also ensures the fast path precedes
+        # the multi-node invariant check.
+        plan._rng = None
+        second = next(plan)
+        expected_second = "last" if first == "first" else "first"
+        assert second == expected_second
+        with pytest.raises(StopIteration):
+            next(plan)
+
 
 class TestLazyQueryPlanSeed:
     """Tests for seed-based deterministic ordering behavior."""
