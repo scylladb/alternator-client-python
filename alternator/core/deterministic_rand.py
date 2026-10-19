@@ -235,17 +235,15 @@ _rng_cooked = [
 # fmt: on
 
 
-def _seedrand(x: int) -> int:
-    """Schrage's method: compute x = 48271*x mod (2^31-1) without overflow."""
-    _A = 48271
-    _Q = 44488
-    _R = 3399
-    hi = x // _Q
-    lo = x % _Q
-    x = _A * lo - _R * hi
-    if x < 0:
-        x += _INT32_MAX
-    return x
+# The original seeding loop discards 20 values, then uses three consecutive
+# values per slot. The first value for slot i is therefore seed*A**(21+3*i)
+# modulo M. Precompute the seed-independent factors so unused slots cost nothing
+# per generator. Multiplication modulo M matches Schrage's recurrence exactly.
+_SEED_MULTIPLIER = 48271
+_SEED_FACTORS = tuple(
+    pow(_SEED_MULTIPLIER, 21 + 3 * index, _INT32_MAX) for index in range(_RNG_LEN)
+)
+_COOKED_UNSIGNED = tuple(value & _MASK64 for value in _rng_cooked)
 
 
 def _to_signed64(v: int) -> int:
@@ -259,36 +257,30 @@ def _to_signed64(v: int) -> int:
 class DeterministicRand:
     """Stable lagged-Fibonacci PRNG used by deterministic query plans."""
 
-    __slots__ = ("_tap", "_feed", "_vec")
+    __slots__ = ("_tap", "_feed", "_vec", "_seed_value")
 
     def __init__(self, seed: int) -> None:
-        self._vec = [0] * _RNG_LEN
-        self._tap = 0
-        self._feed = 0
         self.seed(seed)
 
     def seed(self, s: int) -> None:
-        """Seed the generator using the stable project sequence."""
+        """Reset the stable sequence, deferring unused seed state slots."""
         self._tap = 0
         self._feed = _RNG_LEN - _RNG_TAP  # 334
+        self._seed_value = s % _INT32_MAX or 89482311
+        self._vec: dict[int, int] = {}
 
-        s = s % _INT32_MAX
-        if s < 0:
-            s += _INT32_MAX
-        if s == 0:
-            s = 89482311
-
-        x = s
-        for i in range(-20, _RNG_LEN):
-            x = _seedrand(x)
-            if i >= 0:
-                u = x << 40
-                x = _seedrand(x)
-                u ^= x << 20
-                x = _seedrand(x)
-                u ^= x
-                u ^= _rng_cooked[i] & _MASK64
-                self._vec[i] = _to_signed64(u)
+    def _state(self, index: int) -> int:
+        """Read an updated slot or reconstruct its exact original seed value."""
+        value = self._vec.get(index)
+        if value is None:
+            x = self._seed_value * _SEED_FACTORS[index] % _INT32_MAX
+            value = x << 40
+            x = x * _SEED_MULTIPLIER % _INT32_MAX
+            value ^= x << 20
+            x = x * _SEED_MULTIPLIER % _INT32_MAX
+            value = _to_signed64(value ^ x ^ _COOKED_UNSIGNED[index])
+            self._vec[index] = value
+        return value
 
     def int63(self) -> int:
         """Return a non-negative pseudo-random 63-bit integer.
@@ -303,7 +295,7 @@ class DeterministicRand:
         if self._feed < 0:
             self._feed += _RNG_LEN
 
-        x = _to_signed64((self._vec[self._feed] + self._vec[self._tap]) & _MASK64)
+        x = _to_signed64(self._state(self._feed) + self._state(self._tap))
         self._vec[self._feed] = x
 
         return (x & _MASK64) & _INT63_MAX
