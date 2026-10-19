@@ -382,10 +382,10 @@ then address, followed by remaining nodes. Missing partition-key metadata and
 unsupported key values are skipped; absence of usable votes falls back to
 normal routing.
 
-When key affinity is combined with rack-aware routing, eligible requests use a
+When key affinity is combined with built-in rack-aware routing, eligible requests use a
 separately refreshed view across racks in the configured datacenter. Ordinary
 requests retain their configured routing scope. The affinity view replaces each
-rack restriction in the full explicit fallback chain with its named datacenter,
+built-in rack restriction in the full explicit fallback chain with its named datacenter,
 keeping the order: `rack(A,r1) → rack(B,r2) → cluster` becomes
 `DC(A) → DC(B) → cluster`. No fallback is added implicitly.
 
@@ -395,11 +395,16 @@ responses. Ordinary discovery results are reused when they satisfy the selected
 affinity scope. Affinity-disabled clients and scopes without rack restrictions
 need no extra discovery.
 
-Existing startup and request-fallback behavior is retained. If affinity discovery
-fails, its snapshot is invalidated and requests fall back to ordinary scoped
-routing. An explicit cluster fallback retains cluster discovery's requirement
-that every configured seed return usable data before publishing an affinity
-snapshot.
+Custom scope implementations, including subclasses with overridden queries,
+retain their configured discovery behavior. Cluster-scope discovery uses usable
+responses from reachable seeds when some seeds fail, both for ordinary routing
+and for an explicit affinity fallback.
+
+Ordinary and affinity snapshots keep independent refresh timing. New requests
+may use the previous affinity snapshot while its refresh is in progress.
+Successful discovery replaces it; an exhausted affinity scope chain invalidates
+it so new eligible requests fall back to ordinary scoped routing. Existing
+requests retain their captured query plans. Startup behavior is unchanged.
 
 ## TLS Configuration
 

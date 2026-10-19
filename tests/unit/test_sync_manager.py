@@ -146,16 +146,29 @@ class TestSyncLiveNodesManager:
         )
         assert manager.cluster_nodes == manager.nodes
 
-    def test_cluster_scope_aggregates_reachable_seed_localnodes(self) -> None:
+    @pytest.mark.parametrize("affinity_enabled", [False, True])
+    @pytest.mark.parametrize("empty_seed_response", [False, True])
+    def test_cluster_scope_aggregates_reachable_seed_localnodes(
+        self, affinity_enabled: bool, empty_seed_response: bool
+    ) -> None:
         """Cluster scope keeps usable seed results when another seed fails."""
         config = Config(
             seed_hosts=["seed-dc1", "seed-dc2"],
             port=8000,
             routing_scope=ClusterScope(),
+            key_affinity=KeyRouteAffinityConfig(
+                mode=(
+                    KeyRouteAffinityMode.RMW
+                    if affinity_enabled
+                    else KeyRouteAffinityMode.NONE
+                )
+            ),
         )
 
         def mock_fetch(url: str) -> Sequence[str]:
             if "seed-dc1" in url:
+                if empty_seed_response:
+                    return []
                 raise OSError("seed unavailable")
             return ["dc2-node1", "dc2-node2"]
 
@@ -163,7 +176,7 @@ class TestSyncLiveNodesManager:
 
         assert manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
-        assert not manager.cluster_nodes
+        assert manager.cluster_nodes == manager.nodes
 
     def test_rack_scope_tracks_dc_nodes_for_key_affinity(self) -> None:
         """The named DC response spans racks without merging another DC."""
@@ -200,16 +213,27 @@ class TestSyncLiveNodesManager:
     ) -> None:
         """Exhausted DC discovery clears affinity, retaining ordinary routing."""
         failures: tuple[str, ...] = ()
+        rack_nodes = ["rack1-node"]
+        observed: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
         dc_nodes = ["rack1-node", "rack2-node"]
 
         def mock_fetch(url: str) -> list[str]:
             if "rack=" in url:
-                return ["rack1-node"]
+                return rack_nodes
+            observed.append((manager.nodes.nodes, manager.cluster_nodes.nodes))
             if any(seed in url for seed in failures):
                 if empty_response:
                     return []
                 raise OSError("DC unavailable")
             return dc_nodes
+
+        def assert_inflight(expected_affinity: tuple[str, ...]) -> None:
+            assert observed
+            assert all(
+                ordinary == tuple(rack_nodes) and affinity == expected_affinity
+                for ordinary, affinity in observed
+            )
+            observed.clear()
 
         config = Config(
             seed_hosts=["seed1", "seed2"],
@@ -219,17 +243,25 @@ class TestSyncLiveNodesManager:
         )
         manager = SyncLiveNodesManager(config, mock_fetch)
         assert manager.refresh_nodes() is True
+        assert_inflight(())
         assert manager.cluster_nodes.nodes == ("rack1-node", "rack2-node")
+        previous_affinity = manager.cluster_nodes.nodes
+        rack_nodes = ["rack1-new"]
         failures = failed_seeds
         assert manager.refresh_nodes() is True
-        assert manager.nodes.nodes == ("rack1-node",)
+        assert_inflight(previous_affinity)
+        assert manager.nodes.nodes == ("rack1-new",)
         assert bool(manager.cluster_nodes) == (len(failed_seeds) == 1)
+        previous_affinity = manager.cluster_nodes.nodes
         failures = ()
         assert manager.refresh_nodes() is True
+        assert_inflight(previous_affinity)
         assert manager.cluster_nodes.nodes == ("rack1-node", "rack2-node")
+        previous_affinity = manager.cluster_nodes.nodes
         dc_nodes = ["rack1-node", "replacement-node"]
         assert manager.refresh_nodes() is True
-        assert manager.nodes.nodes == ("rack1-node",)
+        assert_inflight(previous_affinity)
+        assert manager.nodes.nodes == ("rack1-new",)
         assert manager.cluster_nodes.nodes == ("rack1-node", "replacement-node")
 
     @pytest.mark.parametrize("selected_dc", ["dc1", "dc2", "cluster"])
@@ -247,11 +279,13 @@ class TestSyncLiveNodesManager:
             if query == f"dc={selected_dc}":
                 return [f"{selected_dc}-node"]
             if not query:
+                if "seed2" in url:
+                    raise OSError("one cluster seed unavailable")
                 return ["cluster-node"]
             return []
 
         config = Config(
-            seed_hosts=["seed"],
+            seed_hosts=["seed1", "seed2"],
             port=8000,
             routing_scope=RackScope(
                 "dc1",
@@ -262,11 +296,13 @@ class TestSyncLiveNodesManager:
         )
         manager = SyncLiveNodesManager(config, mock_fetch)
         assert manager.refresh_nodes() is True
-        expected = ["dc=dc1&rack=rack1", "dc=dc1"]
+        expected = ["dc=dc1&rack=rack1"] + ["dc=dc1"] * (
+            1 if selected_dc == "dc1" else 2
+        )
         if selected_dc != "dc1":
-            expected.append("dc=dc2")
+            expected.extend(["dc=dc2"] * (1 if selected_dc == "dc2" else 2))
         if selected_dc == "cluster":
-            expected.append("")
+            expected.extend(["", ""])
         assert calls == expected
         assert manager.nodes.nodes == ("rack-node",)
         assert manager.cluster_nodes.nodes == (f"{selected_dc}-node",)
@@ -302,7 +338,7 @@ class TestSyncLiveNodesManager:
         )
 
     @pytest.mark.parametrize("preferred_available", [False, True])
-    def test_cluster_fallback_is_reused_without_publishing_an_incomplete_ring(
+    def test_cluster_fallback_reuses_partial_results_without_bypassing_preferred_dc(
         self, preferred_available: bool
     ) -> None:
         """Ordinary cluster fallback cannot replace an earlier usable affinity DC."""
@@ -331,18 +367,29 @@ class TestSyncLiveNodesManager:
         assert manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("other-dc-node",)
         assert manager.cluster_nodes.nodes == (
-            ("dc1-node",) if preferred_available else ()
+            ("dc1-node",) if preferred_available else ("other-dc-node",)
         )
         assert calls == ["dc=dc1&rack=rack1"] * 2 + [""] * 2 + ["dc=dc1"] * (
             1 if preferred_available else 2
         )
 
     @pytest.mark.parametrize("affinity_enabled", [False, True])
-    @pytest.mark.parametrize("rack_enabled", [False, True])
+    @pytest.mark.parametrize("scope_kind", ["dc", "rack", "custom"])
     def test_dc_scope_does_not_duplicate_discovery(
-        self, affinity_enabled: bool, rack_enabled: bool
+        self, affinity_enabled: bool, scope_kind: str
     ) -> None:
         """The ordinary DC snapshot already satisfies the affinity scope."""
+
+        class CustomRackScope(RackScope):
+            def get_localnodes_query(self) -> str:
+                return "custom=preserved"
+
+        scopes = {
+            "dc": DatacenterScope("dc1"),
+            "rack": RackScope("dc1", "rack1"),
+            "custom": CustomRackScope("dc1", "rack1"),
+        }
+        scope = scopes[scope_kind]
         calls: list[str] = []
 
         def mock_fetch(url: str) -> list[str]:
@@ -352,9 +399,7 @@ class TestSyncLiveNodesManager:
         config = Config(
             seed_hosts=["seed"],
             port=8000,
-            routing_scope=(
-                RackScope("dc1", "rack1") if rack_enabled else DatacenterScope("dc1")
-            ),
+            routing_scope=scope,
             key_affinity=KeyRouteAffinityConfig(
                 mode=(
                     KeyRouteAffinityMode.RMW
@@ -365,9 +410,9 @@ class TestSyncLiveNodesManager:
         )
         manager = SyncLiveNodesManager(config, mock_fetch)
         assert manager.refresh_nodes() is True
-        query = "dc=dc1&rack=rack1" if rack_enabled else "dc=dc1"
+        query = scope.get_localnodes_query()
         expected = [f"http://seed:8000/localnodes?{query}"]
-        if rack_enabled and affinity_enabled:
+        if scope_kind == "rack" and affinity_enabled:
             expected.append("http://seed:8000/localnodes?dc=dc1")
         assert calls == expected
         if affinity_enabled:

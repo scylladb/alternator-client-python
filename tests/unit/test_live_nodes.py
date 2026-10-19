@@ -333,15 +333,26 @@ class TestRoundRobinConcurrency:
         assert all(s is not None for s in selections)
 
 
-def test_affinity_chain_preserves_custom_queries_and_configured_scopes() -> None:
+@pytest.mark.parametrize("custom_rack", [False, True])
+def test_affinity_chain_preserves_custom_queries_and_configured_scopes(
+    custom_rack: bool,
+) -> None:
     """Widen built-in racks without rewriting a custom scope or its fallback."""
 
     class CustomScope(DatacenterScope):
         def get_localnodes_query(self) -> str:
             return "custom=unchanged"
 
+    class CustomRackScope(RackScope):
+        def get_localnodes_query(self) -> str:
+            return "custom=unchanged"
+
     last = RackScope("dc2", "rack2")
-    custom = CustomScope("custom", fallback=last)
+    custom = (
+        CustomRackScope("custom", "rack", fallback=last)
+        if custom_rack
+        else CustomScope("custom", fallback=last)
+    )
     configured = RackScope("dc 1", "rack1", fallback=custom)
     derived = list(_affinity_scopes(configured))
     assert [scope.get_localnodes_query() for scope in derived] == [
@@ -368,3 +379,34 @@ def test_affinity_chain_terminates_a_custom_fallback_cycle() -> None:
         "dc=dc1",
         "dc=custom",
     ]
+
+
+def test_affinity_chain_preserves_fresh_custom_fallback_objects() -> None:
+    """Finite custom factories must not be mistaken for identity cycles."""
+
+    class FreshScope(RoutingScope):
+        __slots__ = ("stage",)
+
+        def __init__(self, stage: int) -> None:
+            self.stage = stage
+
+        @property
+        def name(self) -> str:
+            return "Custom"
+
+        @property
+        def description(self) -> str:
+            return "Fresh custom scope"
+
+        @property
+        def fallback(self) -> RoutingScope | None:
+            return FreshScope(self.stage + 1) if self.stage < 8 else None
+
+        def get_localnodes_query(self) -> str:
+            return "empty" if self.stage < 8 else "final"
+
+    # Retaining yielded objects in a list would hide integer-ID reuse.
+    queries = [
+        scope.get_localnodes_query() for scope in _affinity_scopes(FreshScope(0))
+    ]
+    assert queries == ["empty"] * 8 + ["final"]
