@@ -26,8 +26,9 @@ from alternator.core.live_nodes import (
     LiveNodesManagerCore,
     NodeList,
     RoundRobinSelector,
+    _affinity_scopes,
 )
-from alternator.core.routing_scope import ClusterScope
+from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 
 
 class TestNodeList:
@@ -325,3 +326,25 @@ class TestRoundRobinConcurrency:
         assert len(selections) == 600
         # All selections should be valid (not None after initial setup)
         assert all(s is not None for s in selections)
+
+
+def test_affinity_chain_preserves_custom_queries_and_configured_scopes() -> None:
+    """Widen built-in racks without rewriting a custom scope or its fallback."""
+
+    class CustomScope(DatacenterScope):
+        def get_localnodes_query(self) -> str:
+            return "custom=unchanged"
+
+    last = RackScope("dc2", "rack2")
+    custom = CustomScope("custom", fallback=last)
+    configured = RackScope("dc 1", "rack1", fallback=custom)
+    derived = list(_affinity_scopes(configured))
+    assert [scope.get_localnodes_query() for scope in derived] == [
+        "dc=dc%201",
+        "custom=unchanged",
+        "dc=dc2",
+    ]
+    assert derived[1] is custom
+    assert configured.fallback is custom
+    assert custom.fallback is last
+    assert last.fallback is None

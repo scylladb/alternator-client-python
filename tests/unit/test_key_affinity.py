@@ -17,6 +17,7 @@
 import contextlib
 import copy
 import gc
+import json
 import threading
 import time
 import weakref
@@ -25,9 +26,12 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from unittest.mock import MagicMock, patch
+from urllib.parse import urlsplit
 
+import pytest
 from botocore.awsrequest import AWSPreparedRequest
 
+from alternator._http import create_async_http_fetcher, create_sync_http_fetcher
 from alternator.config import (
     Config,
     KeyRouteAffinityConfig,
@@ -46,10 +50,15 @@ from alternator.core.key_affinity import (
     select_affinity_node,
     should_use_affinity,
 )
-from alternator.core.live_nodes import NodeList
+from alternator.core.live_nodes import (
+    AsyncLiveNodesManager,
+    NodeList,
+    SyncLiveNodesManager,
+)
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_request_params
 from alternator.core.routing_scope import RackScope
+from tests.conftest import FakeAlternatorServer
 
 Params = dict[str, Any]
 
@@ -871,8 +880,8 @@ class TestAffinityHandlerRouting:
         """Single-item affinity retries preserve the full canonical plan."""
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
-        manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
-        manager.cluster_nodes = manager.nodes
+        manager.nodes = NodeList(nodes=("rack-only",), scope_name="Rack")
+        manager.cluster_nodes = NodeList(nodes=("a", "b", "c"), scope_name="Datacenter")
         events = MagicMock()
 
         def compute_affinity_node(
@@ -947,8 +956,8 @@ class TestAffinityHandlerRouting:
         """Test BatchWriteItem affinity keeps retries after the preferred node."""
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
-        manager.nodes = NodeList(nodes=("a", "b", "c"), scope_name="cluster")
-        manager.cluster_nodes = manager.nodes
+        manager.nodes = NodeList(nodes=("rack-only",), scope_name="Rack")
+        manager.cluster_nodes = NodeList(nodes=("a", "b", "c"), scope_name="Datacenter")
         events = MagicMock()
         params = {
             "RequestItems": {
@@ -1001,71 +1010,144 @@ class TestAffinityHandlerRouting:
             "http://c:8000/",
         )
 
-    def test_rmw_affinity_uses_cluster_nodes_across_rack_views(self) -> None:
-        """The same conditional write chooses one coordinator across racks."""
-        cluster_nodes = NodeList(
-            nodes=("rack1-node", "rack2-node", "rack3-node"),
-            scope_name="Cluster",
-        )
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+    async def test_rmw_affinity_uses_discovered_dc_nodes_across_rack_views(
+        self, fake_alternator_server: FakeAlternatorServer, asynchronous: bool
+    ) -> None:
+        """Real HTTP discovery supplies the common ring consumed by handlers."""
+        dc_nodes = ["127.0.0.1", "127.0.0.2", "127.0.0.3"]
+        port = urlsplit(fake_alternator_server.url()).port
+        assert port is not None
 
-        def first_url(rack: str, rack_node: str) -> str:
+        async def first_url(rack: str, rack_node: str) -> str:
+            fake_alternator_server.set_localnodes(
+                [rack_node], query=f"dc=dc1&rack={rack}"
+            )
+            fake_alternator_server.set_localnodes(dc_nodes, query="dc=dc1")
+            # An optionless response represents an unrelated DC and must not be used.
+            fake_alternator_server.set_localnodes(["127.0.0.4"])
             config = Config(
-                seed_hosts=["seed"],
-                port=8000,
+                seed_hosts=["127.0.0.1"],
+                port=port,
                 routing_scope=RackScope("dc1", rack),
                 key_affinity=KeyRouteAffinityConfig(
                     mode=KeyRouteAffinityMode.RMW,
                     table_pk_attributes={"orders": "pk"},
                 ),
             )
-            manager = MagicMock()
-            manager.nodes = NodeList(nodes=(rack_node,), scope_name="Rack")
-            manager.cluster_nodes = cluster_nodes
-            events = MagicMock()
-
-            def compute_affinity_node(
-                operation_name: str,
-                params: dict[str, Any],
-                nodes: NodeList,
-            ) -> SeededAffinityPlan | tuple[str, ...] | None:
-                return select_affinity_node(
-                    mode=config.key_affinity.mode.name,
-                    operation_name=operation_name,
-                    params=params,
-                    nodes=nodes,
-                    get_pk_name=config.key_affinity.table_pk_attributes.get,
+            async_fetcher = (
+                create_async_http_fetcher(timeout_seconds=1.0) if asynchronous else None
+            )
+            manager: SyncLiveNodesManager | AsyncLiveNodesManager
+            if async_fetcher is not None:
+                manager = AsyncLiveNodesManager(config, async_fetcher)
+            else:
+                manager = SyncLiveNodesManager(
+                    config, create_sync_http_fetcher(timeout_seconds=1.0)
                 )
 
-            _register_alternator_handlers(
-                events,
-                manager,
-                config,
-                compute_affinity_node,
-            )
-            update_endpoint = next(
-                call[0][1]
-                for call in events.register.call_args_list
-                if call[0][1].__name__ == "update_endpoint"
-            )
-            request = MagicMock()
-            request.url = "http://seed:8000/"
-            request.headers = {"X-Amz-Target": "DynamoDB_20120810.PutItem"}
-            request.body = (
-                b'{"TableName":"orders","Item":{"pk":{"S":"order-1"}},'
-                b'"ConditionExpression":"attribute_not_exists(pk)"}'
-            )
-            request._alternator_query_plan = None
+            async def refresh() -> None:
+                if isinstance(manager, AsyncLiveNodesManager):
+                    assert await manager.refresh_nodes()
+                else:
+                    assert manager.refresh_nodes()
 
-            update_endpoint(request)
-            return str(request.url)
+            try:
+                await refresh()
+                assert manager.nodes.nodes == (rack_node,)
+                assert manager.cluster_nodes.nodes == tuple(dc_nodes)
+                events = MagicMock()
 
-        rack1_url = first_url("rack1", "rack1-node")
-        rack2_url = first_url("rack2", "rack2-node")
+                def compute_affinity_node(
+                    operation_name: str, params: dict[str, Any], nodes: NodeList
+                ) -> SeededAffinityPlan | tuple[str, ...] | None:
+                    return select_affinity_node(
+                        mode=config.key_affinity.mode.name,
+                        operation_name=operation_name,
+                        params=params,
+                        nodes=nodes,
+                        get_pk_name=config.key_affinity.table_pk_attributes.get,
+                    )
 
-        assert rack1_url == rack2_url
-        assert rack1_url.removeprefix("http://").removesuffix(":8000/") in (
-            cluster_nodes.nodes
+                _register_alternator_handlers(
+                    events, manager, config, compute_affinity_node
+                )
+                update_endpoint = next(
+                    call[0][1]
+                    for call in events.register.call_args_list
+                    if call[0][1].__name__ == "update_endpoint"
+                )
+
+                def request(operation: str, params: dict[str, Any]) -> MagicMock:
+                    result = MagicMock()
+                    result.url = fake_alternator_server.url()
+                    result.headers = {"X-Amz-Target": f"DynamoDB_20120810.{operation}"}
+                    result.body = json.dumps(params).encode()
+                    result._alternator_query_plan = None
+                    return result
+
+                params = {
+                    "TableName": "orders",
+                    "Item": {"pk": {"S": "order-1"}},
+                    "ConditionExpression": "attribute_not_exists(pk)",
+                }
+                conditional = request("PutItem", params)
+                update_endpoint(conditional)
+                first = str(conditional.url)
+                for operation, ordinary_params in [
+                    (
+                        "GetItem",
+                        {"TableName": "orders", "Key": {"pk": {"S": "order-1"}}},
+                    ),
+                    (
+                        "PutItem",
+                        {"TableName": "orders", "Item": {"pk": {"S": "order-1"}}},
+                    ),
+                    (
+                        "PutItem",
+                        {
+                            "TableName": "orders",
+                            "Item": {},
+                            "ConditionExpression": "attribute_not_exists(pk)",
+                        },
+                    ),
+                ]:
+                    ordinary = request(operation, ordinary_params)
+                    update_endpoint(ordinary)
+                    assert ordinary.url == f"http://{rack_node}:{port}/"
+
+                fake_alternator_server.set_localnodes([], query="dc=dc1")
+                await refresh()
+                assert not manager.cluster_nodes
+                # An existing request retains its DC retry plan across refresh.
+                urls = {first}
+                for _ in range(2):
+                    update_endpoint(conditional)
+                    urls.add(str(conditional.url))
+                assert urls == {f"http://{node}:{port}/" for node in dc_nodes}
+                fallback = request("PutItem", params)
+                update_endpoint(fallback)
+                assert fallback.url == f"http://{rack_node}:{port}/"
+                return first
+            finally:
+                if async_fetcher is not None:
+                    await async_fetcher.close()
+
+        assert await first_url("rack1", dc_nodes[0]) == await first_url(
+            "rack2", dc_nodes[1]
         )
+        assert "" not in fake_alternator_server.requested_queries()
+        assert fake_alternator_server.requested_queries() == [
+            "dc=dc1&rack=rack1",
+            "dc=dc1",
+            "dc=dc1&rack=rack1",
+            "dc=dc1",
+            "dc=dc1&rack=rack2",
+            "dc=dc1",
+            "dc=dc1&rack=rack2",
+            "dc=dc1",
+        ]
 
     def test_affinity_fallback_stays_in_configured_rack(self) -> None:
         """Normal and unavailable-affinity routing remain rack scoped."""

@@ -382,13 +382,24 @@ then address, followed by remaining nodes. Missing partition-key metadata and
 unsupported key values are skipped; absence of usable votes falls back to
 normal routing.
 
-When key affinity is combined with datacenter- or rack-aware routing,
-affinity-eligible requests use a separately refreshed cluster-wide node
-snapshot so every client computes the same coordinator. Requests that are not
-affinity eligible remain within the configured routing scope. The cluster
-snapshot is published only after every configured seed returns usable data; an
-incomplete refresh invalidates it so requests fall back to normal scoped
-routing rather than use a partial or stale affinity ring.
+When key affinity is combined with rack-aware routing, eligible requests use a
+separately refreshed view across racks in the configured datacenter. Ordinary
+requests retain their configured routing scope. The affinity view replaces each
+rack restriction in the full explicit fallback chain with its named datacenter,
+keeping the order: `rack(A,r1) → rack(B,r2) → cluster` becomes
+`DC(A) → DC(B) → cluster`. No fallback is added implicitly.
+
+Named datacenters are discovered with `/localnodes?dc=<configured-dc>`, using the
+first usable scoped response rather than combining unrelated seed-local DC
+responses. Ordinary discovery results are reused when they satisfy the selected
+affinity scope. Affinity-disabled clients and scopes without rack restrictions
+need no extra discovery.
+
+Existing startup and request-fallback behavior is retained. If affinity discovery
+fails, its snapshot is invalidated and requests fall back to ordinary scoped
+routing. An explicit cluster fallback retains cluster discovery's requirement
+that every configured seed return usable data before publishing an affinity
+snapshot.
 
 ## TLS Configuration
 
