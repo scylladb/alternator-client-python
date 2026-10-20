@@ -53,7 +53,7 @@ class _StaticManager:
         return self._nodes
 
     @property
-    def cluster_nodes(self) -> NodeList:
+    def affinity_nodes(self) -> NodeList:
         return self._nodes
 
     def mark_activity(self) -> None:

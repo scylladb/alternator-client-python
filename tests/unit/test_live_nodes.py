@@ -14,6 +14,7 @@
 
 """Tests for live nodes management and selection."""
 
+import logging
 import threading
 import time
 from collections import Counter
@@ -21,12 +22,19 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from alternator.config import Config, NodeListPollingConfig
+from alternator.config import (
+    Config,
+    KeyRouteAffinityConfig,
+    KeyRouteAffinityMode,
+    NodeListPollingConfig,
+)
 from alternator.core.live_nodes import (
+    AsyncLiveNodesManager,
     LiveNodesManagerCore,
     NodeList,
     RoundRobinSelector,
-    _affinity_scopes,
+    SyncLiveNodesManager,
+    _derive_affinity_scopes,
 )
 from alternator.core.routing_scope import (
     ClusterScope,
@@ -34,6 +42,104 @@ from alternator.core.routing_scope import (
     RackScope,
     RoutingScope,
 )
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_custom_affinity_fallback_is_lazy_and_refreshes(
+    asynchronous: bool,
+) -> None:
+    """An unused custom fallback is untouched and later changes remain visible."""
+    custom_available = True
+    tail: RoutingScope = DatacenterScope("later")
+
+    class CustomScope(DatacenterScope):
+        @property
+        def fallback(self) -> RoutingScope | None:
+            assert not custom_available, "unused custom fallback was evaluated"
+            return tail
+
+    def fetch(url: str) -> list[str]:
+        if "rack=" in url:
+            return ["rack-node"]
+        if "dc=preferred" in url:
+            return []
+        if "dc=custom" in url:
+            return ["custom-node"] if custom_available else []
+        return ["replacement-node"] if "dc=replacement" in url else ["later-node"]
+
+    async def async_fetch(url: str) -> list[str]:
+        return fetch(url)
+
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        routing_scope=RackScope("preferred", "rack", fallback=CustomScope("custom")),
+        key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+    )
+    manager = (
+        AsyncLiveNodesManager(config, async_fetch)
+        if asynchronous
+        else SyncLiveNodesManager(config, fetch)
+    )
+
+    async def refresh() -> None:
+        if isinstance(manager, AsyncLiveNodesManager):
+            assert await manager.refresh_nodes()
+        else:
+            assert manager.refresh_nodes()
+
+    await refresh()
+    assert manager.affinity_nodes.nodes == ("custom-node",)
+    custom_available = False
+    await refresh()
+    assert manager.affinity_nodes.nodes == ("later-node",)
+    tail = DatacenterScope("replacement")
+    await refresh()
+    assert manager.affinity_nodes.nodes == ("replacement-node",)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+async def test_affinity_discovery_logs_publication_and_exhaustion(
+    asynchronous: bool,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Successful ordinary refresh still explains loss of the affinity view."""
+    affinity_available = True
+
+    def fetch(url: str) -> list[str]:
+        return (
+            ["rack-node"]
+            if "rack=" in url
+            else (["dc-node"] if affinity_available else [])
+        )
+
+    async def async_fetch(url: str) -> list[str]:
+        return fetch(url)
+
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        routing_scope=RackScope("dc", "rack"),
+        key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+    )
+    manager = (
+        AsyncLiveNodesManager(config, async_fetch)
+        if asynchronous
+        else SyncLiveNodesManager(config, fetch)
+    )
+    caplog.set_level(logging.DEBUG, logger="alternator")
+    for available in (True, False):
+        affinity_available = available
+        if isinstance(manager, AsyncLiveNodesManager):
+            assert await manager.refresh_nodes()
+        else:
+            assert manager.refresh_nodes()
+    events = {getattr(record, "event", ""): record for record in caplog.records}
+    assert vars(events["affinity_discovery"])["scope"] == "Datacenter"
+    assert vars(events["affinity_discovery"])["node_count"] == 1
+    assert events["affinity_discovery_failed"].levelno == logging.WARNING
+    assert manager.nodes.nodes == ("rack-node",)
+    assert not manager.affinity_nodes
 
 
 class TestNodeList:
@@ -354,7 +460,7 @@ def test_affinity_chain_preserves_custom_queries_and_configured_scopes(
         else CustomScope("custom", fallback=last)
     )
     configured = RackScope("dc 1", "rack1", fallback=custom)
-    derived = list(_affinity_scopes(configured))
+    derived = list(_derive_affinity_scopes(configured))
     assert [scope.get_localnodes_query() for scope in derived] == [
         "dc=dc%201",
         "custom=unchanged",
@@ -375,7 +481,9 @@ def test_affinity_chain_terminates_a_custom_fallback_cycle() -> None:
             return self
 
     configured = RackScope("dc1", "rack1", fallback=CyclicScope("custom"))
-    assert [scope.get_localnodes_query() for scope in _affinity_scopes(configured)] == [
+    assert [
+        scope.get_localnodes_query() for scope in _derive_affinity_scopes(configured)
+    ] == [
         "dc=dc1",
         "dc=custom",
     ]
@@ -405,8 +513,40 @@ def test_affinity_chain_preserves_fresh_custom_fallback_objects() -> None:
         def get_localnodes_query(self) -> str:
             return "empty" if self.stage < 8 else "final"
 
-    # Retaining yielded objects in a list would hide integer-ID reuse.
     queries = [
-        scope.get_localnodes_query() for scope in _affinity_scopes(FreshScope(0))
+        scope.get_localnodes_query() for scope in _derive_affinity_scopes(FreshScope(0))
     ]
-    assert queries == ["empty"] * 8 + ["final"]
+    assert queries == ["empty", "final"]
+
+
+@pytest.mark.parametrize("intervening_dc", [False, True])
+def test_affinity_chain_deduplicates_queries_in_first_occurrence_order(
+    intervening_dc: bool,
+) -> None:
+    """Repeated racks and an explicit matching DC collapse to one affinity scope."""
+    tail = DatacenterScope("a", fallback=ClusterScope())
+    middle = RackScope("a", "A1", fallback=tail)
+    if intervening_dc:
+        middle = RackScope("b", "B1", fallback=middle)
+    configured = RackScope("a", "A1", fallback=middle)
+
+    derived = _derive_affinity_scopes(configured)
+
+    assert [scope.get_localnodes_query() for scope in derived] == (
+        ["dc=a", "dc=b", ""] if intervening_dc else ["dc=a", ""]
+    )
+    assert configured.fallback is middle
+    assert tail.fallback == ClusterScope()
+
+
+def test_affinity_chain_keeps_different_seed_aggregation_behaviors() -> None:
+    """An identical URL need not mean the same discovery operation."""
+
+    class CustomScope(DatacenterScope):
+        def get_localnodes_query(self) -> str:
+            return ""
+
+    cluster = ClusterScope()
+    custom = CustomScope("a", fallback=cluster)
+
+    assert tuple(_derive_affinity_scopes(custom)) == (custom, cluster)

@@ -100,7 +100,7 @@ class LiveNodesManagerCore:
     def __init__(self, config: Config) -> None:
         self._config = config
         self._nodes: NodeList = NodeList(nodes=(), scope_name="")
-        self._cluster_nodes: NodeList = NodeList(nodes=(), scope_name="Cluster")
+        self._affinity_nodes: NodeList = NodeList(nodes=(), scope_name="")
         self._nodes_lock = threading.Lock()
         self._selector = RoundRobinSelector()
         self._last_activity = time.monotonic()
@@ -112,10 +112,10 @@ class LiveNodesManagerCore:
             return self._nodes
 
     @property
-    def cluster_nodes(self) -> NodeList:
-        """Get the affinity snapshot (the legacy property name is retained)."""
+    def affinity_nodes(self) -> NodeList:
+        """Get the key-affinity node snapshot (thread-safe)."""
         with self._nodes_lock:
-            return self._cluster_nodes
+            return self._affinity_nodes
 
     def update_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
         """Update node list (thread-safe).
@@ -131,21 +131,29 @@ class LiveNodesManagerCore:
         with self._nodes_lock:
             self._nodes = new_list
 
-    def update_cluster_nodes(
-        self, nodes: Sequence[str], scope_name: str = "Cluster"
-    ) -> None:
+    def update_affinity_nodes(self, nodes: Sequence[str], scope: RoutingScope) -> None:
         """Update the key-affinity node snapshot."""
         new_list = NodeList(
             nodes=tuple(sorted(set(nodes))),
-            scope_name=scope_name,
+            scope_name=scope.name,
         )
         with self._nodes_lock:
-            self._cluster_nodes = new_list
+            self._affinity_nodes = new_list
+        logger.debug(
+            "Discovered %d affinity nodes for scope %s",
+            len(new_list),
+            scope.name,
+            extra={
+                "event": "affinity_discovery",
+                "scope": scope.name,
+                "node_count": len(new_list),
+            },
+        )
 
-    def invalidate_cluster_nodes(self) -> None:
+    def invalidate_affinity_nodes(self) -> None:
         """Discard an affinity snapshot that is no longer usable."""
         with self._nodes_lock:
-            self._cluster_nodes = NodeList(nodes=(), scope_name="Cluster")
+            self._affinity_nodes = NodeList(nodes=(), scope_name="")
 
     def next_node(self) -> str | None:
         """Get next node using round-robin (thread-safe)."""
@@ -276,21 +284,45 @@ def _uses_key_affinity(config: Config) -> bool:
     return config.key_affinity.mode is not KeyRouteAffinityMode.NONE
 
 
-def _affinity_scopes(scope: RoutingScope) -> Iterator[RoutingScope]:
-    """Widen built-in racks while preserving custom queries and fallback order."""
+def _discovery_key(scope: RoutingScope) -> tuple[str, bool]:
+    """Identify a query together with its seed aggregation behavior."""
+    return scope.get_localnodes_query(), _uses_cluster_scope(scope)
+
+
+def _derive_affinity_scopes(scope: RoutingScope) -> Iterator[RoutingScope]:
+    """Widen built-in racks and keep the first occurrence of each discovery query."""
     from alternator.core.routing_scope import DatacenterScope, RackScope
 
+    queries: set[tuple[str, bool]] = set()
     current: RoutingScope | None = scope
     # Keep scopes alive: custom fallbacks may construct fresh scope instances.
     seen: dict[int, RoutingScope] = {}
     while current is not None and id(current) not in seen:
         seen[id(current)] = current
-        yield (
+        affinity_scope = (
             DatacenterScope(current.datacenter)
             if type(current) is RackScope
             else current
         )
+        key = _discovery_key(affinity_scope)
+        if key not in queries:
+            queries.add(key)
+            yield affinity_scope
         current = current.fallback
+
+
+def _cache_builtin_affinity_scopes(
+    scope: RoutingScope,
+) -> tuple[RoutingScope, ...] | None:
+    """Cache static built-in chains without evaluating custom fallbacks."""
+    from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
+
+    current: RoutingScope | None = scope
+    while current is not None:
+        if type(current) not in (ClusterScope, DatacenterScope, RackScope):
+            return None
+        current = current.fallback
+    return tuple(_derive_affinity_scopes(scope))
 
 
 def _validate_topology_scope_values(scope: RoutingScope) -> None:
@@ -351,6 +383,11 @@ class SyncLiveNodesManager:
         self._core = LiveNodesManagerCore(config)
         self._config = config
         self._http_fetch = http_fetch
+        self._affinity_scopes = (
+            _cache_builtin_affinity_scopes(config.routing_scope)
+            if _uses_key_affinity(config)
+            else ()
+        )
         self._stop_event = threading.Event()
         self._wake_event = threading.Event()
         self._lifecycle_lock = threading.Lock()
@@ -400,9 +437,9 @@ class SyncLiveNodesManager:
         return self._core.nodes
 
     @property
-    def cluster_nodes(self) -> NodeList:
+    def affinity_nodes(self) -> NodeList:
         """Get the selected key-affinity node snapshot."""
-        return self._core.cluster_nodes
+        return self._core.affinity_nodes
 
     def next_node(self) -> str | None:
         """Get next node hostname using round-robin."""
@@ -500,42 +537,51 @@ class SyncLiveNodesManager:
         results: dict[tuple[str, bool], tuple[str, ...]] = {}
 
         while scope is not None:
-            if _uses_cluster_scope(scope):
-                result = self._fetch_cluster_scope_nodes(scope)
-            else:
-                result = tuple(self._fetch_scope_nodes(scope))
-            results[(scope.get_localnodes_query(), _uses_cluster_scope(scope))] = result
+            result = self._fetch_nodes(scope)
+            results[_discovery_key(scope)] = result
             if self._core.process_fetch_result(result, scope):
                 if _uses_cluster_scope(scope) and not _uses_key_affinity(self._config):
-                    self._core.update_cluster_nodes(result)
-                self._refresh_cluster_nodes_for_affinity(results)
+                    self._core.update_affinity_nodes(result, scope)
+                self._refresh_affinity_nodes(results)
                 return True
             scope = scope.fallback
 
-        self._core.invalidate_cluster_nodes()
+        self._core.invalidate_affinity_nodes()
         self._core.log_all_scopes_failed()
         return False
 
-    def _refresh_cluster_nodes_for_affinity(
+    def _refresh_affinity_nodes(
         self, results: dict[tuple[str, bool], tuple[str, ...]]
     ) -> None:
         """Select the first usable scope in the configured rack-to-DC chain."""
         if not _uses_key_affinity(self._config):
             return
 
-        for scope in _affinity_scopes(self._config.routing_scope):
-            key = (scope.get_localnodes_query(), _uses_cluster_scope(scope))
+        scopes = self._affinity_scopes
+        for scope in (
+            scopes
+            if scopes is not None
+            else _derive_affinity_scopes(self._config.routing_scope)
+        ):
+            key = _discovery_key(scope)
             result = results.get(key)
             if result is None:
-                if _uses_cluster_scope(scope):
-                    result = self._fetch_cluster_scope_nodes(scope)
-                else:
-                    result = tuple(self._fetch_scope_nodes(scope))
+                result = self._fetch_nodes(scope)
                 results[key] = result
             if result:
-                self._core.update_cluster_nodes(result, scope.name)
+                self._core.update_affinity_nodes(result, scope)
                 return
-        self._core.invalidate_cluster_nodes()
+        logger.warning(
+            "Affinity discovery exhausted its configured scopes; using ordinary routing",
+            extra={"event": "affinity_discovery_failed"},
+        )
+        self._core.invalidate_affinity_nodes()
+
+    def _fetch_nodes(self, scope: RoutingScope) -> tuple[str, ...]:
+        """Discover one scope using its configured seed aggregation behavior."""
+        if _uses_cluster_scope(scope):
+            return self._fetch_cluster_scope_nodes(scope)
+        return tuple(self._fetch_scope_nodes(scope))
 
     def _fetch_cluster_scope_nodes(
         self,
@@ -603,6 +649,11 @@ class AsyncLiveNodesManager:
         self._core = LiveNodesManagerCore(config)
         self._config = config
         self._http_fetch = http_fetch
+        self._affinity_scopes = (
+            _cache_builtin_affinity_scopes(config.routing_scope)
+            if _uses_key_affinity(config)
+            else ()
+        )
         self._refresh_task: asyncio.Task[None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._stop_event = asyncio.Event()
@@ -638,9 +689,9 @@ class AsyncLiveNodesManager:
         return self._core.nodes
 
     @property
-    def cluster_nodes(self) -> NodeList:
+    def affinity_nodes(self) -> NodeList:
         """Get the selected key-affinity node snapshot."""
-        return self._core.cluster_nodes
+        return self._core.affinity_nodes
 
     def next_node(self) -> str | None:
         """Get next node hostname using round-robin."""
@@ -739,42 +790,51 @@ class AsyncLiveNodesManager:
         results: dict[tuple[str, bool], tuple[str, ...]] = {}
 
         while scope is not None:
-            if _uses_cluster_scope(scope):
-                result = await self._fetch_cluster_scope_nodes(scope)
-            else:
-                result = tuple(await self._fetch_scope_nodes(scope))
-            results[(scope.get_localnodes_query(), _uses_cluster_scope(scope))] = result
+            result = await self._fetch_nodes(scope)
+            results[_discovery_key(scope)] = result
             if self._core.process_fetch_result(result, scope):
                 if _uses_cluster_scope(scope) and not _uses_key_affinity(self._config):
-                    self._core.update_cluster_nodes(result)
-                await self._refresh_cluster_nodes_for_affinity(results)
+                    self._core.update_affinity_nodes(result, scope)
+                await self._refresh_affinity_nodes(results)
                 return True
             scope = scope.fallback
 
-        self._core.invalidate_cluster_nodes()
+        self._core.invalidate_affinity_nodes()
         self._core.log_all_scopes_failed()
         return False
 
-    async def _refresh_cluster_nodes_for_affinity(
+    async def _refresh_affinity_nodes(
         self, results: dict[tuple[str, bool], tuple[str, ...]]
     ) -> None:
         """Select the first usable scope in the configured rack-to-DC chain."""
         if not _uses_key_affinity(self._config):
             return
 
-        for scope in _affinity_scopes(self._config.routing_scope):
-            key = (scope.get_localnodes_query(), _uses_cluster_scope(scope))
+        scopes = self._affinity_scopes
+        for scope in (
+            scopes
+            if scopes is not None
+            else _derive_affinity_scopes(self._config.routing_scope)
+        ):
+            key = _discovery_key(scope)
             result = results.get(key)
             if result is None:
-                if _uses_cluster_scope(scope):
-                    result = await self._fetch_cluster_scope_nodes(scope)
-                else:
-                    result = tuple(await self._fetch_scope_nodes(scope))
+                result = await self._fetch_nodes(scope)
                 results[key] = result
             if result:
-                self._core.update_cluster_nodes(result, scope.name)
+                self._core.update_affinity_nodes(result, scope)
                 return
-        self._core.invalidate_cluster_nodes()
+        logger.warning(
+            "Affinity discovery exhausted its configured scopes; using ordinary routing",
+            extra={"event": "affinity_discovery_failed"},
+        )
+        self._core.invalidate_affinity_nodes()
+
+    async def _fetch_nodes(self, scope: RoutingScope) -> tuple[str, ...]:
+        """Discover one scope using its configured seed aggregation behavior."""
+        if _uses_cluster_scope(scope):
+            return await self._fetch_cluster_scope_nodes(scope)
+        return tuple(await self._fetch_scope_nodes(scope))
 
     async def _fetch_cluster_scope_nodes(
         self,

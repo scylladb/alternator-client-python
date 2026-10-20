@@ -387,7 +387,12 @@ separately refreshed view across racks in the configured datacenter. Ordinary
 requests retain their configured routing scope. The affinity view replaces each
 built-in rack restriction in the full explicit fallback chain with its named datacenter,
 keeping the order: `rack(A,r1) → rack(B,r2) → cluster` becomes
-`DC(A) → DC(B) → cluster`. No fallback is added implicitly.
+`DC(A) → DC(B) → cluster`. Fully built-in affinity scope chains are derived once
+when the manager is created; custom scopes retain lazy fallback evaluation on
+each refresh. Equivalent discovery queries are deduplicated, preserving
+the first occurrence and its fallback order: `rack(A,r1) → rack(A,r1) → DC(A)`
+becomes a single `DC(A)` affinity scope. Queries with different seed aggregation
+behavior remain distinct. No fallback is added implicitly.
 
 Named datacenters are discovered with `/localnodes?dc=<configured-dc>`, using the
 first usable scoped response rather than combining unrelated seed-local DC

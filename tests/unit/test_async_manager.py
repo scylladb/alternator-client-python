@@ -147,7 +147,7 @@ class TestAsyncLiveNodesManager:
             "dc2-node1",
             "dc2-node2",
         )
-        assert manager.cluster_nodes == manager.nodes
+        assert manager.affinity_nodes == manager.nodes
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("affinity_enabled", [False, True])
@@ -180,7 +180,7 @@ class TestAsyncLiveNodesManager:
 
         assert await manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
-        assert manager.cluster_nodes == manager.nodes
+        assert manager.affinity_nodes == manager.nodes
 
     @pytest.mark.asyncio
     async def test_rack_scope_tracks_dc_nodes_for_key_affinity(self) -> None:
@@ -204,8 +204,8 @@ class TestAsyncLiveNodesManager:
         manager = AsyncLiveNodesManager(config, mock_fetch)
         assert await manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("rack1-node",)
-        assert manager.cluster_nodes.nodes == ("rack1-node", "rack2-node")
-        assert manager.cluster_nodes.scope_name == "Datacenter"
+        assert manager.affinity_nodes.nodes == ("rack1-node", "rack2-node")
+        assert manager.affinity_nodes.scope_name == "Datacenter"
         assert calls == [
             "http://seed-dc1:8000/localnodes?dc=dc1&rack=rack1",
             "http://seed-dc1:8000/localnodes?dc=dc1",
@@ -226,7 +226,7 @@ class TestAsyncLiveNodesManager:
         async def mock_fetch(url: str) -> list[str]:
             if "rack=" in url:
                 return rack_nodes
-            observed.append((manager.nodes.nodes, manager.cluster_nodes.nodes))
+            observed.append((manager.nodes.nodes, manager.affinity_nodes.nodes))
             if any(seed in url for seed in failures):
                 if empty_response:
                     return []
@@ -250,25 +250,76 @@ class TestAsyncLiveNodesManager:
         manager = AsyncLiveNodesManager(config, mock_fetch)
         assert await manager.refresh_nodes() is True
         assert_inflight(())
-        assert manager.cluster_nodes.nodes == ("rack1-node", "rack2-node")
-        previous_affinity = manager.cluster_nodes.nodes
+        assert manager.affinity_nodes.nodes == ("rack1-node", "rack2-node")
+        previous_affinity = manager.affinity_nodes.nodes
         rack_nodes = ["rack1-new"]
         failures = failed_seeds
         assert await manager.refresh_nodes() is True
         assert_inflight(previous_affinity)
         assert manager.nodes.nodes == ("rack1-new",)
-        assert bool(manager.cluster_nodes) == (len(failed_seeds) == 1)
-        previous_affinity = manager.cluster_nodes.nodes
+        assert bool(manager.affinity_nodes) == (len(failed_seeds) == 1)
+        previous_affinity = manager.affinity_nodes.nodes
         failures = ()
         assert await manager.refresh_nodes() is True
         assert_inflight(previous_affinity)
-        assert manager.cluster_nodes.nodes == ("rack1-node", "rack2-node")
-        previous_affinity = manager.cluster_nodes.nodes
+        assert manager.affinity_nodes.nodes == ("rack1-node", "rack2-node")
+        previous_affinity = manager.affinity_nodes.nodes
         dc_nodes = ["rack1-node", "replacement-node"]
         assert await manager.refresh_nodes() is True
         assert_inflight(previous_affinity)
         assert manager.nodes.nodes == ("rack1-new",)
-        assert manager.cluster_nodes.nodes == ("rack1-node", "replacement-node")
+        assert manager.affinity_nodes.nodes == ("rack1-node", "replacement-node")
+
+    @pytest.mark.parametrize("rack_available", [False, True])
+    async def test_derived_affinity_chain_reuses_results_and_recovers(
+        self, rack_available: bool
+    ) -> None:
+        """Duplicate derived DC queries run once per refresh and retry next refresh."""
+        calls: list[str] = []
+        dc_available = False
+
+        async def mock_fetch(url: str) -> list[str]:
+            query = url.split("?", 1)[1] if "?" in url else ""
+            calls.append(query)
+            if "rack=" in query:
+                return ["rack-node"] if rack_available else []
+            if query == "dc=a":
+                return ["dc-node"] if dc_available else []
+            return ["cluster-node"]
+
+        config = Config(
+            seed_hosts=["seed1", "seed2"],
+            port=8000,
+            routing_scope=RackScope(
+                "a",
+                "A1",
+                fallback=RackScope(
+                    "a",
+                    "A1",
+                    fallback=DatacenterScope("a", fallback=ClusterScope()),
+                ),
+            ),
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+        )
+        manager = AsyncLiveNodesManager(config, mock_fetch)
+        assert await manager.refresh_nodes() is True
+        assert calls == (
+            ["dc=a&rack=A1", "dc=a", "dc=a", "", ""]
+            if rack_available
+            else ["dc=a&rack=A1"] * 4 + ["dc=a", "dc=a", "", ""]
+        )
+        assert manager.affinity_nodes.nodes == ("cluster-node",)
+
+        calls.clear()
+        dc_available = True
+        assert await manager.refresh_nodes() is True
+        assert calls == (
+            ["dc=a&rack=A1", "dc=a"]
+            if rack_available
+            else ["dc=a&rack=A1"] * 4 + ["dc=a"]
+        )
+        assert manager.affinity_nodes.nodes == ("dc-node",)
+        assert manager.affinity_nodes.scope_name == "Datacenter"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("selected_dc", ["dc1", "dc2", "cluster"])
@@ -312,7 +363,7 @@ class TestAsyncLiveNodesManager:
             expected.extend(["", ""])
         assert calls == expected
         assert manager.nodes.nodes == ("rack-node",)
-        assert manager.cluster_nodes.nodes == (f"{selected_dc}-node",)
+        assert manager.affinity_nodes.nodes == (f"{selected_dc}-node",)
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("preferred_available", [False, True])
@@ -341,7 +392,7 @@ class TestAsyncLiveNodesManager:
         assert await manager.refresh_nodes() is True
         assert calls == ["dc=dc1&rack=rack1", "dc=dc2", "dc=dc1"]
         assert manager.nodes.nodes == ("dc2-node",)
-        assert manager.cluster_nodes.nodes == (
+        assert manager.affinity_nodes.nodes == (
             "dc1-node" if preferred_available else "dc2-node",
         )
 
@@ -363,7 +414,7 @@ class TestAsyncLiveNodesManager:
                     raise OSError("one cluster seed unavailable")
                 return ["other-dc-node"]
             # No broader interim snapshot may escape while DC discovery runs.
-            assert not manager.cluster_nodes
+            assert not manager.affinity_nodes
             return ["dc1-node"] if preferred_available else []
 
         config = Config(
@@ -375,7 +426,7 @@ class TestAsyncLiveNodesManager:
         manager = AsyncLiveNodesManager(config, mock_fetch)
         assert await manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("other-dc-node",)
-        assert manager.cluster_nodes.nodes == (
+        assert manager.affinity_nodes.nodes == (
             ("dc1-node",) if preferred_available else ("other-dc-node",)
         )
         assert calls == ["dc=dc1&rack=rack1"] * 2 + [""] * 2 + ["dc=dc1"] * (
@@ -426,7 +477,7 @@ class TestAsyncLiveNodesManager:
             expected.append("http://seed:8000/localnodes?dc=dc1")
         assert calls == expected
         if affinity_enabled:
-            assert manager.cluster_nodes.nodes == manager.nodes.nodes
+            assert manager.affinity_nodes.nodes == manager.nodes.nodes
 
     @pytest.mark.asyncio
     async def test_url_construction(self, config: Config) -> None:
@@ -609,13 +660,13 @@ class TestAsyncLiveNodesManager:
         )
         manager = AsyncLiveNodesManager(scoped_config, mock_fetch)
         assert await manager.refresh_nodes() is True
-        assert manager.cluster_nodes.nodes == ("dc-node", "rack-node")
+        assert manager.affinity_nodes.nodes == ("dc-node", "rack-node")
         initial_nodes = manager.nodes
         calls.clear()
         rack_available = False
         assert await manager.refresh_nodes() is False
         assert manager.nodes == initial_nodes
-        assert not manager.cluster_nodes
+        assert not manager.affinity_nodes
         assert calls == ["dc=dc1&rack=rack1"]
 
     @pytest.mark.asyncio

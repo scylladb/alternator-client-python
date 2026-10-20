@@ -881,7 +881,9 @@ class TestAffinityHandlerRouting:
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("rack-only",), scope_name="Rack")
-        manager.cluster_nodes = NodeList(nodes=("a", "b", "c"), scope_name="Datacenter")
+        manager.affinity_nodes = NodeList(
+            nodes=("a", "b", "c"), scope_name="Datacenter"
+        )
         events = MagicMock()
 
         def compute_affinity_node(
@@ -957,7 +959,9 @@ class TestAffinityHandlerRouting:
         config = Config(seed_hosts=["seed"], port=8000)
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("rack-only",), scope_name="Rack")
-        manager.cluster_nodes = NodeList(nodes=("a", "b", "c"), scope_name="Datacenter")
+        manager.affinity_nodes = NodeList(
+            nodes=("a", "b", "c"), scope_name="Datacenter"
+        )
         events = MagicMock()
         params = {
             "RequestItems": {
@@ -1056,7 +1060,7 @@ class TestAffinityHandlerRouting:
             try:
                 await refresh()
                 assert manager.nodes.nodes == (rack_node,)
-                assert manager.cluster_nodes.nodes == tuple(dc_nodes)
+                assert manager.affinity_nodes.nodes == tuple(dc_nodes)
                 events = MagicMock()
 
                 def compute_affinity_node(
@@ -1119,7 +1123,7 @@ class TestAffinityHandlerRouting:
 
                 fake_alternator_server.set_localnodes([], query="dc=dc1")
                 await refresh()
-                assert not manager.cluster_nodes
+                assert not manager.affinity_nodes
                 # An existing request retains its DC retry plan across refresh.
                 urls = {first}
                 for _ in range(2):
@@ -1162,7 +1166,7 @@ class TestAffinityHandlerRouting:
         )
         manager = MagicMock()
         manager.nodes = NodeList(nodes=("rack1-node",), scope_name="Rack")
-        manager.cluster_nodes = NodeList(
+        manager.affinity_nodes = NodeList(
             nodes=("rack1-node", "rack2-node", "rack3-node"),
             scope_name="Cluster",
         )
@@ -1202,7 +1206,7 @@ class TestAffinityHandlerRouting:
 
         assert request.url == "http://rack1-node:8000/"
 
-        manager.cluster_nodes = NodeList(nodes=(), scope_name="Cluster")
+        manager.affinity_nodes = NodeList(nodes=(), scope_name="Cluster")
         conditional_request = MagicMock()
         conditional_request.url = "http://seed:8000/"
         conditional_request.headers = {"X-Amz-Target": "DynamoDB_20120810.PutItem"}
