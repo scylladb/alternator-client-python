@@ -25,10 +25,10 @@ choosing a version. This project follows Semantic Versioning:
 - **MINOR** for backward-compatible functionality
 - **PATCH** for backward-compatible fixes
 
-The release prepared by this branch is **2.0.0**. It is a major release because
-datacenter and rack scopes no longer broaden routing implicitly, and
-`AlternatorConfigBuilder.build()` now returns `Config` rather than
-`AlternatorConfig`. The complete migration guidance is in
+The release prepared by this branch is **2.0.1**. It is a patch release for
+request-signing, key-affinity membership, and request-routing CPU fixes. Public
+configuration and authentication defaults are unchanged. Review the 2.0.1 notes
+and the earlier 2.0.0 migration guidance in
 [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md).
 
 For future releases, changed routing or authentication defaults, removal of
@@ -43,14 +43,14 @@ A version already uploaded to PyPI is immutable and must never be reused.
 
 1. Ensure the intended commit is on `main`, all required CI checks pass for
    that exact commit, and the worktree is clean.
-2. Review the dated `2.0.0` section in
+2. Review the dated `2.0.1` section in
    [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md). Confirm that it describes all
    user-visible changes and migration steps, and update the date if publication
    moves to another day.
 3. Update `alternator/_version.py`:
 
    ```python
-   __version__ = "2.0.0"
+   __version__ = "2.0.1"
    ```
 
 4. Run the local release checks:
@@ -62,7 +62,7 @@ A version already uploaded to PyPI is immutable and must never be reused.
    ```
 
 5. Inspect the wheel and source archive produced in `dist/`. Confirm their
-   metadata reports version `2.0.0` and that `twine check` passed.
+   metadata reports version `2.0.1` and that `twine check` passed.
 6. Commit the version and documentation changes, open a pull request, and merge
    it only after review and CI complete.
 
@@ -70,7 +70,7 @@ A version already uploaded to PyPI is immutable and must never be reused.
 
 1. Open the repository's **Actions** tab.
 2. Select the **Release** workflow and click **Run workflow**.
-3. Select `main` and enter `2.0.0`. The input must exactly match
+3. Select `main` and enter `2.0.1`. The input must exactly match
    `alternator/_version.py`.
 4. Use the dry-run option first when validating TestPyPI publishing. A dry run
    must not create the production tag or GitHub release.
@@ -79,7 +79,7 @@ A version already uploaded to PyPI is immutable and must never be reused.
 
 The production workflow validates the version and existing CI result, runs its
 release checks, builds the wheel and source archive, signs both artifacts and
-their checksum manifest, creates and verifies the signed `v2.0.0` tag, publishes
+their checksum manifest, creates and verifies the signed `v2.0.1` tag, publishes
 the packages to PyPI, and attaches the artifacts to the GitHub release.
 
 After the workflow succeeds, verify the PyPI page, GitHub release, checksum
@@ -132,7 +132,7 @@ ensure the documented fingerprint matches the workflow's signing key.
 
 ## Verify a Release
 
-The following examples verify 2.0.0. Change `VERSION` for a later release.
+The following examples verify 2.0.1. Change `VERSION` for a later release.
 
 ### Checksums
 
@@ -140,7 +140,7 @@ The following examples verify 2.0.0. Change `VERSION` for a later release.
 both files before running the check:
 
 ```bash
-VERSION=2.0.0
+VERSION=2.0.1
 BASE_URL="https://github.com/scylladb/alternator-client-python/releases/download/v${VERSION}"
 
 curl --fail --location --remote-name "${BASE_URL}/SHA256SUMS"
@@ -162,15 +162,18 @@ Import the published key and compare the displayed fingerprint with the one
 published through the project's trusted channel:
 
 ```bash
-gpg --keyserver keyserver.ubuntu.com \
-  --recv-keys A97AF2DE72D4293398AF8274FC93C043D8ADA78E
-gpg --fingerprint A97AF2DE72D4293398AF8274FC93C043D8ADA78E
+curl --fail --location https://github.com/scylladb-publisher.gpg | gpg --import
+gpg --fingerprint 71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA
 ```
+
+For the historical 2.0.0 release, use its original signing key with fingerprint
+`A97AF2DE72D4293398AF8274FC93C043D8ADA78E` instead. The publisher-key update does
+not change existing release signatures.
 
 Download and verify the signed checksum manifest:
 
 ```bash
-VERSION=2.0.0
+VERSION=2.0.1
 BASE_URL="https://github.com/scylladb/alternator-client-python/releases/download/v${VERSION}"
 
 curl --fail --location --remote-name "${BASE_URL}/SHA256SUMS"
@@ -181,7 +184,7 @@ gpg --verify SHA256SUMS.asc SHA256SUMS
 The workflow also signs each distribution. For example:
 
 ```bash
-VERSION=2.0.0
+VERSION=2.0.1
 BASE_URL="https://github.com/scylladb/alternator-client-python/releases/download/v${VERSION}"
 SDIST="alternator_client-${VERSION}.tar.gz"
 
@@ -193,7 +196,7 @@ gpg --verify "${SDIST}.asc" "${SDIST}"
 ### Signed Git Tag
 
 ```bash
-VERSION=2.0.0
+VERSION=2.0.1
 git fetch --tags origin
 git tag --verify "v${VERSION}"
 ```
@@ -241,5 +244,5 @@ for the precise behavior.
 
 Keep the signed GitHub release and tag as an audit trail, and mark the release
 notes as yanked. Fix the issue on `main`, choose a new version (for example,
-`2.0.1`), and follow the complete release process again. Never try to overwrite
-or re-upload `2.0.0`.
+`2.0.2`), and follow the complete release process again. Never try to overwrite
+or re-upload `2.0.1`.
