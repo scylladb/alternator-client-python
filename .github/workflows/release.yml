@@ -347,7 +347,8 @@ jobs:
             printf '```\n\n### GPG Signature Verification\n\n'
             printf 'The signed checksum file authenticates the checksums used above. To verify it:\n\n'
             printf '```bash\n'
-            printf 'gpg --keyserver keyserver.ubuntu.com --recv-keys A97AF2DE72D4293398AF8274FC93C043D8ADA78E\n'
+            printf 'curl -fsSL https://github.com/scylladb-publisher.gpg | gpg --import\n'
+            printf 'gpg --fingerprint 71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA\n'
             printf 'gpg --verify SHA256SUMS.asc SHA256SUMS\n'
             printf '```\n'
           } > release-body.md
