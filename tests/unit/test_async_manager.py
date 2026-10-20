@@ -117,8 +117,11 @@ class TestAsyncLiveNodesManager:
         assert "dc=" not in call_urls[1]
 
     @pytest.mark.asyncio
-    async def test_cluster_scope_aggregates_all_seed_localnodes(self) -> None:
-        """Cluster scope unions local-DC node lists returned by each seed."""
+    async def test_cluster_scope_aggregates_all_seed_localnodes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cluster scope unions local-DC nodes without activating disabled affinity."""
+        caplog.set_level("DEBUG", logger="alternator")
         call_urls: list[str] = []
 
         async def mock_fetch(url: str) -> list[str]:
@@ -147,7 +150,11 @@ class TestAsyncLiveNodesManager:
             "dc2-node1",
             "dc2-node2",
         )
-        assert manager.affinity_nodes == manager.nodes
+        assert not manager.affinity_nodes
+        assert not any(
+            str(getattr(record, "event", "")).startswith("affinity_")
+            for record in caplog.records
+        )
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("affinity_enabled", [False, True])
@@ -180,7 +187,10 @@ class TestAsyncLiveNodesManager:
 
         assert await manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
-        assert manager.affinity_nodes == manager.nodes
+        if affinity_enabled:
+            assert manager.affinity_nodes == manager.nodes
+        else:
+            assert not manager.affinity_nodes
 
     @pytest.mark.asyncio
     async def test_rack_scope_tracks_dc_nodes_for_key_affinity(self) -> None:

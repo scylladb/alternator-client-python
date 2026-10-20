@@ -114,8 +114,11 @@ class TestSyncLiveNodesManager:
         assert "dc=dc1" in calls[0]
         assert "dc=" not in calls[1]
 
-    def test_cluster_scope_aggregates_all_seed_localnodes(self) -> None:
-        """Cluster scope unions local-DC node lists returned by each seed."""
+    def test_cluster_scope_aggregates_all_seed_localnodes(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Cluster scope unions local-DC nodes without activating disabled affinity."""
+        caplog.set_level("DEBUG", logger="alternator")
         config = Config(
             seed_hosts=["seed-dc1", "seed-dc2"],
             port=8000,
@@ -144,7 +147,11 @@ class TestSyncLiveNodesManager:
             "dc2-node1",
             "dc2-node2",
         )
-        assert manager.affinity_nodes == manager.nodes
+        assert not manager.affinity_nodes
+        assert not any(
+            str(getattr(record, "event", "")).startswith("affinity_")
+            for record in caplog.records
+        )
 
     @pytest.mark.parametrize("affinity_enabled", [False, True])
     @pytest.mark.parametrize("empty_seed_response", [False, True])
@@ -176,7 +183,10 @@ class TestSyncLiveNodesManager:
 
         assert manager.refresh_nodes() is True
         assert manager.nodes.nodes == ("dc2-node1", "dc2-node2")
-        assert manager.affinity_nodes == manager.nodes
+        if affinity_enabled:
+            assert manager.affinity_nodes == manager.nodes
+        else:
+            assert not manager.affinity_nodes
 
     def test_rack_scope_tracks_dc_nodes_for_key_affinity(self) -> None:
         """The named DC response spans racks without merging another DC."""

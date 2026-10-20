@@ -540,8 +540,6 @@ class SyncLiveNodesManager:
             result = self._fetch_nodes(scope)
             results[_discovery_key(scope)] = result
             if self._core.process_fetch_result(result, scope):
-                if _uses_cluster_scope(scope) and not _uses_key_affinity(self._config):
-                    self._core.update_affinity_nodes(result, scope)
                 self._refresh_affinity_nodes(results)
                 return True
             scope = scope.fallback
@@ -793,8 +791,6 @@ class AsyncLiveNodesManager:
             result = await self._fetch_nodes(scope)
             results[_discovery_key(scope)] = result
             if self._core.process_fetch_result(result, scope):
-                if _uses_cluster_scope(scope) and not _uses_key_affinity(self._config):
-                    self._core.update_affinity_nodes(result, scope)
                 await self._refresh_affinity_nodes(results)
                 return True
             scope = scope.fallback
