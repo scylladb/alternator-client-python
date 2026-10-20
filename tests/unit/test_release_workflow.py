@@ -1,0 +1,107 @@
+# Copyright ScyllaDB, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Exercise version input handling used by the release workflow."""
+
+import subprocess
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/prepare_release.py"
+
+
+@pytest.mark.parametrize(
+    ("requested", "normalized", "prerelease"),
+    [
+        ("2.0.2", "2.0.2", "false"),
+        ("0.0.0", "0.0.0", "false"),
+        ("2.1.0-alpha.0", "2.1.0a0", "true"),
+        ("2.1.0-beta.2", "2.1.0b2", "true"),
+        ("2.1.0-rc.1", "2.1.0rc1", "true"),
+        ("2.1.0a1", "2.1.0a1", "true"),
+        ("2.1.0b2", "2.1.0b2", "true"),
+        ("2.1.0rc3", "2.1.0rc3", "true"),
+    ],
+)
+def test_release_version_is_set_from_input(
+    tmp_path: Path, requested: str, normalized: str, prerelease: str
+) -> None:
+    version_file = tmp_path / "_version.py"
+    version_file.write_text('# Copyright ScyllaDB, Inc.\n__version__ = "1.0.0"\n')
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), requested, str(version_file)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert version_file.read_text() == (
+        f'# Copyright ScyllaDB, Inc.\n__version__ = "{normalized}"\n'
+    )
+    assert result.stdout.splitlines() == [
+        f"package-version={normalized}",
+        f"prerelease={prerelease}",
+    ]
+
+
+@pytest.mark.parametrize(
+    "requested",
+    [
+        "",
+        "v2.0.2",
+        "2.0",
+        "02.0.2",
+        "2.0.2-alpha",
+        "2.0.2-preview.1",
+        "2.0.2-rc.01",
+        "2.0.2+local",
+        "2.0.2\nprerelease=false",
+        "2.0.2; echo unsafe",
+    ],
+)
+def test_invalid_version_does_not_modify_source(tmp_path: Path, requested: str) -> None:
+    version_file = tmp_path / "_version.py"
+    original = '__version__ = "1.0.0"\n'
+    version_file.write_text(original)
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), requested, str(version_file)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert version_file.read_text() == original
+
+
+@pytest.mark.parametrize("original", ["", '__version__ = "1"\n__version__ = "2"\n'])
+def test_ambiguous_version_file_is_rejected(tmp_path: Path, original: str) -> None:
+    version_file = tmp_path / "_version.py"
+    version_file.write_text(original)
+
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "2.0.2", str(version_file)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert result.stdout == ""
+    assert version_file.read_text() == original
