@@ -15,6 +15,10 @@ Python.
    `GPG_PASSPHRASE` secret.
 4. Publish the matching public key and record its full fingerprint so release
    signatures can be verified independently.
+5. Enable **Settings → General → Releases → Enable release immutability** once.
+   The workflow uploads every asset to a draft, then publishes it automatically.
+   GitHub locks the release tag and assets when it is published. This setting
+   applies to future releases; it does not change existing ones.
 
 ## Compatibility and Version Decision
 
@@ -25,67 +29,58 @@ choosing a version. This project follows Semantic Versioning:
 - **MINOR** for backward-compatible functionality
 - **PATCH** for backward-compatible fixes
 
-The release prepared by this branch is **2.0.1**. It is a patch release for
-request-signing, key-affinity membership, and request-routing CPU fixes. Public
-configuration and authentication defaults are unchanged. Review the 2.0.1 notes
-and the earlier 2.0.0 migration guidance in
-[docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md).
-
 For future releases, changed routing or authentication defaults, removal of
 deprecated names or credential arguments, and default-enabled node health or
-quarantine behavior also require a major version. Record the decision and all
-user-visible changes in the release notes before publishing.
+quarantine behavior also require a major version. Document migration guidance
+in [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md) when a change needs more
+explanation than the automatically generated pull-request list.
 
 Pre-release versions use suffixes such as `-alpha.1`, `-beta.1`, and `-rc.1`.
-A version already uploaded to PyPI is immutable and must never be reused.
-
-## Prepare the Release
-
-1. Ensure the intended commit is on `main`, all required CI checks pass for
-   that exact commit, and the worktree is clean.
-2. Review the dated `2.0.1` section in
-   [docs/RELEASE_NOTES.md](docs/RELEASE_NOTES.md). Confirm that it describes all
-   user-visible changes and migration steps, and update the date if publication
-   moves to another day.
-3. Update `alternator/_version.py`:
-
-   ```python
-   __version__ = "2.0.1"
-   ```
-
-4. Run the local release checks:
-
-   ```bash
-   make install
-   make verify
-   make test-integration
-   ```
-
-5. Inspect the wheel and source archive produced in `dist/`. Confirm their
-   metadata reports version `2.0.1` and that `twine check` passed.
-6. Commit the version and documentation changes, open a pull request, and merge
-   it only after review and CI complete.
+Python spellings such as `2.1.0a1`, `2.1.0b1`, and `2.1.0rc1` are also accepted.
+The workflow normalizes the package version to Python's version format; for
+example, input `2.1.0-rc.1` produces package version `2.1.0rc1` and Git tag
+`v2.1.0-rc.1`. These spellings identify the same PyPI version and cannot be used
+for separate releases. Never reuse a published version.
 
 ## Run the Release Workflow
 
-1. Open the repository's **Actions** tab.
-2. Select the **Release** workflow and click **Run workflow**.
-3. Select `main` and enter `2.0.1`. The input must exactly match
-   `alternator/_version.py`.
-4. Use the dry-run option first when validating TestPyPI publishing. A dry run
-   must not create the production tag or GitHub release.
-5. For the production run, leave dry run disabled and confirm the selected
-   commit is the reviewed `main` commit.
+Once the prerequisites are configured, a release needs only a workflow dispatch:
 
-The production workflow validates the version and existing CI result, runs its
-release checks, builds the wheel and source archive, signs both artifacts and
-their checksum manifest, creates and verifies the signed `v2.0.1` tag, publishes
-the packages to PyPI, and attaches the artifacts to the GitHub release.
+1. Ensure the intended changes are merged into `main` and CI has passed for
+   that commit. Open issues labeled `release-blocker` prevent publication.
+2. Open **Actions → Release → Run workflow**.
+3. Select `main`, enter the new version (for example, `2.0.2`), and run it.
+   Leave **dry run** disabled for production.
 
-After the workflow succeeds, verify the PyPI page, GitHub release, checksum
-manifest, GPG signatures, and signed tag using the steps below. Also install the
-published wheel in a clean environment and perform a basic import/client smoke
-test.
+No manual version-file edit, release-notes edit, or release publication is
+required. The workflow:
+
+1. Validates version availability, the main-branch CI result, and release blockers.
+2. Sets `alternator/_version.py` to the requested package version and runs unit
+   tests, integration tests, and linters.
+3. Creates and verifies a signed release commit containing only the version-file
+   change. This commit is a child of the selected `main` commit and is published
+   through its signed release tag; it is not pushed to `main`.
+4. Builds the wheel and source archive from that release commit, validates their
+   metadata, and signs the artifacts and checksum manifest.
+5. Creates and verifies the signed version tag, then publishes the packages to PyPI.
+6. Generates GitHub release notes from the changes since the preceding release,
+   including pull requests and contributors, and adds installation and
+   verification instructions. Historical contents of `docs/RELEASE_NOTES.md`
+   are not copied into every GitHub release.
+7. Creates a draft GitHub release, uploads all artifacts, signatures, and
+   checksums, and publishes the release automatically. With release immutability
+   enabled, this final step locks the tag and assets.
+
+The source version on `main` is a development placeholder. The release tag and
+both distributions contain the chosen version. Releases are serialized to
+prevent overlapping production runs.
+
+For an optional TestPyPI rehearsal, enable **dry run**. It performs version
+preparation, checks, builds, and signing, then uploads to TestPyPI. It does not
+push a commit or tag, publish to production PyPI, or create a GitHub release.
+
+The verification commands below can also be used to inspect a published release.
 
 ## GPG Signing Setup
 
@@ -205,8 +200,8 @@ git tag --verify "v${VERSION}"
 
 ### Validation Fails
 
-- Ensure the workflow input exactly matches `alternator/_version.py`.
-- Use `X.Y.Z` or an accepted prerelease suffix such as `X.Y.Z-rc.1`.
+- Use `X.Y.Z` or an accepted prerelease suffix such as `X.Y.Z-rc.1` or `X.Y.Zrc1`.
+  The workflow sets `alternator/_version.py` automatically.
 - Ensure `vX.Y.Z` does not already exist and the version has never been
   published to the target package index.
 - Confirm the workflow is running for the reviewed commit on `main`.
@@ -226,7 +221,11 @@ git tag --verify "v${VERSION}"
   or version to be replaced by rerunning the workflow.
 - If the signed tag succeeded but publishing or GitHub release creation failed,
   use **Re-run failed jobs** on that same workflow run. Do not dispatch a new
-  run or recreate the tag.
+  run or recreate the tag. The saved release commit and distributions are reused;
+  an interrupted GitHub release upload resumes using its existing draft.
+- If PyPI accepted only some files before a failure, inspect that release before
+  retrying: production uploads reject existing filenames rather than replace
+  them. Do not delete published files or move the signed tag.
 
 ## Yank a Bad Release
 

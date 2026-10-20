@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g., 2.0.0)"
+        description: "Version to release (e.g., 2.0.2 or 2.1.0-rc.1); set automatically"
         required: true
         type: string
       dry_run:
@@ -12,6 +12,10 @@ on:
         required: false
         type: boolean
         default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -21,6 +25,10 @@ jobs:
       actions: read
       contents: read
       issues: read
+    outputs:
+      commit: ${{ steps.release-commit.outputs.sha }}
+      package-version: ${{ steps.version.outputs.package-version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - name: Block release with open release blockers
         if: ${{ !inputs.dry_run }}
@@ -52,15 +60,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Validate version format
+      - name: Validate and set package version
+        id: version
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          if [[ ! "$RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$ ]]; then
-            echo "Invalid version format: $RELEASE_VERSION"
-            echo "Expected format: X.Y.Z or X.Y.Z-suffix"
-            exit 1
-          fi
+          python .github/scripts/prepare_release.py "$RELEASE_VERSION" \
+            alternator/_version.py >> "$GITHUB_OUTPUT"
 
       - name: Require main branch for a production release
         if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
@@ -83,19 +89,6 @@ jobs:
             exit 1
           fi
 
-      - name: Check version in _version.py
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          CURRENT_VERSION=$(grep -oP '__version__ = "\K[^"]+' alternator/_version.py)
-          if [ "$CURRENT_VERSION" != "$RELEASE_VERSION" ]; then
-            echo "Version mismatch!"
-            echo "  _version.py: $CURRENT_VERSION"
-            echo "  Release input: $RELEASE_VERSION"
-            echo "Please update alternator/_version.py first."
-            exit 1
-          fi
-
       - name: Check tag does not already exist
         if: ${{ !inputs.dry_run }}
         env:
@@ -114,7 +107,7 @@ jobs:
       - name: Check version does not already exist on PyPI
         if: ${{ !inputs.dry_run }}
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_VERSION: ${{ steps.version.outputs.package-version }}
         run: |
           PYPI_URL="https://pypi.org/pypi/alternator-client/${RELEASE_VERSION}/json"
           HTTP_STATUS=$(curl --silent --show-error --location \
@@ -146,17 +139,33 @@ jobs:
       - name: Run linters
         run: make lint
 
-      - name: Build package
-        run: uvx --from build pyproject-build
-
-      - name: Check package
-        run: uvx twine check dist/*
-
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         with:
           gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
           passphrase: ${{ secrets.GPG_PASSPHRASE }}
+          git_user_signingkey: true
+          git_commit_gpgsign: true
+
+      - name: Create release commit
+        id: release-commit
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          # Only the version file changes; main remains protected.
+          git checkout --detach "$GITHUB_SHA"
+          git add alternator/_version.py
+          git commit --allow-empty --only alternator/_version.py -m "Release v${RELEASE_VERSION}"
+          git verify-commit HEAD
+          git diff --exit-code HEAD
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          git bundle create release-source.bundle "${GITHUB_SHA}..HEAD" HEAD
+
+      - name: Build package
+        run: uvx --from build pyproject-build
+
+      - name: Check package
+        run: uvx twine check dist/*
 
       - name: Sign artifacts with GPG
         run: |
@@ -181,6 +190,16 @@ jobs:
         with:
           name: dist
           path: dist/
+          if-no-files-found: error
+          overwrite: true
+
+      - name: Upload release commit
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-source
+          path: release-source.bundle
+          if-no-files-found: error
+          overwrite: true
 
   tag-release:
     name: Create Signed Tag
@@ -195,6 +214,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Download release commit
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-source
+
+      - name: Restore tested release commit
+        env:
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          git bundle verify release-source.bundle
+          git fetch release-source.bundle HEAD
+          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
+          git checkout --detach "$RELEASE_COMMIT"
+
       - name: Import GPG key
         uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
         with:
@@ -208,7 +241,12 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          git tag -s "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
+          # A retry can reuse this run's tag only when it still points to this commit.
+          if git show-ref --verify --quiet "refs/tags/v${RELEASE_VERSION}"; then
+            test "$(git rev-parse "v${RELEASE_VERSION}^{commit}")" = "$(git rev-parse HEAD)"
+          else
+            git tag -s "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
+          fi
           git tag --verify "v${RELEASE_VERSION}"
 
       - name: Block release with open release blockers
@@ -309,7 +347,7 @@ jobs:
     name: Create GitHub Release
     if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
-    needs: publish
+    needs: [build, publish]
     permissions:
       contents: write
       issues: read
@@ -326,13 +364,17 @@ jobs:
 
       - name: Build release body
         env:
+          GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ inputs.version }}
+          PACKAGE_VERSION: ${{ needs.build.outputs.package-version }}
         run: |
+          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f "tag_name=v${RELEASE_VERSION}" --jq .body > generated-notes.md
           # shellcheck disable=SC2016 # Markdown code fences are literal text.
           {
-            cat docs/RELEASE_NOTES.md
+            cat generated-notes.md
             printf '\n## Installation\n\n```bash\n'
-            printf 'pip install alternator-client==%s\n' "$RELEASE_VERSION"
+            printf 'pip install alternator-client==%s\n' "$PACKAGE_VERSION"
             printf '```\n\n## Verification\n\n'
             printf 'Download the wheel, source distribution, checksums, and checksum signature:\n\n'
             printf '```bash\n'
@@ -373,13 +415,24 @@ jobs:
             exit 1
           fi
 
-      - name: Create Release
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: v${{ inputs.version }}
-          name: v${{ inputs.version }}
-          draft: false
-          prerelease: ${{ contains(inputs.version, '-') }}
-          files: dist/*
-          generate_release_notes: true
-          body_path: release-body.md
+      - name: Create draft, attach artifacts, and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          tag="v${RELEASE_VERSION}"
+          # Reuse a draft left by an interrupted attempt. Never modify published assets.
+          if release=$(gh release view "$tag" --json isDraft,url); then
+            if [[ $(jq -r .isDraft <<< "$release") != true ]]; then
+              echo "Release is already published: $(jq -r .url <<< "$release")"
+              exit 0
+            fi
+            gh release edit "$tag" --notes-file release-body.md --prerelease="$PRERELEASE"
+          else
+            gh release create "$tag" --verify-tag --draft --title "$tag" \
+              --notes-file release-body.md --prerelease="$PRERELEASE"
+          fi
+          gh release upload "$tag" dist/* --clobber
+          gh release edit "$tag" --draft=false
