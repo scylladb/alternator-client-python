@@ -1,5 +1,50 @@
 # Release Notes
 
+## 2.0.1 (2026-10-20)
+
+This patch release fixes authenticated response-compression negotiation and
+rack-aware key-affinity membership, and reduces request-routing CPU overhead.
+Public configuration and authentication defaults are unchanged.
+
+### Fixes
+
+- Finalize `Accept-Encoding` response-compression negotiation before SigV4
+  signing. Configured gzip or deflate negotiation no longer changes a signed
+  `identity` header after signing. Explicit custom encoding values remain
+  unchanged. ([#127](https://github.com/scylladb/alternator-client-python/pull/127),
+  [#120](https://github.com/scylladb/alternator-client-python/issues/120))
+- Give affinity-eligible requests a separately refreshed datacenter-wide view
+  when built-in rack scopes are configured, so clients in different racks use
+  the same eligible coordinator membership. Ordinary requests retain their
+  configured routing scope. Preserve the explicit fallback chain and order;
+  add no implicit fallback. Sync and async clients retain their established
+  startup, discovery-failure, and request-snapshot behavior.
+  ([#122](https://github.com/scylladb/alternator-client-python/pull/122))
+
+### Performance
+
+- Reconstruct deterministic PRNG seed slots on demand instead of initializing
+  all 607 slots for every request. Preserve deterministic values, rejection
+  sampling, reseeding, state wraparound, and complete retry order. This targets
+  the usual short query plan; fully exhausting very large plans can cost more
+  CPU than eager initialization.
+  ([#124](https://github.com/scylladb/alternator-client-python/pull/124))
+- Skip random-generator construction for empty and one-node plans, and return
+  the final remaining node without another random draw. Emitted node order
+  remains unchanged.
+  ([#125](https://github.com/scylladb/alternator-client-python/pull/125))
+
+### Release Verification
+
+- Production releases stop when an open issue has the `release-blocker` label,
+  with fresh checks before tag publication, PyPI publication, and GitHub Release
+  creation. ([#117](https://github.com/scylladb/alternator-client-python/pull/117))
+- Verify new release signatures with the public key published by
+  `scylladb-publisher`, fingerprint
+  `71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA`. Existing 2.0.0 signatures retain
+  their original verification key.
+  ([#126](https://github.com/scylladb/alternator-client-python/pull/126))
+
 ## 2.0.0 (2026-09-09)
 
 Version 2.0.0 is a major release because it changes the default topology
