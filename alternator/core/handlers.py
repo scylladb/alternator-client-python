@@ -228,7 +228,8 @@ def _register_alternator_handlers(
             config.response_compression,
         )
         decode_response_handler = create_response_compression_decode_handler()
-        events.register("before-send.dynamodb.*", accept_encoding_handler)
+        # Accept-Encoding may already be covered by SigV4, so finalize it before signing.
+        events.register("request-created.dynamodb.*", accept_encoding_handler)
         events.register("before-parse.dynamodb.*", decode_response_handler)
 
     # Register header filter if optimization enabled
