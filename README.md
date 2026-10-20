@@ -382,6 +382,40 @@ then address, followed by remaining nodes. Missing partition-key metadata and
 unsupported key values are skipped; absence of usable votes falls back to
 normal routing.
 
+When key affinity is combined with built-in rack-aware routing, eligible requests use a
+separately refreshed view across racks in the configured datacenter. Ordinary
+requests retain their configured routing scope. The affinity view replaces each
+built-in rack restriction in the full explicit fallback chain with its named datacenter,
+keeping the order: `rack(A,r1) → rack(B,r2) → cluster` becomes
+`DC(A) → DC(B) → cluster`. Fully built-in affinity scope chains are derived once
+when the manager is created; custom scopes retain lazy fallback evaluation on
+each refresh. Equivalent discovery queries are deduplicated, preserving
+the first occurrence and its fallback order: `rack(A,r1) → rack(A,r1) → DC(A)`
+becomes a single `DC(A)` affinity scope. Queries with different seed aggregation
+behavior remain distinct. No fallback is added implicitly.
+
+Named datacenters are discovered with `/localnodes?dc=<configured-dc>`, using the
+first usable scoped response rather than combining unrelated seed-local DC
+responses. Ordinary discovery results are reused when they satisfy the selected
+affinity scope. Affinity-disabled clients and scopes without rack restrictions
+need no extra discovery.
+
+Custom scope implementations, including subclasses with overridden queries,
+retain their configured discovery behavior. Cluster-scope discovery uses usable
+responses from reachable seeds when some seeds fail, both for ordinary routing
+and for an explicit affinity fallback.
+
+Ordinary and affinity snapshots keep independent refresh timing. New requests
+may use the previous affinity snapshot while its refresh is in progress.
+Successful discovery replaces it; an exhausted affinity scope chain invalidates
+it so new eligible requests fall back to ordinary scoped routing. Existing
+requests retain their captured query plans. Startup behavior is unchanged.
+
+If ordinary discovery exhausts its configured scopes, the manager retains its
+ordinary snapshot, reports an unsuccessful refresh and clears affinity without
+trying the derived scope chain. This remains true when a DC query could succeed.
+Changing that failure branch is outside this PR.
+
 ## TLS Configuration
 
 ```python
