@@ -26,8 +26,10 @@ from typing import Any, cast
 import boto3
 import pytest
 from botocore import UNSIGNED
+from botocore.auth import SigV4Auth
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 from botocore.config import Config as BotoConfig
+from botocore.credentials import Credentials
 from botocore.exceptions import ClientError, EndpointConnectionError
 
 from alternator.config import (
@@ -36,6 +38,7 @@ from alternator.config import (
     Config,
     HeaderOptimizationConfig,
     RequestCompressionConfig,
+    ResponseCompression,
 )
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import SeededAffinityPlan
@@ -180,6 +183,84 @@ def test_signed_request_url_and_compressed_body_are_final_before_signing() -> No
     assert seen["before_sign_body"].startswith(b"\x1f\x8b")
     assert seen["before_sign_headers"]["Content-Encoding"] == "gzip"
     assert seen["authorization"] is not None
+
+
+@pytest.mark.parametrize(
+    "encoding", [ResponseCompression.GZIP, ResponseCompression.DEFLATE]
+)
+@pytest.mark.parametrize("initial_encoding", [None, "identity", "br"])
+def test_response_compression_preserves_sigv4_signature(
+    encoding: ResponseCompression, initial_encoding: str | None
+) -> None:
+    """The final Accept-Encoding value must agree with the signed request."""
+    config = Config(
+        seed_hosts=["seed"],
+        port=8000,
+        response_compression=(encoding,),
+        header_optimization=HeaderOptimizationConfig(enabled=True),
+    )
+    client = boto3.client(
+        "dynamodb",
+        endpoint_url="http://seed:8000",
+        region_name="us-east-1",
+        aws_access_key_id="alternator",
+        aws_secret_access_key="secret",
+        config=BotoConfig(retries={"max_attempts": 0, "mode": "standard"}),
+    )
+
+    def add_accept_encoding(params: dict[str, Any], **_: object) -> None:
+        if initial_encoding is not None:
+            params["headers"]["Accept-Encoding"] = initial_encoding
+
+    client.meta.events.register("before-call.dynamodb.ListTables", add_accept_encoding)
+    _register_alternator_handlers(
+        client.meta.events,
+        _StaticManager(("node-b",)),
+        config,
+        auth_enabled=True,
+    )
+    captured: list[AWSPreparedRequest] = []
+
+    def capture_before_send(request: AWSPreparedRequest, **_: object) -> None:
+        captured.append(request)
+        raise RuntimeError("captured")
+
+    client.meta.events.register_last(
+        "before-send.dynamodb.ListTables", capture_before_send
+    )
+    try:
+        with pytest.raises(RuntimeError, match="captured"):
+            client.list_tables()
+    finally:
+        client.close()
+
+    request = captured[0]
+    assert _header_text(request.headers["Accept-Encoding"]) == (
+        "br" if initial_encoding == "br" else encoding.value
+    )
+    authorization = _header_text(request.headers["Authorization"])
+    signed_headers = authorization.split("SignedHeaders=", 1)[1].split(",", 1)[0]
+    assert "accept-encoding" in signed_headers.split(";")
+    wire_headers = {
+        name.lower(): _header_text(value) for name, value in request.headers.items()
+    }
+    signed_request = AWSRequest(
+        method=request.method,
+        url=request.url,
+        data=request.body,
+        headers={
+            name: wire_headers[name]
+            for name in signed_headers.split(";")
+            if name in wire_headers
+        },
+    )
+    signed_request.context["timestamp"] = wire_headers["x-amz-date"]
+    signer = SigV4Auth(Credentials("alternator", "secret"), "dynamodb", "us-east-1")
+    canonical_request = signer.canonical_request(signed_request)
+    signature = signer.signature(
+        signer.string_to_sign(signed_request, canonical_request), signed_request
+    )
+    assert authorization.endswith(f"Signature={signature}")
 
 
 def test_header_filter_preserves_every_sigv4_signed_header() -> None:

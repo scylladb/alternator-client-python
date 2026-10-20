@@ -113,6 +113,8 @@ def create_response_compression_request_handler(
             or current.strip() == ""
             or current.strip().lower() == "identity"
         ):
+            # AWSRequest uses HTTPHeaders, where assignment appends duplicate values.
+            _delete_header(headers, "Accept-Encoding")
             headers["Accept-Encoding"] = accept_encoding
 
     return request_response_compression
