@@ -290,7 +290,7 @@ class SigningTests(unittest.TestCase):
             signing.run(["git", "reset", "--hard", base])
             result = subprocess.run(["make", "release-tag"], capture_output=True, text=True, timeout=60)
             self.assertNotEqual(result.returncode, 0)
-            self.assertIn("Release tag points to an unexpected commit", result.stderr)
+            self.assertIn("HEAD does not match the prepared release commit", result.stderr)
             self.assertFalse(list(directory.glob("release-signing-*")))
 
     def test_release_commit_validates_inputs_before_signing(self):
@@ -316,6 +316,55 @@ class SigningTests(unittest.TestCase):
             signing.verify_commit("HEAD")
             self.assertFalse(list(directory.glob("release-signing-*")))
 
+    def test_release_tag_requires_prepared_commit_and_version(self):
+        with self.make_repository() as directory:
+            signing.run(["make", "release-commit"])
+            prepared = signing.run(["git", "rev-parse", "HEAD"]).strip()
+            with self.session():
+                signing.run(["git", "commit", "--allow-empty", "-qm", "Later signed commit"])
+            signing.verify_commit("HEAD")
+            result = subprocess.run(["make", "release-tag"], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("HEAD does not match the prepared release commit", result.stderr)
+            self.assertEqual(signing.run(["git", "tag", "--list", "v1.0.0"]), "")
+            signing.run(["git", "reset", "--hard", prepared])
+            bundle = Path("release-source.bundle")
+            content = bundle.read_bytes()
+            for invalid in [None, b"not a Git bundle\n"]:
+                with self.subTest(bundle=invalid):
+                    if invalid is None:
+                        bundle.unlink()
+                    else:
+                        bundle.write_bytes(invalid)
+                    result = subprocess.run(["make", "release-tag"], capture_output=True,
+                                            text=True, timeout=60)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(signing.run(["git", "tag", "--list", "v1.0.0"]), "")
+            bundle.write_bytes(content)
+            result = subprocess.run(["make", "release-tag"], env={**os.environ, "RELEASE_VERSION": "2.0.0"},
+                                    capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Prepared release version does not match RELEASE_VERSION", result.stderr)
+            self.assertEqual(signing.run(["git", "tag", "--list", "v2.0.0"]), "")
+            signing.run(["make", "release-tag"])
+            signing.verify_tag("v1.0.0", prepared)
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_release_build_removes_initial_makeflags_overrides(self):
+        with self.make_repository():
+            signing.run(["make", "release-commit"])
+            overrides = "-- RELEASE_GPG_PASSPHRASE=" + self.password
+            overrides += " RELEASE_GPG_PRIVATE_KEY_FILE=" + str(self.private)
+            overrides += " RELEASE_GPG_PASSPHRASE_FILE=" + os.environ["RELEASE_GPG_PASSPHRASE_FILE"]
+            result = subprocess.run(["make", "release-build", "MAKEFLAGS=" + overrides],
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(Path(os.environ["BUILD_OBSERVATIONS"]).read_text(), "--from\ntwine\n")
+            # Execution flags must still govern the real builder sub-make.
+            Path(os.environ["BUILD_OBSERVATIONS"]).unlink()
+            signing.run(["make", "release-build", "MAKEFLAGS=n " + overrides])
+            self.assertFalse(Path(os.environ["BUILD_OBSERVATIONS"]).exists())
+
     def test_failed_build_stops_before_artifact_signing(self):
         with self.make_repository() as directory:
             os.environ["FAIL_BUILD"] = "1"
@@ -327,6 +376,20 @@ class SigningTests(unittest.TestCase):
             self.assertFalse(list(Path("dist").glob("*.asc")))
             self.assertFalse(list(directory.glob("release-signing-*")))
             signing.verify_commit("HEAD")
+
+
+class BuildEnvironmentTests(unittest.TestCase):
+    def test_makeflags_separator_and_execution_flags(self):
+        for flags, expected in [
+            ("-- RELEASE_GPG_PASSPHRASE=secret", ""),
+            (" -- RELEASE_GPG_PASSPHRASE=secret", ""),
+            ("n -- RELEASE_GPG_PASSPHRASE=secret", "n"),
+            ("s -j2 --jobserver-auth=3,4 -- RELEASE_GPG_PASSPHRASE=secret",
+             "s -j2 --jobserver-auth=3,4"),
+            ("s --warn-undefined-variables", "s --warn-undefined-variables"),
+        ]:
+            with self.subTest(flags=flags), patch.dict(os.environ, {"MAKEFLAGS": flags}, clear=True):
+                self.assertEqual(signing.build_environment()["MAKEFLAGS"], expected)
 
 
 class DiagnosticTests(unittest.TestCase):

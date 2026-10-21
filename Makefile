@@ -127,12 +127,19 @@ release-tag: release-check-user
 _release-tag:
 	@set -eu; \
 	: "$${RELEASE_VERSION:?Set RELEASE_VERSION to the version to release}"; \
+	prepared=$$(git bundle list-heads release-source.bundle HEAD | cut -d ' ' -f1); \
+	if [ -z "$$prepared" ] || [ "$$(git rev-parse HEAD)" != "$$prepared" ]; then \
+		echo 'HEAD does not match the prepared release commit in release-source.bundle' >&2; exit 1; \
+	fi; \
+	if [ "$$(git show -s --format=%s "$$prepared")" != "Release v$$RELEASE_VERSION" ]; then \
+		echo 'Prepared release version does not match RELEASE_VERSION' >&2; exit 1; \
+	fi; \
+	python3 scripts/release/signing.py verify-commit "$$prepared"; \
 	tag="v$$RELEASE_VERSION"; \
 	if ! git show-ref --verify --quiet "refs/tags/$$tag"; then \
 		git tag -s "$$tag" -m "Release $$tag"; \
 	fi; \
-	python3 scripts/release/signing.py verify-tag "$$tag" "$$(git rev-parse HEAD)"; \
-	python3 scripts/release/signing.py verify-commit HEAD
+	python3 scripts/release/signing.py verify-tag "$$tag" "$$prepared"
 
 test-release-signing:
 	python3 -m unittest discover -s scripts/release -p 'test_signing.py' -v

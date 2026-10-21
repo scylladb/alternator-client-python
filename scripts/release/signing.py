@@ -69,7 +69,8 @@ def build_environment():
     # Recursive Make serializes command-line variable overrides after this
     # separator. Keep execution flags (e.g. -n), but never re-export credentials.
     if "MAKEFLAGS" in env:
-        env["MAKEFLAGS"] = env["MAKEFLAGS"].split(" -- ", 1)[0]
+        # Prefix a space so a separator at the start is recognized as well.
+        env["MAKEFLAGS"] = (" " + env["MAKEFLAGS"]).split(" -- ", 1)[0][1:]
     return env
 
 

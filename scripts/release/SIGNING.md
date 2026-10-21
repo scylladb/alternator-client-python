@@ -51,9 +51,11 @@ signing uses a separate session after the build succeeds. In Actions these are
 separate `release-commit`, `release-build`, and `release-sign` steps; only the signing
 steps receive signing secrets. These scopes prevent direct credential inheritance;
 they do not provide separate runners or protection against arbitrary same-user
-persistence. `release-tag` creates and verifies
-the signed tag at the current commit. These targets prepare local outputs; the
-workflow handles uploads and publication. Do not change or replace existing tags.
+persistence. `release-tag` requires `release-source.bundle` from preparation and
+checks that its advertised commit matches both the current commit and the requested
+release version before creating or accepting the signed tag. These targets prepare
+local outputs; the workflow handles uploads and publication. Do not change or replace
+existing tags.
 Version validation and prerelease normalization live in the `release-version`
 Make target; `VERSION_FILE` defaults to `alternator/_version.py`.
 
