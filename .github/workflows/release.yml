@@ -30,6 +30,13 @@ jobs:
       package-version: ${{ steps.version.outputs.package-version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+
+      - name: Require publisher release user
+        run: make release-check-user
+
       - name: Block release with open release blockers
         if: ${{ !inputs.dry_run }}
         env:
@@ -51,10 +58,6 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 0
-
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
@@ -65,8 +68,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          python .github/scripts/prepare_release.py "$RELEASE_VERSION" \
-            alternator/_version.py >> "$GITHUB_OUTPUT"
+          make --no-print-directory release-version >> "$GITHUB_OUTPUT"
 
       - name: Require main branch for a production release
         if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
@@ -139,51 +141,22 @@ jobs:
       - name: Run linters
         run: make lint
 
-      - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.GPG_PASSPHRASE }}
-          git_user_signingkey: true
-          git_commit_gpgsign: true
-
-      - name: Create release commit
+      - name: Prepare signed release commit
         id: release-commit
         env:
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          # Only the version file changes; main remains protected.
-          git checkout --detach "$GITHUB_SHA"
-          git add alternator/_version.py
-          git commit --allow-empty --only alternator/_version.py -m "Release v${RELEASE_VERSION}"
-          git verify-commit HEAD
-          git diff --exit-code HEAD
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          git bundle create release-source.bundle "${GITHUB_SHA}..HEAD" HEAD
+        run: make release-commit
 
-      - name: Build package
-        run: uvx --from build pyproject-build
+      - name: Build and check release artifacts
+        run: make release-build
 
-      - name: Check package
-        run: uvx twine check dist/*
-
-      - name: Sign artifacts with GPG
-        run: |
-          for file in dist/*; do
-            gpg --batch --yes --detach-sign --armor "$file"
-          done
-          echo "Created signatures:"
-          ls -la dist/*.asc
-
-      - name: Generate checksums
-        run: |
-          cd dist
-          sha256sum -- *.whl *.tar.gz > SHA256SUMS
-          cat SHA256SUMS
-
-      - name: Sign checksums with GPG
-        run: |
-          gpg --batch --yes --detach-sign --armor dist/SHA256SUMS
+      - name: Sign release artifacts and checksums
+        env:
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: make release-sign
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -228,26 +201,12 @@ jobs:
           test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
           git checkout --detach "$RELEASE_COMMIT"
 
-      - name: Import GPG key
-        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6
-        with:
-          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.GPG_PASSPHRASE }}
-          git_user_signingkey: true
-          git_commit_gpgsign: false
-          git_tag_gpgsign: true
-
       - name: Create and verify signed tag
         env:
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          # A retry can reuse this run's tag only when it still points to this commit.
-          if git show-ref --verify --quiet "refs/tags/v${RELEASE_VERSION}"; then
-            test "$(git rev-parse "v${RELEASE_VERSION}^{commit}")" = "$(git rev-parse HEAD)"
-          else
-            git tag -s "v${RELEASE_VERSION}" -m "Release v${RELEASE_VERSION}"
-          fi
-          git tag --verify "v${RELEASE_VERSION}"
+        run: make release-tag
 
       - name: Block release with open release blockers
         env:
@@ -283,6 +242,13 @@ jobs:
     permissions:
       id-token: write
     steps:
+      - name: Require publisher release user
+        run: |
+          if [ "${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}" != scylladb-publisher ]; then
+            echo "Release requires GitHub user scylladb-publisher." >&2
+            exit 1
+          fi
+
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -309,6 +275,13 @@ jobs:
       id-token: write
       issues: read
     steps:
+      - name: Require publisher release user
+        run: |
+          if [ "${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}" != scylladb-publisher ]; then
+            echo "Release requires GitHub user scylladb-publisher." >&2
+            exit 1
+          fi
+
       - name: Download artifacts
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -352,6 +325,13 @@ jobs:
       contents: write
       issues: read
     steps:
+      - name: Require publisher release user
+        run: |
+          if [ "${GITHUB_TRIGGERING_ACTOR:-${GITHUB_ACTOR:-}}" != scylladb-publisher ]; then
+            echo "Release requires GitHub user scylladb-publisher." >&2
+            exit 1
+          fi
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           fetch-depth: 0
@@ -390,7 +370,7 @@ jobs:
             printf 'The signed checksum file authenticates the checksums used above. To verify it:\n\n'
             printf '```bash\n'
             printf 'curl -fsSL https://github.com/scylladb-publisher.gpg | gpg --import\n'
-            printf 'gpg --fingerprint 71A6D22711CDB7C2446D21CFBF4BF97A8D4DF1AA\n'
+            printf 'gpg --fingerprint 2CCB493E76F3979F5968A0151E253E2DAAEDB096\n'
             printf 'gpg --verify SHA256SUMS.asc SHA256SUMS\n'
             printf '```\n'
           } > release-body.md
