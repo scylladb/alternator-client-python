@@ -14,6 +14,7 @@ CERT_CACHE_DIR := $(MAKEFILE_PATH)/.cert-cache
 CERT_DIR := $(MAKEFILE_PATH)/tests/scylla
 
 .PHONY: install verify build compile compile-test compile-demo test-unit test-integration test-integration-only test-demo test-demo-only test-all test lint lint-types typecheck lint-fix clean wait-for-alternator scylla-start scylla-stop scylla-kill scylla-rm docker-pull docker-cache-save docker-cache-load cert-cache-save cert-cache-load help
+.PHONY: release-version release-check-user release-prepare release-commit _release-commit release-build release-sign release-tag _release-tag test-release-signing
 
 # Default target
 help:
@@ -21,6 +22,10 @@ help:
 	@echo "  install          - Install package in development mode"
 	@echo "  verify           - Run lint, compile, unit tests, and package checks"
 	@echo "  build            - Build package artifacts and validate metadata"
+	@echo "  release-version  - Validate and set RELEASE_VERSION, emitting workflow outputs"
+	@echo "  release-prepare  - Create signed release commit, packages, and checksums (RELEASE_VERSION required)"
+	@echo "  release-tag      - Create and verify signed release tag (RELEASE_VERSION required)"
+	@echo "  test-release-signing - Test release signing with disposable keys"
 	@echo "  compile          - Compile package modules"
 	@echo "  compile-test     - Compile test modules"
 	@echo "  compile-demo     - Compile examples"
@@ -49,6 +54,88 @@ build:
 	rm -rf build/ dist/ *.egg-info/
 	uvx --from build pyproject-build
 	uvx twine check dist/*
+
+# Validate version input before changing the source file.
+release-version: release-check-user
+	@set -eu; \
+	version=$${RELEASE_VERSION:-}; \
+	file=$${VERSION_FILE:-alternator/_version.py}; \
+	invalid() { echo 'Expected X.Y.Z, X.Y.Z-rc.1, -alpha.1, -beta.1, or X.Y.Zrc1/a1/b1' >&2; exit 1; }; \
+	case "$$version" in ''|*[!0-9A-Za-z.-]*) invalid;; esac; \
+	number='(0|[1-9][0-9]*)'; \
+	printf '%s\n' "$$version" | grep -Eq "^$$number\.$$number\.$$number((-(alpha|beta|rc)\.|a|b|rc)$$number)?$$" || invalid; \
+	normalized=$$(printf '%s\n' "$$version" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/'); \
+	temp=$$(mktemp "$$file.XXXXXX"); \
+	trap 'rm -f "$$temp"' EXIT; \
+	sed 's/\r$$//' "$$file" > "$$temp"; \
+	count=$$(grep -c '^__version__ = "[^"]*"$$' "$$temp" || :); \
+	if [ "$$count" != 1 ]; then \
+		echo "Expected one __version__ assignment in $$file" >&2; exit 1; \
+	fi; \
+	sed -E "s/^__version__ = \"[^\"]*\"$$/__version__ = \"$$normalized\"/" "$$temp" > "$$file"; \
+	case "$$normalized" in *[a-z]*) prerelease=true;; *) prerelease=false;; esac; \
+	printf 'package-version=%s\nprerelease=%s\n' "$$normalized" "$$prerelease"
+
+# Require the publisher account for every release entrypoint.
+release-check-user:
+	@set -eu; \
+	if [ "$${GITHUB_ACTIONS:-}" = true ]; then \
+		user=$${GITHUB_TRIGGERING_ACTOR:-$${GITHUB_ACTOR:-}}; \
+	else \
+		if ! user=$$(gh api user --jq .login); then \
+			echo "Release requires GitHub user scylladb-publisher. Run gh auth login or gh auth switch." >&2; \
+			exit 1; \
+		fi; \
+	fi; \
+	if [ "$$user" != scylladb-publisher ]; then \
+		echo "Release requires GitHub user scylladb-publisher (current: $$user)." >&2; \
+		exit 1; \
+	fi
+
+release-prepare: release-check-user
+	+$(MAKE) release-commit
+	+$(MAKE) release-build
+	+$(MAKE) release-sign
+
+release-commit: release-version
+	+python3 scripts/release/signing.py exec $(MAKE) _release-commit
+
+_release-commit:
+	@set -eu; \
+	: "$${RELEASE_VERSION:?Set RELEASE_VERSION to the version to release}"; \
+	base=$${GITHUB_SHA:-$$(git rev-parse HEAD)}; \
+	git checkout --detach "$$base"; \
+	git add alternator/_version.py; \
+	git commit --allow-empty --only alternator/_version.py -m "Release v$$RELEASE_VERSION"; \
+	python3 scripts/release/signing.py verify-commit HEAD; \
+	git diff --exit-code HEAD; \
+	git bundle create release-source.bundle "$$base..HEAD" HEAD; \
+	if [ -n "$${GITHUB_OUTPUT:-}" ]; then \
+		printf 'sha=%s\n' "$$(git rev-parse HEAD)" >> "$$GITHUB_OUTPUT"; \
+	fi
+
+release-build: release-check-user
+	+python3 scripts/release/signing.py exec-build $(MAKE) build
+
+release-sign: release-check-user
+	cd dist && sha256sum -- *.whl *.tar.gz > SHA256SUMS
+	python3 scripts/release/signing.py exec python3 scripts/release/signing.py sign-files dist/*.whl dist/*.tar.gz dist/SHA256SUMS
+
+release-tag: release-check-user
+	+python3 scripts/release/signing.py exec $(MAKE) _release-tag
+
+_release-tag:
+	@set -eu; \
+	: "$${RELEASE_VERSION:?Set RELEASE_VERSION to the version to release}"; \
+	tag="v$$RELEASE_VERSION"; \
+	if ! git show-ref --verify --quiet "refs/tags/$$tag"; then \
+		git tag -s "$$tag" -m "Release $$tag"; \
+	fi; \
+	python3 scripts/release/signing.py verify-tag "$$tag" "$$(git rev-parse HEAD)"; \
+	python3 scripts/release/signing.py verify-commit HEAD
+
+test-release-signing:
+	python3 -m unittest discover -s scripts/release -p 'test_signing.py' -v
 
 compile:
 	uv run python -m compileall -q alternator/

@@ -14,13 +14,32 @@
 
 """Exercise version input handling used by the release workflow."""
 
+import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/prepare_release.py"
+ROOT = Path(__file__).resolve().parents[2]
+
+
+def prepare_version(
+    version_file: Path, requested: str
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["make", "--no-print-directory", "release-version"],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "RELEASE_VERSION": requested,
+            "VERSION_FILE": str(version_file),
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_TRIGGERING_ACTOR": "scylladb-publisher",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 @pytest.mark.parametrize(
@@ -36,21 +55,22 @@ SCRIPT = Path(__file__).resolve().parents[2] / ".github/scripts/prepare_release.
         ("2.1.0rc3", "2.1.0rc3", "true"),
     ],
 )
+@pytest.mark.parametrize("newline", ["\n", "\r\n", ""])
 def test_release_version_is_set_from_input(
-    tmp_path: Path, requested: str, normalized: str, prerelease: str
+    tmp_path: Path, requested: str, normalized: str, prerelease: str, newline: str
 ) -> None:
     version_file = tmp_path / "_version.py"
-    version_file.write_text('# Copyright ScyllaDB, Inc.\n__version__ = "1.0.0"\n')
-
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), requested, str(version_file)],
-        check=True,
-        capture_output=True,
-        text=True,
+    separator = newline or "\n"
+    version_file.write_bytes(
+        f'# Copyright ScyllaDB, Inc.{separator}__version__ = "1.0.0"{newline}'.encode()
     )
 
-    assert version_file.read_text() == (
-        f'# Copyright ScyllaDB, Inc.\n__version__ = "{normalized}"\n'
+    result = prepare_version(version_file, requested)
+    result.check_returncode()
+
+    trailing = "\n" if newline else ""
+    assert version_file.read_bytes() == (
+        f'# Copyright ScyllaDB, Inc.\n__version__ = "{normalized}"{trailing}'.encode()
     )
     assert result.stdout.splitlines() == [
         f"package-version={normalized}",
@@ -78,12 +98,7 @@ def test_invalid_version_does_not_modify_source(tmp_path: Path, requested: str) 
     original = '__version__ = "1.0.0"\n'
     version_file.write_text(original)
 
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), requested, str(version_file)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = prepare_version(version_file, requested)
 
     assert result.returncode != 0
     assert result.stdout == ""
@@ -95,12 +110,7 @@ def test_ambiguous_version_file_is_rejected(tmp_path: Path, original: str) -> No
     version_file = tmp_path / "_version.py"
     version_file.write_text(original)
 
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "2.0.2", str(version_file)],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    result = prepare_version(version_file, "2.0.2")
 
     assert result.returncode != 0
     assert result.stdout == ""

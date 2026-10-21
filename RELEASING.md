@@ -10,11 +10,13 @@ Python.
 2. PyPI trusted publishing must authorize this repository's release workflow.
    TestPyPI trusted publishing must also be configured before using the dry-run
    path.
-3. GPG signing is required by the workflow. Configure the
-   `GPG_PRIVATE_KEY` Actions secret and, when the key is protected, the
-   `GPG_PASSPHRASE` secret.
-4. Publish the matching public key and record its full fingerprint so release
-   signatures can be verified independently.
+3. GPG signing is required by the workflow. Configure `GPG_PRIVATE_KEY` with the
+   protected repository signing-subkey export and `GPG_PASSPHRASE` with its
+   nonempty single-line passphrase. Both Actions secrets are required; see
+   [GPG Signing Setup](#gpg-signing-setup).
+4. Publish the public certificate matching the pinned certification and signing
+   fingerprints in [scripts/release/SIGNING.md](scripts/release/SIGNING.md) so
+   release signatures can be verified independently.
 5. Enable **Settings → General → Releases → Enable release immutability** once.
    The workflow uploads every asset to a draft, then publishes it automatically.
    GitHub locks the release tag and assets when it is published. This setting
@@ -62,7 +64,9 @@ required. The workflow:
    change. This commit is a child of the selected `main` commit and is published
    through its signed release tag; it is not pushed to `main`.
 4. Builds the wheel and source archive from that release commit, validates their
-   metadata, and signs the artifacts and checksum manifest.
+   metadata in a separate step without signing secrets, then signs the artifacts
+   and checksum manifest in a new scoped session. The commit signing session has
+   already removed its temporary keyring before the build starts.
 5. Creates and verifies the signed version tag, then publishes the packages to PyPI.
 6. Generates GitHub release notes from the changes since the preceding release,
    including pull requests and contributors, and adds installation and
@@ -84,50 +88,34 @@ The verification commands below can also be used to inspect a published release.
 
 ## GPG Signing Setup
 
-### Generate a Key
+Use the repository-specific protected signing subkey documented in
+[scripts/release/SIGNING.md](scripts/release/SIGNING.md). That guide covers the
+pinned fingerprints, local Make targets, account requirements, and rotation.
+Keep the certification primary private key offline.
 
-Generate a dedicated release-signing key if the project does not already have
-one:
-
-```bash
-gpg --full-generate-key
-gpg --list-secret-keys --keyid-format LONG
-```
-
-Use a strong key, protect the private key appropriately, and retain a secure
-revocation certificate and backup. Record and review the full fingerprint, not
-only a short key ID.
-
-### Export the Private Key for GitHub Actions
+Export only the protected signing subkey for repository Actions secrets:
 
 ```bash
-gpg --armor --export-secret-keys FULL_FINGERPRINT > private-key.asc
+gpg --armor --export-secret-subkeys '445DBF7AC99EDE94850D1A621C6365BBFEB16995!' > signing-private.asc
 ```
-
-Add these repository Actions secrets under **Settings → Secrets and variables
-→ Actions**:
 
 | Secret | Required | Description |
 | --- | --- | --- |
-| `GPG_PRIVATE_KEY` | Yes | Complete ASCII-armored private key, including the begin/end markers |
-| `GPG_PASSPHRASE` | If protected | Passphrase for the exported private key |
+| `GPG_PRIVATE_KEY` | Yes | Complete ASCII-armored protected signing-subkey export |
+| `GPG_PASSPHRASE` | Yes | Nonempty single-line passphrase protecting that subkey |
 
-Securely delete the exported private-key file after configuring the secret.
-
-### Publish the Public Key
-
-```bash
-gpg --armor --export FULL_FINGERPRINT > public-key.asc
-gpg --keyserver keyserver.ubuntu.com --send-keys FULL_FINGERPRINT
-gpg --fingerprint FULL_FINGERPRINT
-```
-
-Publish the public key through another project-controlled channel as well, and
-ensure the documented fingerprint matches the workflow's signing key.
+Securely delete the exported file after configuring the secret. Never upload the
+full primary private-key backup to CI. Release targets automatically reject any
+GitHub user other than `scylladb-publisher`, locally and in Actions.
 
 ## Verify a Release
 
-The following examples verify 2.0.1. Change `VERSION` for a later release.
+The following examples verify 2.0.1. Change `VERSION` for a later release and use
+that release's signing certificate. Releases using the repository-specific key
+have certification fingerprint `2CCB493E76F3979F5968A0151E253E2DAAEDB096` and signing
+fingerprint `445DBF7AC99EDE94850D1A621C6365BBFEB16995` (see
+[scripts/release/SIGNING.md](scripts/release/SIGNING.md)). The old fingerprints
+below apply to historical releases only.
 
 ### Checksums
 
@@ -208,8 +196,9 @@ git tag --verify "v${VERSION}"
 
 ### GPG Signing Fails
 
-- Ensure `GPG_PRIVATE_KEY` contains the complete ASCII-armored private key.
-- Ensure `GPG_PASSPHRASE` matches the key when it is passphrase-protected.
+- Ensure `GPG_PRIVATE_KEY` contains only the complete ASCII-armored protected
+  signing-subkey export, without usable primary private material.
+- Ensure `GPG_PASSPHRASE` is nonempty and matches the protected signing subkey.
 - Check that the signing key is not expired or revoked.
 - Confirm the imported key has signing capability.
 

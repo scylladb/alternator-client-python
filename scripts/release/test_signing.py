@@ -1,0 +1,401 @@
+"""Exercise release signing with disposable protected keys and real Git objects."""
+
+from contextlib import contextmanager, redirect_stderr
+from io import StringIO
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest.mock import patch
+
+import signing
+
+ROOT = Path(__file__).resolve().parents[2]
+REPOSITORY_PRIMARY = signing.PRIMARY
+REPOSITORY_SIGNING = signing.SIGNING
+
+
+@unittest.skipUnless(shutil.which("gpg") and shutil.which("git"), "GnuPG and Git required")
+class SigningTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.fixture = tempfile.TemporaryDirectory(prefix="repo-signing-fixture-")
+        cls.directory = Path(cls.fixture.name)
+        cls.keyring = cls.directory / "gnupg"
+        cls.keyring.mkdir(mode=0o700)
+        cls.password = "test-only-release-passphrase"
+        def gpg(*args):
+            result = subprocess.run(
+                ["gpg", "--no-options", "--homedir", str(cls.keyring), "--batch",
+                 "--pinentry-mode", "loopback", "--passphrase-fd", "0", *args],
+                input=cls.password + "\n", capture_output=True, text=True, check=True, timeout=60,
+            )
+            return result.stdout
+        gpg("--quick-generate-key", "Release Test <release@example.invalid>", "rsa2048", "cert", "1d")
+        cls.primary = [line.split(":")[9] for line in
+                       gpg("--with-colons", "--list-keys").splitlines() if line.startswith("fpr:")][0]
+        gpg("--quick-add-key", cls.primary, "rsa2048", "sign", "1d")
+        cls.subkey = [line.split(":")[9] for line in
+                      gpg("--with-colons", "--list-keys").splitlines() if line.startswith("fpr:")][1]
+        cls.public = cls.directory / "public.asc"
+        cls.public.write_text(gpg("--armor", "--export", cls.primary))
+        cls.private = cls.directory / "subkey.asc"
+        cls.private.write_text(gpg("--armor", "--export-secret-subkeys", cls.primary))
+        cls.full = cls.directory / "full.asc"
+        cls.full.write_text(gpg("--armor", "--export-secret-keys", cls.primary))
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(["gpgconf", "--homedir", str(cls.keyring), "--kill", "gpg-agent"],
+                       capture_output=True, check=True, timeout=60)
+        cls.fixture.cleanup()
+
+    @contextmanager
+    def repository(self, full=False, password=None):
+        original = Path.cwd()
+        with tempfile.TemporaryDirectory(prefix="repo-signing-test-") as temp:
+            directory = Path(temp)
+            env = {key: value for key, value in os.environ.items()
+                   if not key.startswith(("GIT_", "GITHUB_", "RELEASE_", "MAKE"))}
+            env.update(RUNNER_TEMP=str(directory), GITHUB_ENV=str(directory / "github-env"),
+                       GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=str(directory / "gitconfig"),
+                       RELEASE_GPG_PRIVATE_KEY_FILE=str(self.full if full else self.private),
+                       RELEASE_GPG_PASSPHRASE=self.password if password is None else password)
+            Path(env["GIT_CONFIG_GLOBAL"]).write_text("")
+            with patch.dict(os.environ, env, clear=True), \
+                    patch.multiple(signing, PRIMARY=self.primary, SIGNING=self.subkey,
+                                   PUBLIC_KEY=self.public):
+                repo = directory / "source"
+                signing.run(["git", "init", "--quiet", str(repo)])
+                os.chdir(repo)
+                try:
+                    signing.run(["git", "-c", "user.name=Initial", "-c",
+                                 "user.email=initial@example.invalid", "-c", "commit.gpgsign=false",
+                                 "commit", "--quiet", "--allow-empty", "-m", "Initial"])
+                    yield directory
+                finally:
+                    os.chdir(original)
+
+    @contextmanager
+    def session(self):
+        with signing.signing_session() as env, patch.dict(os.environ, env, clear=True):
+            self.assertNotIn("RELEASE_GPG_PRIVATE_KEY", env)
+            self.assertNotIn("RELEASE_GPG_PRIVATE_KEY_FILE", env)
+            yield env
+
+    def release(self):
+        signing.run(["git", "commit", "--quiet", "--allow-empty", "-m", "Release"])
+        signing.run(["git", "tag", "-s", "-m", "Release 1.0", "v1.0.0"])
+
+    def test_repository_setup_failure_restores_working_directory(self):
+        original = Path.cwd()
+        real_run = signing.run
+        def fail_commit(command, env=None):
+            if "commit" in command:
+                raise signing.SigningError("fixture commit failed")
+            return real_run(command, env)
+        with patch.object(signing, "run", side_effect=fail_commit):
+            with self.assertRaisesRegex(signing.SigningError, "fixture commit failed"):
+                with self.repository():
+                    self.fail("Initial commit failure accepted")
+        self.assertEqual(Path.cwd(), original)
+        with self.repository():
+            self.assertTrue(Path(".git").is_dir())
+
+    def test_signed_commit_and_tag_verify_after_session(self):
+        with self.repository() as directory:
+            # Existing checkout settings must not override the session.
+            signing.run(["git", "config", "user.signingkey", "invalid-key"])
+            config = Path(".git/config").read_bytes()
+            with self.session():
+                self.release()
+            signing.verify_commit("HEAD")
+            signing.verify_tag("v1.0.0", signing.run(["git", "rev-parse", "HEAD"]).strip())
+            self.assertEqual(Path(".git/config").read_bytes(), config)
+            self.assertFalse(list(directory.glob("release-signing-*")))
+            self.assertFalse(Path(os.environ["GITHUB_ENV"]).exists())
+
+    def test_empty_passphrase_fails_before_configuration(self):
+        with self.repository(password="") as directory:
+            with self.assertRaisesRegex(signing.SigningError, "nonempty"), self.session():
+                self.fail("Empty passphrase accepted")
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_wrong_passphrase_fails_with_fresh_agent(self):
+        with self.repository(password="wrong-test-passphrase") as directory:
+            with self.assertRaises(signing.SigningError), self.session():
+                self.fail("Wrong passphrase accepted")
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_primary_secret_rejected(self):
+        with self.repository(full=True):
+            with self.assertRaisesRegex(signing.SigningError, "signing-private.asc"), self.session():
+                self.fail("Primary private key accepted")
+
+    def test_unsigned_commit_and_tag_rejected(self):
+        with self.repository():
+            with self.session():
+                signing.run(["git", "-c", "commit.gpgsign=false", "commit", "--quiet",
+                             "--allow-empty", "-m", "Unsigned"])
+                signing.run(["git", "-c", "tag.gpgSign=false", "tag", "-a", "-m",
+                             "Unsigned", "v1.0.0"])
+            with self.assertRaises(signing.SigningError):
+                signing.verify_commit("HEAD")
+            with self.assertRaises(signing.SigningError):
+                signing.verify_tag("v1.0.0")
+
+    def test_tag_at_unexpected_commit_rejected(self):
+        with self.repository():
+            with self.session():
+                self.release()
+                signing.run(["git", "commit", "--quiet", "--allow-empty", "-m", "Later"])
+            with self.assertRaisesRegex(signing.SigningError, "unexpected commit"):
+                signing.verify_tag("v1.0.0", signing.run(["git", "rev-parse", "HEAD"]).strip())
+
+    def test_batch_signing_reuse_and_tamper_rejection(self):
+        with self.repository(), self.session():
+            files = [Path("package.whl"), Path("package.tar.gz"), Path("SHA256SUMS")]
+            for artifact in files:
+                artifact.write_bytes(b"release package")
+            signing.sign_files(files)
+            signatures = [Path(str(artifact) + ".asc").read_bytes() for artifact in files]
+            signing.sign_files(files)
+            self.assertEqual([Path(str(artifact) + ".asc").read_bytes() for artifact in files], signatures)
+            files[0].write_bytes(b"changed package")
+            with self.assertRaises(signing.SigningError):
+                signing.sign_files(files)
+
+    def test_exec_cleans_up_after_command_failure(self):
+        with self.repository() as directory:
+            config = Path(".git/config").read_bytes()
+            with patch("sys.argv", ["signing.py", "exec", sys.executable, "-c", "raise SystemExit(7)"]):
+                self.assertEqual(signing.main(), 7)
+            self.assertEqual(Path(".git/config").read_bytes(), config)
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_exec_accepts_passphrase_file(self):
+        with self.repository() as directory:
+            password = directory / "passphrase"
+            password.write_text(self.password + "\n")
+            os.environ["RELEASE_GPG_PASSPHRASE_FILE"] = str(password)
+            del os.environ["RELEASE_GPG_PASSPHRASE"]
+            with patch("sys.argv", ["signing.py", "exec", "git", "commit", "--quiet",
+                                    "--allow-empty", "-m", "Signed from file credentials"]):
+                self.assertEqual(signing.main(), 0)
+            signing.verify_commit("HEAD")
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_cleanup_removes_files_even_when_agent_shutdown_fails(self):
+        with self.repository() as directory:
+            real_run = signing.run
+            def fail_shutdown(command, env=None):
+                real_run(command, env)
+                raise signing.SigningError("shutdown failed")
+            with self.assertRaisesRegex(signing.SigningError, "shutdown"), \
+                    patch.object(signing, "run", wraps=real_run) as command:
+                with self.session():
+                    command.side_effect = fail_shutdown
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_git_wrapper_reads_current_passphrase_after_agent_reset(self):
+        with self.repository(), self.session():
+            signing.run(["gpgconf", "--homedir", os.environ["GNUPGHOME"], "--kill", "gpg-agent"])
+            os.environ["RELEASE_GPG_PASSPHRASE"] = "incorrect-fixture-passphrase"
+            with self.assertRaises(signing.SigningError):
+                signing.run(["git", "commit", "--allow-empty", "-qm", "Must fail"])
+            os.environ["RELEASE_GPG_PASSPHRASE"] = self.password
+            signing.run(["git", "commit", "--allow-empty", "-qm", "Correct passphrase"])
+            signing.verify_commit("HEAD")
+
+    def test_other_signer_and_ambiguous_signatures_rejected(self):
+        valid = "[GNUPG:] VALIDSIG " + signing.SIGNING + " 2026-10-20 1 0 4 0 1 10 00 " + signing.PRIMARY
+        signing.verify_status(valid)
+        for status in [valid.replace(signing.SIGNING, "0" * 40),
+                       valid.replace(signing.PRIMARY, "0" * 40), valid + "\n" + valid]:
+            with self.assertRaises(signing.SigningError):
+                signing.verify_status(status)
+
+    @contextmanager
+    def make_repository(self):
+        with self.repository() as directory:
+            for name in ["Makefile", "scripts/release/signing.py"]:
+                target = Path(name)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text((ROOT / name).read_text())
+            helper = Path("scripts/release/signing.py")
+            helper.write_text(helper.read_text()
+                              .replace(REPOSITORY_PRIMARY, self.primary)
+                              .replace(REPOSITORY_SIGNING, self.subkey))
+            shutil.copyfile(self.public, "scripts/release/publisher.asc")
+            Path("alternator").mkdir()
+            Path("alternator/_version.py").write_text('__version__ = "0.0.0"\n')
+            # Stub package tooling; exercise real Make, Git, GPG, and checksum commands.
+            tools = directory / "bin"
+            tools.mkdir()
+            uvx = tools / "uvx"
+            uvx.write_text("#!/usr/bin/env python3\n" + "\n".join([
+                "import os, pathlib, sys",
+                "assert not any(k.startswith('RELEASE_GPG_') for k in os.environ)",
+                "assert 'GNUPGHOME' not in os.environ",
+                "assert not any(k.startswith(('GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_')) for k in os.environ)",
+                "assert 'GIT_CONFIG_COUNT' not in os.environ",
+                "assert not list(pathlib.Path(os.environ['RUNNER_TEMP']).glob('release-signing-*'))",
+                "assert pathlib.Path('alternator/_version.py').read_text() == '__version__ = \"1.0.0\"\\n'",
+                "with open(os.environ['BUILD_OBSERVATIONS'], 'a') as log: log.write(sys.argv[1] + '\\n')",
+                "if os.environ.get('FAIL_BUILD'): sys.exit(23)",
+                "if sys.argv[1] == '--from':",
+                "    pathlib.Path('dist').mkdir(exist_ok=True)",
+                "    pathlib.Path('dist/package.whl').write_text('package')",
+                "    pathlib.Path('dist/package.tar.gz').write_text('source')",
+            ]) + "\n")
+            uvx.chmod(0o700)
+            os.environ.update(PATH=str(tools) + os.pathsep + os.environ["PATH"],
+                              GITHUB_ACTIONS="true", GITHUB_ACTOR="scylladb-publisher",
+                              RELEASE_VERSION="1.0.0", GITHUB_OUTPUT=str(directory / "output"),
+                              BUILD_OBSERVATIONS=str(directory / "build-observations"))
+            # Supply all credential forms together: neither values nor file paths
+            # may survive into either package-tool subprocess.
+            password = directory / "passphrase"
+            password.write_text(self.password + "\n")
+            os.environ.update(RELEASE_GPG_PRIVATE_KEY=self.private.read_text(),
+                              RELEASE_GPG_PASSPHRASE_FILE=str(password))
+            signing.run(["git", "add", "."])
+            signing.run(["git", "-c", "user.name=Initial", "-c", "user.email=initial@example.invalid",
+                         "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "Fixture"])
+            yield directory
+
+    def test_make_release_targets(self):
+        with self.make_repository() as directory:
+            base = signing.run(["git", "rev-parse", "HEAD"]).strip()
+            signing.run(["make", "-n", "release-build"])
+            self.assertFalse(Path(os.environ["BUILD_OBSERVATIONS"]).exists())
+            signing.run(["make", "release-prepare",
+                         "RELEASE_GPG_PASSPHRASE=" + self.password])
+            self.assertIn("sha=" + signing.run(["git", "rev-parse", "HEAD"]).strip(),
+                          Path(os.environ["GITHUB_OUTPUT"]).read_text())
+            self.assertEqual(Path(os.environ["BUILD_OBSERVATIONS"]).read_text(), "--from\ntwine\n")
+            self.assertTrue(Path("release-source.bundle").is_file())
+            signing.run(["git", "bundle", "verify", "release-source.bundle"])
+            subprocess.run(["sha256sum", "--check", "SHA256SUMS"], cwd="dist", check=True,
+                           capture_output=True, timeout=60)
+            self.assertEqual(len(list(Path("dist").glob("*.asc"))), 3)
+            signing.verify_commit("HEAD")
+            signing.run(["make", "release-tag"])
+            signing.verify_tag("v1.0.0", signing.run(["git", "rev-parse", "HEAD"]).strip())
+            signing.run(["make", "release-tag"])
+            # An existing tag must never be reused for another commit.
+            signing.run(["git", "reset", "--hard", base])
+            result = subprocess.run(["make", "release-tag"], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Release tag points to an unexpected commit", result.stderr)
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_release_commit_validates_inputs_before_signing(self):
+        with self.make_repository() as directory:
+            gh = directory / "bin" / "gh"
+            gh.write_text('#!/bin/sh\nprintf "checked\\n" >> "$RELEASE_ACCOUNT_CHECKS"\n'
+                          'printf "scylladb-publisher\\n"\n')
+            gh.chmod(0o700)
+            checks = directory / "account-checks"
+            os.environ.update(GITHUB_ACTIONS="false", RELEASE_VERSION="invalid",
+                              RELEASE_ACCOUNT_CHECKS=str(checks))
+            result = subprocess.run(["make", "release-commit"], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Expected X.Y.Z", result.stderr)
+            self.assertNotIn("signing.py exec", result.stdout)
+            self.assertEqual(Path("alternator/_version.py").read_text(), '__version__ = "0.0.0"\n')
+            self.assertFalse(list(directory.glob("release-signing-*")))
+            self.assertEqual(checks.read_text(), "checked\n")
+
+            os.environ["RELEASE_VERSION"] = "1.0.0"
+            signing.run(["make", "release-commit"])
+            self.assertEqual(checks.read_text(), "checked\nchecked\n")
+            signing.verify_commit("HEAD")
+            self.assertFalse(list(directory.glob("release-signing-*")))
+
+    def test_failed_build_stops_before_artifact_signing(self):
+        with self.make_repository() as directory:
+            os.environ["FAIL_BUILD"] = "1"
+            result = subprocess.run(["make", "release-prepare"], capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(Path(os.environ["BUILD_OBSERVATIONS"]).read_text(), "--from\n")
+            self.assertNotIn("signing.py sign-files", result.stdout)
+            self.assertFalse(Path("dist/SHA256SUMS").exists())
+            self.assertFalse(list(Path("dist").glob("*.asc")))
+            self.assertFalse(list(directory.glob("release-signing-*")))
+            signing.verify_commit("HEAD")
+
+
+class DiagnosticTests(unittest.TestCase):
+    def test_failed_commands_identify_operations_without_unsafe_values(self):
+        sentinel = "DO-NOT-DISCLOSE"
+        result = subprocess.CompletedProcess([], 17, sentinel, sentinel)
+        with patch.object(subprocess, "run", return_value=result):
+            with self.assertRaisesRegex(signing.SigningError, r"Git verify-commit failed \(exit status 17\)") as error:
+                signing.run(["git", "verify-commit", sentinel])
+            self.assertNotIn(sentinel, str(error.exception))
+            with self.assertRaisesRegex(signing.SigningError, r"GPG key import failed \(exit status 17\)") as error:
+                signing.credential_gpg(["--import", sentinel], payload=sentinel,
+                                       env={"RELEASE_GPG_PASSPHRASE": sentinel})
+            self.assertNotIn(sentinel, str(error.exception))
+
+    def test_command_start_and_timeout_errors_withhold_payloads(self):
+        for failure, category in [(OSError("DO-NOT-DISCLOSE"), "OS error"),
+                                  (subprocess.TimeoutExpired("DO-NOT-DISCLOSE", 60,
+                                                             output="DO-NOT-DISCLOSE"), "timed out")]:
+            with self.subTest(category=category), patch.object(subprocess, "run", side_effect=failure):
+                with self.assertRaises(signing.SigningError) as error:
+                    signing.gpg("--verify", "DO-NOT-DISCLOSE")
+                self.assertIn("GPG signature verification", str(error.exception))
+                self.assertIn(category, str(error.exception))
+                self.assertNotIn("DO-NOT-DISCLOSE", str(error.exception))
+
+    def test_unexpected_failure_identifies_operation_and_safe_category(self):
+        for failure, category in [(OSError("DO-NOT-DISCLOSE"), "OS error"),
+                                  (RuntimeError("DO-NOT-DISCLOSE"), "internal error")]:
+            output = StringIO()
+            with patch("sys.argv", ["signing.py", "verify-commit", "HEAD"]), \
+                    patch.object(signing, "verify_commit", side_effect=failure), redirect_stderr(output):
+                self.assertEqual(signing.main(), 1)
+            self.assertIn("verify-commit failed (" + category + ")", output.getvalue())
+            self.assertNotIn("DO-NOT-DISCLOSE", output.getvalue())
+
+
+class ReleaseUserTests(unittest.TestCase):
+    def test_release_commands_automatically_reject_other_users(self):
+        for target in ["release-version", "release-prepare", "release-commit", "release-build", "release-sign", "release-tag"]:
+            with self.subTest(target=target):
+                result = subprocess.run(["make", target], cwd=ROOT, capture_output=True, text=True, timeout=60,
+                                        env={**os.environ, "GITHUB_ACTIONS": "true",
+                                             "GITHUB_ACTOR": "scylladb-publisher",
+                                             "GITHUB_TRIGGERING_ACTOR": "someone-else"})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("Release requires GitHub user scylladb-publisher", result.stderr)
+                self.assertNotIn("signing.py exec", result.stdout)
+
+    def test_local_release_uses_authenticated_gh_user(self):
+        with tempfile.TemporaryDirectory() as temp:
+            gh = Path(temp) / "gh"
+            gh.write_text('#!/bin/sh\nprintf "%s\\n" "$TEST_GH_USER"\n')
+            gh.chmod(0o700)
+            env = {**os.environ, "PATH": temp + os.pathsep + os.environ["PATH"],
+                   "GITHUB_ACTIONS": "false", "TEST_GH_USER": "someone-else"}
+            result = subprocess.run(["make", "release-prepare"], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("current: someone-else", result.stderr)
+            env["TEST_GH_USER"] = "scylladb-publisher"
+            subprocess.run(["make", "release-check-user"], cwd=ROOT, env=env, check=True,
+                           capture_output=True, timeout=60)
+            gh.write_text("#!/bin/sh\nexit 1\n")
+            result = subprocess.run(["make", "release-prepare"], cwd=ROOT, env=env,
+                                    capture_output=True, text=True, timeout=60)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Run gh auth login or gh auth switch", result.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()
