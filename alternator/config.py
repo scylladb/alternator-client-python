@@ -214,11 +214,18 @@ class HeaderOptimizationConfig:
     to reduce bandwidth. Authentication headers (Authorization,
     X-Amz-Date, X-Amz-Security-Token) are preserved when explicit
     static credentials are passed with ``auth=Auth.static_credentials(...)``.
+
+    ``skip_sdk_headers`` independently disables construction of AWS SDK
+    invocation/retry and Lambda recursion-detection headers, and SDK User-Agent
+    rebuilding. The configured Alternator User-Agent, signing and retry state
+    are retained. Leave it disabled if AWS diagnostic/trace headers are needed.
     """
 
     enabled: bool = False
     whitelist: frozenset[str] | None = None
     whitelist_callback: HeaderWhitelistCallback | None = None
+    # Independent of filtering: avoid constructing AWS diagnostic headers.
+    skip_sdk_headers: bool = False
 
 
 @dataclass(frozen=True)
@@ -581,8 +588,10 @@ class AlternatorConfigBuilder:
         self,
         whitelist: frozenset[str] | set[str] | None = None,
         whitelist_callback: HeaderWhitelistCallback | None = None,
+        *,
+        skip_sdk_headers: bool = False,
     ) -> AlternatorConfigBuilder:
-        """Enable header optimization (filtering).
+        """Enable header filtering and optionally skip SDK header construction.
 
         When enabled, non-essential HTTP headers are stripped from requests
         to reduce bandwidth. Authentication headers (Authorization,
@@ -593,6 +602,7 @@ class AlternatorConfigBuilder:
             enabled=True,
             whitelist=frozenset(whitelist) if whitelist is not None else None,
             whitelist_callback=whitelist_callback,
+            skip_sdk_headers=skip_sdk_headers,
         )
         return self
 

@@ -549,6 +549,32 @@ config = (
 The callback returns additional headers to keep. It cannot remove the required
 headers exposed in `context.required_headers`.
 
+Set `skip_sdk_headers=True` to avoid constructing AWS SDK diagnostic headers
+and rebuilding the SDK User-Agent. This is separate from filtering: it also
+works with `enabled=False` to preserve other headers.
+
+```python
+from alternator import Config, HeaderOptimizationConfig
+
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    header_optimization=HeaderOptimizationConfig(skip_sdk_headers=True),
+)
+```
+
+This opt-in applies to synchronous clients/resources and asynchronous clients.
+It omits `amz-sdk-invocation-id`, `amz-sdk-request`, and the SDK-generated
+`X-Amzn-Trace-Id` used for Lambda recursion detection. Leave it disabled when
+those AWS diagnostic or trace headers are needed. Signing, retries and their
+state, routing, compression, and the configured Alternator User-Agent remain
+active. Headers supplied by your own event handlers are still subject to any
+enabled whitelist filtering.
+
+For builder-based configuration, use
+`.with_header_optimization(skip_sdk_headers=True)` to enable both header
+filtering and this optimization.
+
 ## Error Handling
 
 ```python

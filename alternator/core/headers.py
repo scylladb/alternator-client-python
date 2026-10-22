@@ -20,6 +20,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, cast
 
 from botocore.awsrequest import AWSPreparedRequest
+from botocore.handlers import add_recursion_detection_header, add_retry_headers
 
 from alternator.config import (
     HeaderWhitelistCallback,
@@ -191,3 +192,24 @@ def create_user_agent_header_handler(user_agent: str | None) -> Callable[..., No
         request.headers["User-Agent"] = user_agent
 
     return set_user_agent
+
+
+def skip_sdk_header_hooks(client: object, user_agent: str | None) -> None:
+    """Avoid SDK diagnostic header construction on one Alternator client.
+
+    Both botocore and aiobotocore expose the same private User-Agent builder.
+    Keep its per-client replacement here, alongside the final wire UA handler.
+    Retry state (including invocation IDs) and the request signer stay intact.
+    """
+    sdk_client = cast(Any, client)
+    events = sdk_client.meta.events
+    creator = sdk_client._user_agent_creator
+    events.unregister("before-call", add_recursion_detection_header)
+    events.unregister("request-created", add_retry_headers)
+    events.unregister(
+        "request-created.dynamodb", creator.rebuild_and_replace_user_agent_handler
+    )
+    # Serialization also builds the SDK User-Agent before the removed hook.
+    # Alternator already owns the final wire value, so use that static value
+    # at both stages. None still removes the final header before send.
+    creator.to_string = lambda: user_agent or ""

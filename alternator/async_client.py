@@ -40,6 +40,7 @@ from alternator._http import (
 from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
+from alternator.core.headers import skip_sdk_header_hooks
 from alternator.core.key_affinity import (
     AffinityTarget,
     select_affinity_node,
@@ -434,6 +435,9 @@ async def _create_async_client_with_manager(
     client = await client_ctx.__aenter__()
 
     try:
+        if config.header_optimization.skip_sdk_headers:
+            skip_sdk_header_hooks(client, user_agent)
+
         # Set up partition key cache if affinity is enabled
         pk_cache: AsyncPartitionKeyCache | None = None
         if config.key_affinity.mode != KeyRouteAffinityMode.NONE:
