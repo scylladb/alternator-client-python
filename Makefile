@@ -52,8 +52,8 @@ verify: lint compile compile-test compile-demo test-unit build
 
 build:
 	rm -rf build/ dist/ *.egg-info/
-	uvx --from build pyproject-build
-	uvx twine check dist/*
+	uvx --from build==1.3.0 pyproject-build
+	uvx --from twine==6.2.0 twine check dist/*
 
 # Validate version input before changing the source file.
 release-version: release-check-user
@@ -76,16 +76,14 @@ release-version: release-check-user
 	case "$$normalized" in *[a-z]*) prerelease=true;; *) prerelease=false;; esac; \
 	printf 'package-version=%s\nprerelease=%s\n' "$$normalized" "$$prerelease"
 
-# Require the publisher account for every release entrypoint.
+# Actions operators are authorized by the protected release environment.
+# The authenticated publisher account restriction applies only to local releases.
 release-check-user:
 	@set -eu; \
-	if [ "$${GITHUB_ACTIONS:-}" = true ]; then \
-		user=$${GITHUB_TRIGGERING_ACTOR:-$${GITHUB_ACTOR:-}}; \
-	else \
-		if ! user=$$(gh api user --jq .login); then \
-			echo "Release requires GitHub user scylladb-publisher. Run gh auth login or gh auth switch." >&2; \
-			exit 1; \
-		fi; \
+	if [ "$${GITHUB_ACTIONS:-}" = true ]; then exit 0; fi; \
+	if ! user=$$(gh api user --jq .login); then \
+		echo "Release requires GitHub user scylladb-publisher. Run gh auth login or gh auth switch." >&2; \
+		exit 1; \
 	fi; \
 	if [ "$$user" != scylladb-publisher ]; then \
 		echo "Release requires GitHub user scylladb-publisher (current: $$user)." >&2; \
@@ -97,17 +95,20 @@ release-prepare: release-check-user
 	+$(MAKE) release-build
 	+$(MAKE) release-sign
 
-release-commit: release-version
+release-commit: release-check-user
+	@test -n "$${RELEASE_BASE_COMMIT:-}" || { echo "Export RELEASE_BASE_COMMIT before preparation" >&2; exit 1; }
+	+$(MAKE) release-version
 	+python3 scripts/release/signing.py exec $(MAKE) _release-commit
 
-_release-commit:
+_release-commit: release-check-user
 	@set -eu; \
 	: "$${RELEASE_VERSION:?Set RELEASE_VERSION to the version to release}"; \
-	base=$${GITHUB_SHA:-$$(git rev-parse HEAD)}; \
+	base=$${RELEASE_BASE_COMMIT:?Export RELEASE_BASE_COMMIT before preparation}; \
+	test "$$(git rev-parse HEAD)" = "$$base"; \
 	git checkout --detach "$$base"; \
 	git add alternator/_version.py; \
 	git commit --allow-empty --only alternator/_version.py -m "Release v$$RELEASE_VERSION"; \
-	python3 scripts/release/signing.py verify-commit HEAD; \
+	python3 scripts/release/signing.py verify-prepared; \
 	git diff --exit-code HEAD; \
 	git bundle create release-source.bundle "$$base..HEAD" HEAD; \
 	if [ -n "$${GITHUB_OUTPUT:-}" ]; then \
@@ -118,13 +119,16 @@ release-build: release-check-user
 	+python3 scripts/release/signing.py exec-build $(MAKE) build
 
 release-sign: release-check-user
+	python3 scripts/release/signing.py verify-prepared
 	cd dist && sha256sum -- *.whl *.tar.gz > SHA256SUMS
 	python3 scripts/release/signing.py exec python3 scripts/release/signing.py sign-files dist/*.whl dist/*.tar.gz dist/SHA256SUMS
 
 release-tag: release-check-user
+	python3 scripts/release/signing.py verify-prepared
 	+python3 scripts/release/signing.py exec $(MAKE) _release-tag
 
-_release-tag:
+_release-tag: release-check-user
+	python3 scripts/release/signing.py verify-prepared
 	@set -eu; \
 	: "$${RELEASE_VERSION:?Set RELEASE_VERSION to the version to release}"; \
 	prepared=$$(git bundle list-heads release-source.bundle HEAD | cut -d ' ' -f1); \
@@ -142,7 +146,7 @@ _release-tag:
 	python3 scripts/release/signing.py verify-tag "$$tag" "$$prepared"
 
 test-release-signing:
-	python3 -m unittest discover -s scripts/release -p 'test_signing.py' -v
+	python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
 
 compile:
 	uv run python -m compileall -q alternator/
