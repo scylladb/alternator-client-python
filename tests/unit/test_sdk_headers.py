@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Wire contracts for optional SDK diagnostic header construction."""
+"""Wire contracts for removing redundant SDK header construction."""
 
 from __future__ import annotations
 
@@ -21,7 +21,6 @@ import importlib
 import io
 import json
 from collections.abc import Callable, Iterator
-from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 from urllib.parse import urlsplit
@@ -32,7 +31,6 @@ from botocore.awsrequest import AWSPreparedRequest, AWSRequest, AWSResponse
 from botocore.credentials import Credentials
 
 from alternator import (
-    AlternatorConfigBuilder,
     Auth,
     CompressionAlgorithm,
     Config,
@@ -63,7 +61,6 @@ class _AsyncResponse(AWSResponse):
 
 
 def _config(
-    skip: bool | None,
     user_agent: str | Callable[[str], str] | None = "orders-service/1.0",
     *,
     filtering: bool = False,
@@ -72,8 +69,6 @@ def _config(
         enabled=filtering,
         whitelist=frozenset({"X-Custom"}),
     )
-    if skip is not None:
-        headers = replace(headers, skip_sdk_headers=skip)
     return Config(
         seed_hosts=["127.0.0.1", "127.0.0.2"],
         port=9999,
@@ -117,9 +112,7 @@ def _check_signature(request: AWSPreparedRequest) -> None:
 def _capture(
     client: object,
     *,
-    skip: bool,
     signed: bool,
-    filtering: bool = False,
     asynchronous: bool = False,
 ) -> tuple[list[AWSPreparedRequest], list[dict[str, Any]]]:
     """Serve a retry then a compressed success at the real SDK send boundary."""
@@ -142,14 +135,9 @@ def _capture(
         assert headers["content-encoding"] == "gzip"
         assert headers["accept-encoding"] == "gzip"
         assert headers["x-custom"] == "kept"
-        if skip or filtering:
-            assert "amz-sdk-invocation-id" not in headers
-            assert "amz-sdk-request" not in headers
-            assert "x-amzn-trace-id" not in headers
-        else:
-            assert headers["amz-sdk-invocation-id"]
-            assert f"attempt={len(requests)}" in headers["amz-sdk-request"]
-            assert headers["x-amzn-trace-id"] == "Root=test"
+        assert "amz-sdk-invocation-id" not in headers
+        assert "amz-sdk-request" not in headers
+        assert "x-amzn-trace-id" not in headers
         if signed:
             assert headers["x-amz-security-token"] == "token"
             _check_signature(request)
@@ -195,13 +183,11 @@ def _capture(
     return requests, contexts
 
 
-@pytest.mark.parametrize("skip", [None, False, True])
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("resource", [False, True])
 @pytest.mark.parametrize("filtering", [False, True])
 def test_sync_factories_preserve_signing_retries_and_compression(
     monkeypatch: pytest.MonkeyPatch,
-    skip: bool | None,
     signed: bool,
     resource: bool,
     filtering: bool,
@@ -214,14 +200,12 @@ def test_sync_factories_preserve_signing_retries_and_compression(
     monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "function")
     monkeypatch.setenv("_X_AMZN_TRACE_ID", "Root=test")
     owner: Any = (create_resource if resource else create_client)(
-        _config(skip, filtering=filtering),
+        _config(filtering=filtering),
         auth=Auth.static_credentials("access", "secret", "token") if signed else None,
     )
     client = owner.meta.client if resource else owner
     try:
-        requests, contexts = _capture(
-            client, skip=skip is not False, signed=signed, filtering=filtering
-        )
+        requests, contexts = _capture(client, signed=signed)
         result = client.describe_table(TableName=TABLE_NAME)
         assert result["Table"]["TableName"] == TABLE_NAME
         assert result["ResponseMetadata"]["RequestId"] == "request-id"
@@ -237,11 +221,10 @@ def test_sync_factories_preserve_signing_retries_and_compression(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("skip", [None, False, True])
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("filtering", [False, True])
 async def test_async_factory_preserves_signing_retries_and_compression(
-    monkeypatch: pytest.MonkeyPatch, skip: bool | None, signed: bool, filtering: bool
+    monkeypatch: pytest.MonkeyPatch, signed: bool, filtering: bool
 ) -> None:
     monkeypatch.setattr(
         importlib.import_module("alternator.async_client"),
@@ -251,15 +234,13 @@ async def test_async_factory_preserves_signing_retries_and_compression(
     monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "function")
     monkeypatch.setenv("_X_AMZN_TRACE_ID", "Root=test")
     client = await create_async_client(
-        _config(skip, filtering=filtering),
+        _config(filtering=filtering),
         auth=Auth.static_credentials("access", "secret", "token") if signed else None,
     )
     try:
         requests, contexts = _capture(
             client,
-            skip=skip is not False,
             signed=signed,
-            filtering=filtering,
             asynchronous=True,
         )
         result = await client.describe_table(TableName=TABLE_NAME)
@@ -273,21 +254,6 @@ async def test_async_factory_preserves_signing_retries_and_compression(
         assert contexts[0]["invocation-id"] == contexts[1]["invocation-id"]
     finally:
         await close_async_client(client)
-
-
-@pytest.mark.parametrize("skip", [None, False, True])
-def test_config_defaults_and_builder(skip: bool | None) -> None:
-    config = Config(seed_hosts=["localhost"], port=8000)
-    assert config.header_optimization.skip_sdk_headers is True
-    assert config.header_optimization.enabled is False
-    builder = AlternatorConfigBuilder().with_seeds("localhost")
-    if skip is None:
-        builder.with_header_optimization()
-    else:
-        builder.with_header_optimization(skip_sdk_headers=skip)
-    config = builder.build()
-    assert config.header_optimization.enabled is True
-    assert config.header_optimization.skip_sdk_headers is (skip is not False)
 
 
 class _Captured(Exception):
@@ -310,9 +276,7 @@ def test_sync_skip_avoids_both_ua_builds_and_keeps_configured_value(
         "create_sync_http_fetcher",
         lambda *_args, **_kwargs: lambda _: ["127.0.0.1"],
     )
-    owner: Any = (create_resource if resource else create_client)(
-        _config(True, user_agent)
-    )
+    owner: Any = (create_resource if resource else create_client)(_config(user_agent))
     client = owner.meta.client if resource else owner
     seen = []
 
@@ -353,7 +317,7 @@ async def test_async_skip_avoids_both_ua_builds_and_keeps_configured_value(
         "create_async_http_fetcher",
         lambda *_args, **_kwargs: AsyncMock(return_value=["127.0.0.1"]),
     )
-    client = await create_async_client(_config(True, user_agent))
+    client = await create_async_client(_config(user_agent))
     seen = []
 
     def expensive_ua(self: object) -> str:
@@ -389,7 +353,7 @@ def test_skip_is_client_local_and_preserves_custom_trace_headers(
         "create_sync_http_fetcher",
         lambda *_args, **_kwargs: lambda _: ["127.0.0.1"],
     )
-    optimized = create_client(_config(True))
+    optimized = create_client(_config())
     plain = boto3.client(
         "dynamodb",
         endpoint_url="http://localhost:1",

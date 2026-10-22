@@ -255,8 +255,7 @@ def _create_client_with_manager(
         **boto_kwargs,
     )
 
-    if config.header_optimization.skip_sdk_headers:
-        skip_sdk_header_hooks(client, user_agent)
+    skip_sdk_header_hooks(client, user_agent)
 
     # Register all handlers
     _register_alternator_handlers(
@@ -445,8 +444,7 @@ def _create_resource_with_manager(
         **boto_kwargs,
     )
 
-    if config.header_optimization.skip_sdk_headers:
-        skip_sdk_header_hooks(resource.meta.client, user_agent)
+    skip_sdk_header_hooks(resource.meta.client, user_agent)
 
     # Register all handlers
     _register_alternator_handlers(

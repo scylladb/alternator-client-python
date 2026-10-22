@@ -435,8 +435,7 @@ async def _create_async_client_with_manager(
     client = await client_ctx.__aenter__()
 
     try:
-        if config.header_optimization.skip_sdk_headers:
-            skip_sdk_header_hooks(client, user_agent)
+        skip_sdk_header_hooks(client, user_agent)
 
         # Set up partition key cache if affinity is enabled
         pk_cache: AsyncPartitionKeyCache | None = None
