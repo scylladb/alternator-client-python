@@ -88,6 +88,7 @@ Notes
 """
 
 from alternator._version import __version__
+from alternator.backoff import Backoff, ExponentialBackoff
 from alternator.client import (
     AlternatorClient,
     AlternatorResource,
@@ -150,6 +151,9 @@ __all__ = [
     "AsyncAlternatorClient",
     "close_async_client",
     "create_async_client",
+    # Backoff policies
+    "Backoff",
+    "ExponentialBackoff",
     # Config
     "Auth",
     "Config",
