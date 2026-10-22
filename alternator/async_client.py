@@ -43,6 +43,7 @@ from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.headers import skip_sdk_header_hooks
 from alternator.core.key_affinity import (
     AffinityTarget,
+    _PartitionKeyDiscoveryBackoff,
     select_affinity_node,
 )
 from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
@@ -89,6 +90,7 @@ class AsyncPartitionKeyCache:
         """
         self._client = client
         self._cache: dict[str, str] = {}
+        self._backoff = _PartitionKeyDiscoveryBackoff()
         self._pending: dict[str, asyncio.Event] = {}
         self._errors: dict[str, Exception] = {}
         self._background_tasks: dict[str, asyncio.Task[str | None]] = {}
@@ -96,10 +98,13 @@ class AsyncPartitionKeyCache:
         self._lock = asyncio.Lock()
 
     def get_cached_pk_name(self, table_name: str) -> str | None:
-        """Return cached metadata and coalesce background discovery on a miss."""
+        """Return cached metadata and coalesce background discovery when eligible."""
         pk_name = self._cache.get(table_name)
         if pk_name is not None or self._closed:
             return pk_name
+
+        if not self._backoff.ready(table_name):
+            return None
 
         if table_name not in self._background_tasks:
             try:
@@ -130,6 +135,7 @@ class AsyncPartitionKeyCache:
 
         Uses a pending-state pattern to avoid duplicate DescribeTable calls
         for concurrent requests to the same table.
+        Failed discovery returns None during the table's failure cooldown.
 
         Args:
             table_name: Name of the DynamoDB table
@@ -156,6 +162,8 @@ class AsyncPartitionKeyCache:
             if table_name in self._pending:
                 event = self._pending[table_name]
             else:
+                if not self._backoff.ready(table_name):
+                    return None
                 # We are the first - create event and mark for fetch
                 event = asyncio.Event()
                 self._pending[table_name] = event
@@ -168,6 +176,9 @@ class AsyncPartitionKeyCache:
                 async with self._lock:
                     if pk_name and not self._closed:
                         self._cache[table_name] = pk_name
+                        self._backoff.reset(table_name)
+                    elif not self._closed and table_name not in self._cache:
+                        self._backoff.fail(table_name)
                     self._pending.pop(table_name, None)
                     self._errors.pop(table_name, None)
             except asyncio.CancelledError:
@@ -179,6 +190,8 @@ class AsyncPartitionKeyCache:
                 async with self._lock:
                     self._pending.pop(table_name, None)
                     self._errors[table_name] = exc
+                    if not self._closed and table_name not in self._cache:
+                        self._backoff.fail(table_name)
                 logger.warning(
                     "Failed to fetch partition key for table %s: %s",
                     table_name,
@@ -257,6 +270,7 @@ class AsyncPartitionKeyCache:
         """Clear the cache."""
         async with self._lock:
             self._cache.clear()
+            self._backoff.clear()
 
     async def close(self) -> None:
         """Cancel client-owned background metadata discovery."""
@@ -290,6 +304,8 @@ class AsyncPartitionKeyCache:
         """
         if not self._closed:
             self._cache.update(table_pk_map)
+            for table_name in table_pk_map:
+                self._backoff.reset(table_name)
 
 
 def _create_async_affinity_node_computer(

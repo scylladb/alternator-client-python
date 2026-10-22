@@ -1660,6 +1660,109 @@ class TestAffinitySelector:
 class TestPartitionKeyCache:
     """Tests for PartitionKeyCache class."""
 
+    @pytest.mark.parametrize("raises", [False, True])
+    def test_failed_discovery_backoff_grows_from_completion_and_is_capped(
+        self, monkeypatch: pytest.MonkeyPatch, raises: bool
+    ) -> None:
+        """Repeated misses cannot retry before the per-table cooldown expires."""
+        clock = [100.0]
+        monkeypatch.setattr("alternator.core.key_affinity.monotonic", lambda: clock[0])
+        failing = True
+
+        def describe_table(*, TableName: str) -> dict[str, Any]:
+            clock[0] += 5.0  # Include lookup latency before starting the cooldown.
+            if failing:
+                if raises:
+                    raise RuntimeError("Access denied")
+                return {"Table": {"KeySchema": []}}
+            return {
+                "Table": {"KeySchema": [{"KeyType": "HASH", "AttributeName": "pk"}]}
+            }
+
+        client = MagicMock()
+        client.describe_table.side_effect = describe_table
+        cache = PartitionKeyCache(client)
+        try:
+            assert cache.get_pk_name("table") is None
+            calls = 1
+            for delay in (1, 2, 4, 8, 16, 32, 60, 60):
+                deadline = clock[0] + delay
+                for _ in range(10):
+                    assert cache.get_cached_pk_name("table") is None
+                    assert cache.get_pk_name("table") is None
+                clock[0] = deadline - 0.001
+                assert cache.get_pk_name("table") is None
+                assert client.describe_table.call_count == calls
+
+                clock[0] = deadline
+                assert cache.get_pk_name("table") is None
+                calls += 1
+                assert client.describe_table.call_count == calls
+
+            failing = False
+            clock[0] += 60
+            assert cache.get_pk_name("table") == "pk"
+            clock[0] += 1000
+            assert cache.get_cached_pk_name("table") == "pk"
+            assert client.describe_table.call_count == calls + 1
+        finally:
+            cache.close()
+
+    def test_background_failure_cools_down_then_recovers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The routing path retries in the background only after the cooldown."""
+        clock = [0.0]
+        monkeypatch.setattr("alternator.core.key_affinity.monotonic", lambda: clock[0])
+        client = MagicMock()
+        client.describe_table.return_value = {}
+        cache = PartitionKeyCache(client)
+        try:
+            assert cache.get_cached_pk_name("table") is None
+            assert cache.get_pk_name("table") is None
+            for _ in range(10):
+                assert cache.get_cached_pk_name("table") is None
+            client.describe_table.assert_called_once_with(TableName="table")
+
+            client.describe_table.return_value = {
+                "Table": {"KeySchema": [{"KeyType": "HASH", "AttributeName": "pk"}]}
+            }
+            clock[0] = 1.0
+            assert cache.get_cached_pk_name("table") is None
+            assert _wait_until(lambda: cache.get_cached_pk_name("table") == "pk")
+            assert client.describe_table.call_count == 2
+        finally:
+            cache.close()
+
+    def test_failure_is_per_table_and_explicit_metadata_resets_cooldown(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Other tables, preloading and explicit clearing remain usable."""
+        monkeypatch.setattr("alternator.core.key_affinity.monotonic", lambda: 0.0)
+        client = MagicMock()
+        client.describe_table.side_effect = [
+            {},
+            {
+                "Table": {
+                    "KeySchema": [{"KeyType": "HASH", "AttributeName": "other_pk"}]
+                }
+            },
+            {"Table": {"KeySchema": [{"KeyType": "HASH", "AttributeName": "new_pk"}]}},
+        ]
+        cache = PartitionKeyCache(client)
+        try:
+            assert cache.get_pk_name("failed") is None
+            assert cache.get_pk_name("other") == "other_pk"
+            cache.preload({"failed": "preloaded_pk"})
+            assert cache.get_pk_name("failed") == "preloaded_pk"
+            assert client.describe_table.call_count == 2
+
+            cache.clear()
+            assert cache.get_pk_name("failed") == "new_pk"
+            assert client.describe_table.call_count == 3
+        finally:
+            cache.close()
+
     def test_blocking_lookup_discovers_on_first_call(self) -> None:
         """Diagnostic lookups preserve first-call synchronous discovery."""
         mock_client = MagicMock()
