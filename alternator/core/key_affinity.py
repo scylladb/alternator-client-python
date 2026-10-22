@@ -27,6 +27,7 @@ import weakref
 from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from time import monotonic
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
@@ -539,6 +540,28 @@ def _shutdown_partition_key_worker(worker: _PartitionKeyDiscoveryWorker) -> None
         worker.shutdown()
 
 
+class _PartitionKeyDiscoveryBackoff:
+    """Double per-table cooldowns from 1s to 60s; callers synchronize access."""
+
+    def __init__(self) -> None:
+        self._failures: dict[str, tuple[float, float]] = {}
+
+    def ready(self, table_name: str) -> bool:
+        failure = self._failures.get(table_name)
+        return failure is None or monotonic() >= failure[1]
+
+    def fail(self, table_name: str) -> None:
+        previous = self._failures.get(table_name)
+        delay = min(previous[0] * 2, 60.0) if previous else 1.0
+        self._failures[table_name] = (delay, monotonic() + delay)
+
+    def reset(self, table_name: str) -> None:
+        self._failures.pop(table_name, None)
+
+    def clear(self) -> None:
+        self._failures.clear()
+
+
 class PartitionKeyCache:
     """Thread-safe cache with non-blocking probes for request routing."""
 
@@ -552,6 +575,7 @@ class PartitionKeyCache:
         """Initialize background discovery using the supplied boto3 client."""
         self._client = client
         self._cache: dict[str, str] = {}
+        self._backoff = _PartitionKeyDiscoveryBackoff()
         self._pending: dict[str, threading.Event] = {}
         self._closed = False
         self._lock = threading.Lock()
@@ -599,6 +623,9 @@ class PartitionKeyCache:
             if event is not None:
                 return (None, event, False)
 
+            if not self._backoff.ready(table_name):
+                return (None, None, False)
+
             event = threading.Event()
             self._pending[table_name] = event
             if schedule_in_background:
@@ -622,7 +649,7 @@ class PartitionKeyCache:
         return (None, event, owns_discovery)
 
     def get_cached_pk_name(self, table_name: str) -> str | None:
-        """Return cached metadata, scheduling a background lookup on a miss."""
+        """Return cached metadata, scheduling a background lookup when eligible."""
         pk_name, _, _ = self._lookup_or_schedule(
             table_name,
             schedule_in_background=True,
@@ -632,7 +659,7 @@ class PartitionKeyCache:
         return pk_name
 
     def get_pk_name(self, table_name: str) -> str | None:
-        """Return metadata, waiting for coalesced discovery on a cache miss."""
+        """Return metadata, waiting for discovery unless failure cooldown is active."""
         pk_name, event, owns_discovery = self._lookup_or_schedule(
             table_name,
             schedule_in_background=False,
@@ -669,6 +696,9 @@ class PartitionKeyCache:
                 if not self._closed and pk_name:
                     # Explicitly preloaded metadata wins a race with discovery.
                     self._cache.setdefault(table_name, pk_name)
+                    self._backoff.reset(table_name)
+                elif not self._closed and table_name not in self._cache:
+                    self._backoff.fail(table_name)
             if event is not None:
                 event.set()
 
@@ -727,6 +757,7 @@ class PartitionKeyCache:
         """Clear the cache."""
         with self._lock:
             self._cache.clear()
+            self._backoff.clear()
 
     def preload(self, table_pk_map: dict[str, str]) -> None:
         """
@@ -738,6 +769,8 @@ class PartitionKeyCache:
         with self._lock:
             if not self._closed:
                 self._cache.update(table_pk_map)
+                for table_name in table_pk_map:
+                    self._backoff.reset(table_name)
 
     def close(self) -> None:
         """Stop background discovery without waiting indefinitely."""
