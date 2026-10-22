@@ -33,6 +33,7 @@ from alternator._http import create_ssl_context, create_sync_http_fetcher
 from alternator.config import Config, KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
+from alternator.core.headers import skip_sdk_header_hooks
 from alternator.core.key_affinity import (
     AffinityTarget,
     PartitionKeyCache,
@@ -254,6 +255,8 @@ def _create_client_with_manager(
         **boto_kwargs,
     )
 
+    skip_sdk_header_hooks(client, user_agent)
+
     # Register all handlers
     _register_alternator_handlers(
         client.meta.events,
@@ -440,6 +443,8 @@ def _create_resource_with_manager(
         config=boto_config,
         **boto_kwargs,
     )
+
+    skip_sdk_header_hooks(resource.meta.client, user_agent)
 
     # Register all handlers
     _register_alternator_handlers(

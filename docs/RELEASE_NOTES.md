@@ -128,6 +128,10 @@ security vulnerabilities in older releases.
 - Added control over the final wire `User-Agent`. The default is
   `alternator-client-python/<version>`; a string replaces it, a callback can
   extend it, and `None` omits it.
+- SDK invocation/retry and Lambda recursion-detection headers are no longer
+  constructed, and SDK User-Agent rebuilding is removed. Whitelist filtering
+  remains opt-in; signing, retry state, and the configured Alternator User-Agent
+  are preserved.
 - Expanded request compression with a configurable size threshold and gzip
   level, and added callback-computed header whitelist entries. Request
   compression remains opt-in and requires ScyllaDB 2026.1.0 or later.

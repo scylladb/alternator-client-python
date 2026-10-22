@@ -582,7 +582,7 @@ class AlternatorConfigBuilder:
         whitelist: frozenset[str] | set[str] | None = None,
         whitelist_callback: HeaderWhitelistCallback | None = None,
     ) -> AlternatorConfigBuilder:
-        """Enable header optimization (filtering).
+        """Enable header filtering.
 
         When enabled, non-essential HTTP headers are stripped from requests
         to reduce bandwidth. Authentication headers (Authorization,

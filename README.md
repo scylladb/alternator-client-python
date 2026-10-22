@@ -521,7 +521,7 @@ builder chains.
 
 ## Header Optimization
 
-Header optimization remains opt-in. Required protocol, compression, and auth
+Header whitelist filtering remains opt-in. Required protocol, compression, and auth
 headers are preserved automatically. Use `whitelist` for static additions and
 `whitelist_callback` when the allowed headers depend on configuration or auth
 state:
@@ -548,6 +548,15 @@ config = (
 
 The callback returns additional headers to keep. It cannot remove the required
 headers exposed in `context.required_headers`.
+
+Alternator always avoids constructing AWS SDK diagnostic headers and rebuilding
+the SDK User-Agent for synchronous clients/resources and asynchronous clients.
+This is independent of whitelist filtering, which remains disabled by default.
+It omits `amz-sdk-invocation-id`, `amz-sdk-request`, and the SDK-generated
+`X-Amzn-Trace-Id` used for Lambda recursion detection. Signing, retries and their
+state, routing, compression, and the configured Alternator User-Agent remain
+active. Headers supplied by your own event handlers are still subject to any
+enabled whitelist filtering.
 
 ## Error Handling
 
