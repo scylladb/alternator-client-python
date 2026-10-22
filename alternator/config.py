@@ -218,14 +218,15 @@ class HeaderOptimizationConfig:
     ``skip_sdk_headers`` independently disables construction of AWS SDK
     invocation/retry and Lambda recursion-detection headers, and SDK User-Agent
     rebuilding. The configured Alternator User-Agent, signing and retry state
-    are retained. Leave it disabled if AWS diagnostic/trace headers are needed.
+    are retained. This defaults to True; set it to False if AWS diagnostic/trace
+    headers are needed.
     """
 
     enabled: bool = False
     whitelist: frozenset[str] | None = None
     whitelist_callback: HeaderWhitelistCallback | None = None
     # Independent of filtering: avoid constructing AWS diagnostic headers.
-    skip_sdk_headers: bool = False
+    skip_sdk_headers: bool = True
 
 
 @dataclass(frozen=True)
@@ -589,14 +590,15 @@ class AlternatorConfigBuilder:
         whitelist: frozenset[str] | set[str] | None = None,
         whitelist_callback: HeaderWhitelistCallback | None = None,
         *,
-        skip_sdk_headers: bool = False,
+        skip_sdk_headers: bool = True,
     ) -> AlternatorConfigBuilder:
-        """Enable header filtering and optionally skip SDK header construction.
+        """Enable header filtering with SDK diagnostic headers skipped by default.
 
         When enabled, non-essential HTTP headers are stripped from requests
         to reduce bandwidth. Authentication headers (Authorization,
         X-Amz-Date, X-Amz-Security-Token) are preserved when explicit
         static credentials are passed with ``auth=Auth.static_credentials(...)``.
+        Set ``skip_sdk_headers=False`` to retain SDK diagnostic headers.
         """
         self._header_optimization = HeaderOptimizationConfig(
             enabled=True,

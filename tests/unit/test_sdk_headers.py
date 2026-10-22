@@ -21,6 +21,7 @@ import importlib
 import io
 import json
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from typing import Any, cast
 from unittest.mock import AsyncMock
 from urllib.parse import urlsplit
@@ -62,20 +63,22 @@ class _AsyncResponse(AWSResponse):
 
 
 def _config(
-    skip: bool,
+    skip: bool | None,
     user_agent: str | Callable[[str], str] | None = "orders-service/1.0",
     *,
     filtering: bool = False,
 ) -> Config:
+    headers = HeaderOptimizationConfig(
+        enabled=filtering,
+        whitelist=frozenset({"X-Custom"}),
+    )
+    if skip is not None:
+        headers = replace(headers, skip_sdk_headers=skip)
     return Config(
         seed_hosts=["127.0.0.1", "127.0.0.2"],
         port=9999,
         user_agent=user_agent,
-        header_optimization=HeaderOptimizationConfig(
-            enabled=filtering,
-            skip_sdk_headers=skip,
-            whitelist=frozenset({"X-Custom"}),
-        ),
+        header_optimization=headers,
         request_compression=RequestCompressionConfig(
             algorithm=CompressionAlgorithm.GZIP, min_size_bytes=0
         ),
@@ -192,13 +195,13 @@ def _capture(
     return requests, contexts
 
 
-@pytest.mark.parametrize("skip", [False, True])
+@pytest.mark.parametrize("skip", [None, False, True])
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("resource", [False, True])
 @pytest.mark.parametrize("filtering", [False, True])
 def test_sync_factories_preserve_signing_retries_and_compression(
     monkeypatch: pytest.MonkeyPatch,
-    skip: bool,
+    skip: bool | None,
     signed: bool,
     resource: bool,
     filtering: bool,
@@ -217,7 +220,7 @@ def test_sync_factories_preserve_signing_retries_and_compression(
     client = owner.meta.client if resource else owner
     try:
         requests, contexts = _capture(
-            client, skip=skip, signed=signed, filtering=filtering
+            client, skip=skip is not False, signed=signed, filtering=filtering
         )
         result = client.describe_table(TableName=TABLE_NAME)
         assert result["Table"]["TableName"] == TABLE_NAME
@@ -234,11 +237,11 @@ def test_sync_factories_preserve_signing_retries_and_compression(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("skip", [False, True])
+@pytest.mark.parametrize("skip", [None, False, True])
 @pytest.mark.parametrize("signed", [False, True])
 @pytest.mark.parametrize("filtering", [False, True])
 async def test_async_factory_preserves_signing_retries_and_compression(
-    monkeypatch: pytest.MonkeyPatch, skip: bool, signed: bool, filtering: bool
+    monkeypatch: pytest.MonkeyPatch, skip: bool | None, signed: bool, filtering: bool
 ) -> None:
     monkeypatch.setattr(
         importlib.import_module("alternator.async_client"),
@@ -253,7 +256,11 @@ async def test_async_factory_preserves_signing_retries_and_compression(
     )
     try:
         requests, contexts = _capture(
-            client, skip=skip, signed=signed, filtering=filtering, asynchronous=True
+            client,
+            skip=skip is not False,
+            signed=signed,
+            filtering=filtering,
+            asynchronous=True,
         )
         result = await client.describe_table(TableName=TABLE_NAME)
         assert result["Table"]["TableName"] == TABLE_NAME
@@ -268,17 +275,19 @@ async def test_async_factory_preserves_signing_retries_and_compression(
         await close_async_client(client)
 
 
-def test_config_defaults_and_builder() -> None:
-    assert HeaderOptimizationConfig().skip_sdk_headers is False
-    assert HeaderOptimizationConfig(skip_sdk_headers=True).enabled is False
-    config = (
-        AlternatorConfigBuilder()
-        .with_seeds("localhost")
-        .with_header_optimization(skip_sdk_headers=True)
-        .build()
-    )
-    assert config.header_optimization.enabled is True
+@pytest.mark.parametrize("skip", [None, False, True])
+def test_config_defaults_and_builder(skip: bool | None) -> None:
+    config = Config(seed_hosts=["localhost"], port=8000)
     assert config.header_optimization.skip_sdk_headers is True
+    assert config.header_optimization.enabled is False
+    builder = AlternatorConfigBuilder().with_seeds("localhost")
+    if skip is None:
+        builder.with_header_optimization()
+    else:
+        builder.with_header_optimization(skip_sdk_headers=skip)
+    config = builder.build()
+    assert config.header_optimization.enabled is True
+    assert config.header_optimization.skip_sdk_headers is (skip is not False)
 
 
 class _Captured(Exception):
