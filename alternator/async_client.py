@@ -37,6 +37,7 @@ from alternator._http import (
     create_async_http_fetcher,
     create_ssl_context,
 )
+from alternator.backoff import Backoff, ExponentialBackoff
 from alternator.config import KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
@@ -81,7 +82,12 @@ class AsyncPartitionKeyCache:
     Uses a pending-state pattern to avoid duplicate DescribeTable calls.
     """
 
-    def __init__(self, client: AsyncDynamoDBClient) -> None:
+    def __init__(
+        self,
+        client: AsyncDynamoDBClient,
+        *,
+        discovery_backoff: Backoff = ExponentialBackoff(),
+    ) -> None:
         """
         Initialize the cache.
 
@@ -90,7 +96,7 @@ class AsyncPartitionKeyCache:
         """
         self._client = client
         self._cache: dict[str, str] = {}
-        self._backoff = _PartitionKeyDiscoveryBackoff()
+        self._backoff = _PartitionKeyDiscoveryBackoff(discovery_backoff)
         self._pending: dict[str, asyncio.Event] = {}
         self._errors: dict[str, Exception] = {}
         self._background_tasks: dict[str, asyncio.Task[str | None]] = {}
@@ -456,7 +462,9 @@ async def _create_async_client_with_manager(
         # Set up partition key cache if affinity is enabled
         pk_cache: AsyncPartitionKeyCache | None = None
         if config.key_affinity.mode != KeyRouteAffinityMode.NONE:
-            pk_cache = AsyncPartitionKeyCache(client)
+            pk_cache = AsyncPartitionKeyCache(
+                client, discovery_backoff=config.key_affinity.discovery_backoff
+            )
             if config.key_affinity.table_pk_attributes:
                 pk_cache.preload(dict(config.key_affinity.table_pk_attributes))
             setattr(client, PK_CACHE_ATTR, pk_cache)

@@ -31,6 +31,7 @@ from time import monotonic
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 from alternator._constants import PK_DISCOVERY_TIMEOUT_SECONDS
+from alternator.backoff import Backoff, ExponentialBackoff
 from alternator.core.hashing import hash_attribute_value
 from alternator.core.query_plan import LazyQueryPlan
 
@@ -541,10 +542,11 @@ def _shutdown_partition_key_worker(worker: _PartitionKeyDiscoveryWorker) -> None
 
 
 class _PartitionKeyDiscoveryBackoff:
-    """Double per-table cooldowns from 1s to 60s; callers synchronize access."""
+    """Track per-table attempts and deadlines; callers synchronize access."""
 
-    def __init__(self) -> None:
-        self._failures: dict[str, tuple[float, float]] = {}
+    def __init__(self, policy: Backoff) -> None:
+        self._policy = policy
+        self._failures: dict[str, tuple[int, float]] = {}
 
     def ready(self, table_name: str) -> bool:
         failure = self._failures.get(table_name)
@@ -552,8 +554,9 @@ class _PartitionKeyDiscoveryBackoff:
 
     def fail(self, table_name: str) -> None:
         previous = self._failures.get(table_name)
-        delay = min(previous[0] * 2, 60.0) if previous else 1.0
-        self._failures[table_name] = (delay, monotonic() + delay)
+        attempt = previous[0] + 1 if previous else 1
+        delay = self._policy.delay_seconds(attempt=attempt)
+        self._failures[table_name] = (attempt, monotonic() + delay)
 
     def reset(self, table_name: str) -> None:
         self._failures.pop(table_name, None)
@@ -569,13 +572,14 @@ class PartitionKeyCache:
         self,
         client: DynamoDBClient,
         *,
+        discovery_backoff: Backoff = ExponentialBackoff(),
         queue_capacity: int = _PK_DISCOVERY_QUEUE_CAPACITY,
         shutdown_timeout_seconds: float = _PK_DISCOVERY_SHUTDOWN_TIMEOUT_SECONDS,
     ) -> None:
         """Initialize background discovery using the supplied boto3 client."""
         self._client = client
         self._cache: dict[str, str] = {}
-        self._backoff = _PartitionKeyDiscoveryBackoff()
+        self._backoff = _PartitionKeyDiscoveryBackoff(discovery_backoff)
         self._pending: dict[str, threading.Event] = {}
         self._closed = False
         self._lock = threading.Lock()
