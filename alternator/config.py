@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Literal, cast
 
 from alternator._version import __version__
+from alternator.backoff import Backoff, ExponentialBackoff
 from alternator.core.routing_scope import ClusterScope, RoutingScope
 from alternator.exceptions import ConfigurationError
 
@@ -357,6 +358,9 @@ class KeyRouteAffinityConfig:
     # If not provided, will auto-discover via DescribeTable
     table_pk_attributes: Mapping[str, str] = field(default_factory=dict)
 
+    # Shared stateless policy; each cache tracks its own per-table attempts.
+    discovery_backoff: Backoff = field(default_factory=ExponentialBackoff)
+
     def __post_init__(self) -> None:
         mode = cast(object, self.mode)
         if mode is None:
@@ -600,11 +604,14 @@ class AlternatorConfigBuilder:
         self,
         mode: KeyRouteAffinityMode,
         table_pk_map: Mapping[str, str] | None = None,
+        *,
+        discovery_backoff: Backoff = ExponentialBackoff(),
     ) -> AlternatorConfigBuilder:
         """Enable key-based routing affinity for LWT optimization."""
         self._key_affinity = KeyRouteAffinityConfig(
             mode=mode,
             table_pk_attributes=table_pk_map or {},
+            discovery_backoff=discovery_backoff,
         )
         return self
 

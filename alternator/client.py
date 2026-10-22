@@ -200,7 +200,9 @@ def _create_affinity_node_computer(
         return None
 
     # Set up partition key cache
-    pk_cache = PartitionKeyCache(client)
+    pk_cache = PartitionKeyCache(
+        client, discovery_backoff=config.key_affinity.discovery_backoff
+    )
 
     # Preload any configured PK mappings
     if config.key_affinity.table_pk_attributes:
