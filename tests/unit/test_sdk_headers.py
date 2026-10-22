@@ -314,7 +314,8 @@ def test_sync_skip_avoids_both_ua_builds_and_keeps_configured_value(
         seen.append(_headers(request).get("user-agent"))
         raise _Captured
 
-    # This detects both the serialization-time build and the request-created hook.
+    # Detect expensive SDK User-Agent construction during serialization and
+    # request creation.
     monkeypatch.setattr(UserAgentString, "to_string", expensive_ua)
     client.meta.events.register_last("before-send.dynamodb.*", capture)
     try:
