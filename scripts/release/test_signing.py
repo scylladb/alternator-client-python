@@ -319,6 +319,9 @@ class SigningTests(unittest.TestCase):
             # Stub package tooling; exercise real Make, Git, GPG, and checksum commands.
             tools = directory / "bin"
             tools.mkdir()
+            gh = tools / "gh"
+            gh.write_text('#!/bin/sh\nprintf "scylladb-publisher\\n"\n')
+            gh.chmod(0o700)
             uvx = tools / "uvx"
             uvx.write_text("#!/usr/bin/env python3\n" + "\n".join([
                 "import os, pathlib, sys",
@@ -338,7 +341,6 @@ class SigningTests(unittest.TestCase):
             ]) + "\n")
             uvx.chmod(0o700)
             os.environ.update(PATH=str(tools) + os.pathsep + os.environ["PATH"],
-                              GITHUB_ACTIONS="true", GITHUB_ACTOR="approved-maintainer",
                               RELEASE_VERSION="1.0.0", GITHUB_OUTPUT=str(directory / "output"),
                               BUILD_OBSERVATIONS=str(directory / "build-observations"))
             # Supply all credential forms together: neither values nor file paths
@@ -380,11 +382,13 @@ class SigningTests(unittest.TestCase):
             self.assertFalse(list(directory.glob("release-signing-*")))
 
     def test_make_release_rerun_by_different_maintainer(self):
-        with self.make_repository():
-            os.environ.update(GITHUB_ACTOR="first-approved-maintainer",
+        with self.make_repository() as directory:
+            # Workflow recursion must not fall back to local account authorization.
+            (directory / "bin" / "gh").write_text("#!/bin/sh\nexit 99\n")
+            os.environ.update(GITHUB_ACTIONS="true", GITHUB_ACTOR="first-approved-maintainer",
                               GITHUB_TRIGGERING_ACTOR="second-approved-maintainer")
-            signing.run(["make", "release-prepare"])
-            signing.run(["make", "release-tag"])
+            signing.run(["make", "release-prepare", "RELEASE_WORKFLOW=1"])
+            signing.run(["make", "release-tag", "RELEASE_WORKFLOW=1"])
             signing.verify_tag("v1.0.0", signing.run(["git", "rev-parse", "HEAD"]).strip())
 
     @unittest.skipUnless(os.environ.get("RELEASE_REAL_BUILD_TEST") == "1", "opt-in real Python build smoke test")
@@ -612,14 +616,23 @@ class WorkflowTests(unittest.TestCase):
             gh = Path(temp) / "gh"
             gh.write_text('#!/bin/sh\nprintf "unauthorized\\n"\n')
             gh.chmod(0o700)
-            for target in ("release-version", "release-prepare", "release-commit", "_release-commit",
-                           "release-build", "release-sign", "release-tag", "_release-tag"):
-                result = subprocess.run(["make", target], cwd=ROOT, capture_output=True, text=True,
-                                        timeout=60, env={**os.environ, "GITHUB_ACTIONS": "false",
-                                                         "PATH": temp + os.pathsep + os.environ["PATH"]})
-                self.assertNotEqual(result.returncode, 0)
-                self.assertIn("current: unauthorized", result.stderr)
-                self.assertNotIn("signing.py", result.stdout)
+            for actions, workflow, arguments in [("false", "", []), ("true", "", []),
+                                                 ("true", "1", []),
+                                                 ("false", "", ["RELEASE_WORKFLOW=1"]),
+                                                 ("true", "", ["RELEASE_WORKFLOW=0"])]:
+                for target in ("release-check-user", "release-version", "release-prepare",
+                               "release-commit", "_release-commit", "release-build",
+                               "release-sign", "release-tag", "_release-tag"):
+                    with self.subTest(actions=actions, workflow=workflow, arguments=arguments,
+                                      target=target):
+                        result = subprocess.run(
+                            ["make", target, *arguments], cwd=ROOT, capture_output=True, text=True,
+                            timeout=60, env={**os.environ, "GITHUB_ACTIONS": actions,
+                                             "RELEASE_WORKFLOW": workflow,
+                                             "PATH": temp + os.pathsep + os.environ["PATH"]})
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("current: unauthorized", result.stderr)
+                        self.assertNotIn("signing.py", result.stdout)
 
 
 class ReleaseUserTests(unittest.TestCase):
@@ -627,7 +640,7 @@ class ReleaseUserTests(unittest.TestCase):
         for actor, triggering in [("approved-maintainer", "approved-maintainer"),
                                   ("approved-maintainer", "another-approved-maintainer")]:
             with self.subTest(actor=actor, triggering=triggering):
-                subprocess.run(["make", "release-check-user"], cwd=ROOT, check=True,
+                subprocess.run(["make", "release-check-user", "RELEASE_WORKFLOW=1"], cwd=ROOT, check=True,
                                capture_output=True, timeout=60,
                                env={**os.environ, "GITHUB_ACTIONS": "true",
                                     "GITHUB_ACTOR": actor, "GITHUB_TRIGGERING_ACTOR": triggering})

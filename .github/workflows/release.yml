@@ -72,7 +72,7 @@ jobs:
         env:
           RELEASE_VERSION: ${{ inputs.version }}
         run: |
-          make --no-print-directory release-version >> "$GITHUB_OUTPUT"
+          make --no-print-directory release-version RELEASE_WORKFLOW=1 >> "$GITHUB_OUTPUT"
 
       - name: Require main branch for a production release
         if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
@@ -182,19 +182,19 @@ jobs:
           RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           RELEASE_VERSION: ${{ inputs.version }}
-        run: make release-commit
+        run: make release-commit RELEASE_WORKFLOW=1
 
       - name: Verify prepared history
         run: python3 scripts/release/signing.py verify-prepared
 
       - name: Build and check release artifacts
-        run: make release-build
+        run: make release-build RELEASE_WORKFLOW=1
 
       - name: Sign release artifacts and checksums
         env:
           RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
           RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: make release-sign
+        run: make release-sign RELEASE_WORKFLOW=1
 
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -218,6 +218,7 @@ jobs:
         with:
           name: release-logs-${{ github.job }}
           path: release-logs/
+          overwrite: true
           if-no-files-found: ignore
 
   tag-release:
@@ -259,7 +260,7 @@ jobs:
           RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_BASE_COMMIT: ${{ needs.build.outputs.baseline }}
-        run: make release-tag
+        run: make release-tag RELEASE_WORKFLOW=1
 
       - name: Block release with open release blockers
         env:
@@ -293,6 +294,7 @@ jobs:
         with:
           name: release-logs-${{ github.job }}
           path: release-logs/
+          overwrite: true
           if-no-files-found: ignore
 
   publish-testpypi:

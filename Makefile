@@ -77,10 +77,11 @@ release-version: release-check-user
 	printf 'package-version=%s\nprerelease=%s\n' "$$normalized" "$$prerelease"
 
 # Actions operators are authorized by the protected release environment.
-# The authenticated publisher account restriction applies only to local releases.
+# Only explicit workflow invocations skip the local publisher-account check.
 release-check-user:
 	@set -eu; \
-	if [ "$${GITHUB_ACTIONS:-}" = true ]; then exit 0; fi; \
+	if [ "$(origin RELEASE_WORKFLOW)" = 'command line' ] && \
+	   [ "$${RELEASE_WORKFLOW:-}" = 1 ] && [ "$${GITHUB_ACTIONS:-}" = true ]; then exit 0; fi; \
 	if ! user=$$(gh api user --jq .login); then \
 		echo "Release requires GitHub user scylladb-publisher. Run gh auth login or gh auth switch." >&2; \
 		exit 1; \
@@ -95,10 +96,12 @@ release-prepare: release-check-user
 	+$(MAKE) release-build
 	+$(MAKE) release-sign
 
+# Signing sessions strip inherited Make overrides. Forward explicit workflow
+# routing to their internal Make calls without promoting ambient variables.
 release-commit: release-check-user
 	@test -n "$${RELEASE_BASE_COMMIT:-}" || { echo "Export RELEASE_BASE_COMMIT before preparation" >&2; exit 1; }
 	+$(MAKE) release-version
-	+python3 scripts/release/signing.py exec $(MAKE) _release-commit
+	+python3 scripts/release/signing.py exec $(MAKE) _release-commit $(if $(filter command line,$(origin RELEASE_WORKFLOW)),RELEASE_WORKFLOW="$${RELEASE_WORKFLOW:-}")
 
 _release-commit: release-check-user
 	@set -eu; \
@@ -125,7 +128,7 @@ release-sign: release-check-user
 
 release-tag: release-check-user
 	python3 scripts/release/signing.py verify-prepared
-	+python3 scripts/release/signing.py exec $(MAKE) _release-tag
+	+python3 scripts/release/signing.py exec $(MAKE) _release-tag $(if $(filter command line,$(origin RELEASE_WORKFLOW)),RELEASE_WORKFLOW="$${RELEASE_WORKFLOW:-}")
 
 _release-tag: release-check-user
 	python3 scripts/release/signing.py verify-prepared

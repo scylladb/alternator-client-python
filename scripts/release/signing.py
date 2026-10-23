@@ -250,6 +250,7 @@ def terminate_process(process, signum=signal.SIGTERM, owns_group=True):
     try:
         process.wait(timeout=grace)
     except subprocess.TimeoutExpired:
+        # The grace period expired; continue to forced termination below.
         pass
     # Nested helpers need time to stop their children and finish cleanup.
     time.sleep(max(0, deadline - time.monotonic()))
@@ -259,6 +260,7 @@ def terminate_process(process, signum=signal.SIGTERM, owns_group=True):
         else:
             process.kill()
     except ProcessLookupError:
+        # The process or group already exited; wait below still reaps the child.
         pass
     process.wait()
 

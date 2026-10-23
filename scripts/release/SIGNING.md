@@ -17,8 +17,13 @@ fingerprint with `!`. The primary key certifies the signing subkey and remains o
 The release workflow authorizes maintainers through the protected `release`
 environment on **every** signing and publishing job. Approved operators may differ
 from `scylladb-publisher`, including when another approved maintainer reruns a job.
-The signer remains the pinned publisher key. `GITHUB_ACTIONS` alone is not an
-approval credential; the actual environment protections enforce Actions access.
+The signer remains the pinned publisher key. Workflow Make invocations pass
+`RELEASE_WORKFLOW=1` as a command-line argument, which skips the local account check
+only when `GITHUB_ACTIONS=true`; recursive Make calls inherit that argument.
+Ambient `GITHUB_ACTIONS` and `RELEASE_WORKFLOW` variables alone do not skip the
+check. This explicit route selects workflow orchestration; it is not an approval
+credential or runner attestation. The actual environment protections enforce
+Actions access.
 
 Locally, all public and internal release Make targets require the authenticated
 `gh` account `scylladb-publisher` before importing credentials or changing the
