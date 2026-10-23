@@ -787,6 +787,11 @@ for the changes and migration steps in 2.0.0.
 
 ## Development
 
+The [native backend compatibility contract](docs/native-compatibility.md) records
+the planned opt-in Rust interface, supported operations and configuration, and
+the shared backend fixtures. Its initial checks run against both Python clients
+as part of the unit suite.
+
 ```bash
 # Clone the repository
 git clone https://github.com/scylladb/alternator-client-python.git
