@@ -29,6 +29,33 @@ and continued runtime availability. Ordinary base import must not load native.
 The Rust core separately checks formatting, Clippy and task cancellation without
 shutting down the process-wide runtime.
 
+The Linux core job also builds a current native wheel and runs all Python tests
+under `native/tests` in a separate fresh environment outside the checkout. The
+core command requires the exact built base wheel with `--base`; the workflow
+builds and inspects it before core qualification. The environment installs that
+base wheel with async dependencies, the exact native wheel, pytest and the async
+plugin. It copies only the shared `tests` fixture package into the environment;
+production base/extension imports must resolve under that environment, with no
+checkout production path. This lets later operation/facade cases join the 53
+required baseline probes without collection errors or skipped async cases. This
+developer check retains Rust and requires `cc`, `cargo`, `rustc`, and Linux `/proc`
+before it can start. The C compiler builds a child-local thread-creation fault
+interposer; package installation itself does not invoke or require that compiler.
+The installed-wheel probes fail startup at the first, middle and last worker,
+check stable cached sync/async failures and absence of leaked threads/file
+descriptors, and the standalone Rust probe proves a later runtime can work.
+
+Core qualification requires all 45 vendor CLI regression cases (15 each under
+normal Python, `-O`, and `PYTHONOPTIMIZE`), all four installed-wheel interface
+cases, and all four startup cases. It verifies the canonical anchored 581-file
+Tokio source and one Cargo Tokio identity using the native toolchain directory.
+Every collected native test must pass: missing cases, skips, duplicate cases,
+errors and failures invalidate the JUnit proof even if pytest exits zero. Future
+native test files are included by directory collection. The core job retains
+`core.json`, the original core wheel and the complete `native.xml` report, bound
+to the source SHA, original run, wheel hash and vendor provenance hash. This is
+separate from all 20 package cells, which still install with Rust absent on PATH.
+
 ## Reusable workflow inputs
 
 - `source-commit` is a required full 40-character commit SHA. Every job asserts
@@ -45,9 +72,19 @@ shutting down the process-wide runtime.
   release tooling. There is no arbitrary run or repository download input.
 - `attest` defaults to false for pull requests. A trusted caller can enable
   GitHub build attestations for each wheel and its JSON/checksum evidence. It
-  must grant `contents: read`, `id-token: write` and `attestations: write` to the
+  also attests the core qualification wheel, `core.json` and `native.xml` so
+  release callers can authenticate core proof against its source/original run.
+  The caller must grant `contents: read`, `id-token: write` and `attestations: write` to the
   workflow call. There are no signing secrets, publishing credentials or
   protected signing environments in any native build/install job.
+
+The `${artifact-prefix}-core` artifact and required aggregate argument
+`--core-evidence DIRECTORY` are part of the P10/P11 integration seam. Those
+callers must retain the proof and authenticate its trusted-build attestation
+before accepting it. The host-tagged core wheel is qualification-only and must
+remain separate from published packages: the release inventory still contains
+exactly 20 native wheels, one pure base wheel and one base sdist. It is not a
+twenty-first native release wheel.
 
 ## Evidence and qualification stages
 
@@ -61,9 +98,10 @@ architecture and OS. Mac deployment
 targets are preserved in the wheel filename and WHEEL metadata.
 
 The `Native matrix complete` gate runs with `always()` and requires successful
-core and matrix job conclusions and exactly one receipt for every supported
-cell. It rechecks original wheel bytes, filename/metadata tags, checksums, source,
-run, versions, provenance and identical base wheel hashes. Missing, duplicate,
+core and matrix job conclusions, core wheel/report proof for this source/run, and
+exactly one receipt for every supported cell. It rechecks original wheel bytes,
+filename/metadata tags, checksums, source, run, versions, provenance and identical
+base wheel hashes. Missing, duplicate,
 failed, skipped, cancelled or inconsistent cells fail. The `native-complete`
 artifact contains the full build/install inventory and `release_qualified: false`.
 
@@ -87,4 +125,6 @@ python -m unittest discover -s scripts/native -p 'test_*.py' -v
 The tests exercise the complete Cartesian product, each missing cell, duplicate
 receipts, every unsuccessful job state, altered artifacts/provenance, incompatible
 tags, metadata inconsistencies, wrong source/run/base, bundle identity and actual
-subprocess PATH/import isolation. Synthetic test wheels are never build evidence.
+subprocess PATH/import isolation. They also reject missing core prerequisites,
+skipped or altered test reports, absent startup cases and mismatched core wheel,
+source/run or vendor proof. Synthetic test wheels are never build evidence.

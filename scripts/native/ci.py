@@ -14,6 +14,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,6 +23,7 @@ import zipfile
 from email.parser import BytesParser
 from pathlib import Path
 from typing import Any
+from xml.etree import ElementTree
 
 PYTHONS = tuple(f"3.{minor}" for minor in range(10, 15))
 PLATFORMS = (
@@ -48,6 +50,313 @@ CHECKS = (
     "task_cleanup",
     "base_import",
 )
+CORE_SUITES = {
+    "vendor": ("test_verify_vendor.py", 45),
+    "interface": ("test_extension.py", 4),
+    "startup": ("test_startup_cleanup.py", 4),
+}
+STARTUP_CASES = frozenset(
+    {
+        "test_installed_wheel_failed_startup_cleanup[first]",
+        "test_installed_wheel_failed_startup_cleanup[middle]",
+        "test_installed_wheel_failed_startup_cleanup[last]",
+        "test_core_cleanup_and_subsequent_runtime",
+    }
+)
+INTERFACE_CASES = frozenset(
+    {
+        "test_wheel_import_and_lazy_runtime",
+        "test_sync_callers_share_runtime",
+        "test_async_and_sync_share_runtime_across_loops",
+        "test_async_bridge_requires_a_running_loop",
+    }
+)
+VENDOR_CASES = frozenset(
+    f"{name}[{mode}{'-' + parameter if parameter else ''}]"
+    for mode in ("normal", "flag", "environment")
+    for name, parameters in {
+        "test_clean_source_verifies": ("",),
+        "test_changed_vendor_bytes_fail": ("LICENSE", "src/runtime/builder.rs"),
+        "test_extra_vendor_file_fails": ("",),
+        "test_changed_patch_fails": ("",),
+        "test_changed_trusted_checksum_fails": ("archive_sha256", "patch_sha256"),
+        "test_changed_archive_fails": ("",),
+        "test_cargo_identity_is_enforced": (
+            "clean",
+            "missing",
+            "duplicate",
+            "path",
+            "version",
+        ),
+        "test_source_and_regenerated_manifest_drift_fail": (
+            "src/runtime/blocking/pool.rs",
+            "src/runtime/builder.rs",
+        ),
+    }.items()
+    for parameter in parameters
+)
+
+
+def pytest_report(path: Path, suite: str | None = None) -> dict[str, Any]:
+    """Reject skipped or missing native probes even when pytest exits zero."""
+    root = ElementTree.parse(path).getroot()
+    cases = list(root.iter("testcase"))
+    if suite is not None:
+        module = Path(CORE_SUITES[suite][0]).stem
+        cases = [
+            case
+            for case in cases
+            if case.attrib.get("classname", "").rsplit(".", 1)[-1] == module
+        ]
+    names = [
+        case.attrib["name"]
+        if suite
+        else f"{case.attrib['classname']}.{case.attrib['name']}"
+        for case in cases
+    ]
+    if (
+        (
+            len(cases) < CORE_SUITES[suite][1]
+            if suite
+            else len(cases) < sum(count for _, count in CORE_SUITES.values())
+        )
+        or len(set(names)) != len(names)
+        or any(list(root.iter(tag)) for tag in ("skipped", "failure", "error"))
+    ):
+        raise ValueError(f"Missing, skipped or unsuccessful {suite} probes")
+    if suite == "startup" and not STARTUP_CASES.issubset(names):
+        raise ValueError("Required first/middle/last/core startup probes did not run")
+    if suite == "interface" and not INTERFACE_CASES.issubset(names):
+        raise ValueError("Required installed-wheel interface probes did not run")
+    if suite == "vendor" and not VENDOR_CASES.issubset(names):
+        raise ValueError(
+            "Required vendor probes must cover all three optimization modes"
+        )
+    return {"passed": len(cases), "names": sorted(names), "sha256": digest(path)}
+
+
+def require_core_tools() -> dict[str, str]:
+    if sys.platform != "linux":
+        raise ValueError("Startup fault qualification requires Linux")
+    tools = {tool: shutil.which(tool) for tool in ("cc", "cargo", "rustc")}
+    if any(value is None for value in tools.values()):
+        raise ValueError("Startup fault qualification requires cc, cargo and rustc")
+    if not Path("/proc/self/task").is_dir() or not Path("/proc/self/fd").is_dir():
+        raise ValueError("Startup fault qualification requires Linux /proc probes")
+    return {tool: str(value) for tool, value in tools.items()}
+
+
+CORE_IMPORT_CHECK = (
+    "import importlib.metadata, pathlib, sys, alternator, _alternator_rust, tests; "
+    "prefix = pathlib.Path(sys.prefix).resolve(); "
+    "assert all(pathlib.Path(module.__file__).resolve().is_relative_to(prefix) "
+    "for module in (alternator, _alternator_rust, tests)); "
+    "assert importlib.metadata.version('alternator-client') == sys.argv[1]; "
+    "assert importlib.metadata.version('alternator-client-rust-backend') == sys.argv[1]"
+)
+
+
+def stage_core_fixtures(root: Path, site: Path) -> None:
+    """Copy tracked fixtures and Python test helpers, never checkout packages."""
+    tracked = git(root, "ls-files", "-z", "--", "tests", "native/tests").split("\0")
+    fixture_roots = set()
+    for filename in filter(None, tracked):
+        source = Path(filename)
+        if source.is_relative_to("tests"):
+            relative = source
+        else:
+            relative = source.relative_to("native/tests")
+            if (
+                relative.suffix != ".py"
+                or relative.name.startswith("test_")
+                or relative.name == "conftest.py"
+            ):
+                continue
+        top = relative.parts[0].removesuffix(".py")
+        if top not in fixture_roots:
+            if top in {"alternator", "_alternator_rust"} or any(
+                (site / name).exists() for name in (top, top + ".py")
+            ):
+                raise ValueError("Core fixtures must not shadow installed packages")
+            fixture_roots.add(top)
+        target = site / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if (root / source).is_symlink():
+            raise ValueError("Core fixtures must be tracked regular files")
+        shutil.copyfile(root / source, target)
+
+
+def prepare_core_environment(
+    root: Path, executable: Path, wheel: Path, base: Path, version: str, workspace: Path
+) -> None:
+    """Install production wheels and fixture-only support for the complete suite."""
+    subprocess.run(
+        [
+            str(executable),
+            "-I",
+            "-m",
+            "pip",
+            "install",
+            "--only-binary=:all:",
+            "--no-cache-dir",
+            "pytest==8.4.2",
+            "pytest-asyncio==1.2.0",
+            str(base.resolve()) + "[async]",
+            str(wheel),
+        ],
+        cwd=workspace,
+        check=True,
+        timeout=300,
+    )
+    result = subprocess.run(
+        [
+            str(executable),
+            "-I",
+            "-c",
+            "import sysconfig; print(sysconfig.get_path('purelib'))",
+        ],
+        cwd=workspace,
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    site = Path(result.stdout.strip())
+    if not site.is_relative_to(executable.parent.parent):
+        raise ValueError(
+            "Core fixture destination must belong to the fresh environment"
+        )
+    stage_core_fixtures(root, site)
+    subprocess.run(
+        [str(executable), "-I", "-c", CORE_IMPORT_CHECK, version],
+        cwd=workspace,
+        check=True,
+        timeout=20,
+    )
+
+
+def core_test_command(
+    executable: Path, version: str, tests: Path, report: Path
+) -> list[str]:
+    """Check installed origins in the same isolated process that imports tests."""
+    return [
+        str(executable),
+        "-I",
+        "-c",
+        CORE_IMPORT_CHECK + "; import pytest; sys.exit(pytest.main(sys.argv[2:]))",
+        version,
+        "-q",
+        "-o",
+        "addopts=",
+        "--import-mode=importlib",
+        "--confcutdir",
+        str(tests),
+        "--junitxml",
+        str(report),
+        str(tests),
+    ]
+
+
+def core_checks(args: argparse.Namespace) -> None:
+    """Qualify current source/wheel with required developer tools, without skips."""
+    root = args.root.resolve()
+    check_source(root, args.commit)
+    tools = require_core_tools()
+    verifier = subprocess.run(
+        [sys.executable, str(root / "native/scripts/verify_vendor.py"), "--cargo"],
+        cwd=root / "native",
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    verified = json.loads(verifier.stdout)
+    if verified.get("verified_files") != 581 or verified.get("one_tokio") is not True:
+        raise ValueError("Audited vendor and one-Tokio verification did not pass")
+    wheels = list(args.wheels.glob("*.whl"))
+    if len(wheels) != 1:
+        raise ValueError("Expected exactly one current native core wheel")
+    wheel = wheels[0].resolve()
+    bases = list(args.base.glob("*.whl"))
+    if len(bases) != 1:
+        raise ValueError("Expected exactly one current base wheel for core probes")
+    base = bases[0].resolve()
+    version = re.search(
+        r'^version = "([^"]+)"$',
+        (root / "native/pyproject.toml").read_text(),
+        re.MULTILINE,
+    )
+    if version is None:
+        raise ValueError("Missing static native version")
+    args.output.mkdir(parents=True, exist_ok=True)
+    output = args.output.resolve()
+    with tempfile.TemporaryDirectory(prefix="alternator-core-") as directory:
+        workspace = Path(directory).resolve()
+        if workspace.is_relative_to(root):
+            raise ValueError("Core wheel probes must run outside checkout")
+        environment = workspace / "env"
+        venv.EnvBuilder(with_pip=True).create(environment)
+        executable = environment / "bin/python"
+        # These developer-only probes compile a child-local interposer and Rust
+        # executable. The separate 20 install cells still remove Rust from PATH.
+        prepare_core_environment(root, executable, wheel, base, version[1], workspace)
+        report = output / "native.xml"
+        subprocess.run(
+            core_test_command(executable, version[1], root / "native/tests", report),
+            cwd=workspace,
+            check=True,
+            timeout=300,
+        )
+        native_tests = pytest_report(report)
+        reports = {suite: pytest_report(report, suite) for suite in CORE_SUITES}
+    check_source(root, args.commit)
+    receipt = {
+        "schema": 1,
+        "stage": "interface",
+        "commit": args.commit,
+        "run_id": args.run_id,
+        "wheel": {"filename": wheel.name, "sha256": digest(wheel)},
+        "vendor": verified,
+        "vendor_provenance_sha256": digest(
+            root / "native/vendor/tokio-provenance.json"
+        ),
+        "tools": tools,
+        "tests": reports,
+        "native_tests": native_tests,
+    }
+    shutil.copyfile(wheel, output / wheel.name)
+    (output / "core.json").write_bytes(canonical(receipt))
+
+
+def verify_core_evidence(
+    directory: Path, commit: str, run_id: str, root: Path
+) -> dict[str, Any]:
+    receipt = json.loads((directory / "core.json").read_bytes())
+    if (
+        receipt.get("schema") != 1
+        or receipt.get("stage") != "interface"
+        or (receipt.get("commit"), receipt.get("run_id")) != (commit, run_id)
+        or receipt.get("vendor", {}).get("verified_files") != 581
+        or receipt["vendor"].get("one_tokio") is not True
+        or set(receipt.get("tests", {})) != set(CORE_SUITES)
+    ):
+        raise ValueError("Core evidence does not qualify this source/run")
+    if receipt.get("vendor_provenance_sha256") != digest(
+        root / "native/vendor/tokio-provenance.json"
+    ):
+        raise ValueError("Core vendor provenance differs from this source")
+    wheel = receipt["wheel"]
+    if (
+        Path(wheel["filename"]).name != wheel["filename"]
+        or digest(directory / wheel["filename"]) != wheel["sha256"]
+    ):
+        raise ValueError("Core wheel hash mismatch")
+    for suite in CORE_SUITES:
+        if pytest_report(directory / "native.xml", suite) != receipt["tests"][suite]:
+            raise ValueError("Core report proof mismatch")
+    if pytest_report(directory / "native.xml") != receipt.get("native_tests"):
+        raise ValueError("Complete native report proof mismatch")
+    return receipt
 
 
 def canonical(value: object) -> bytes:
@@ -279,7 +588,12 @@ def record(args: argparse.Namespace) -> None:
 
 
 def aggregate(
-    directory: Path, commit: str, run_id: str, needs: dict[str, Any]
+    directory: Path,
+    commit: str,
+    run_id: str,
+    needs: dict[str, Any],
+    core_evidence: Path,
+    root: Path,
 ) -> dict[str, Any]:
     """Fail closed for missing, duplicate, skipped, failed or mismatched cells."""
     if set(needs) != {"core", "wheel"} or any(
@@ -288,6 +602,7 @@ def aggregate(
         raise ValueError("Every native job must conclude successfully")
     if not SHA.fullmatch(commit):
         raise ValueError("Expected full source SHA")
+    core = verify_core_evidence(core_evidence, commit, run_id, root)
     receipts = []
     builds = []
     seen = set()
@@ -335,6 +650,7 @@ def aggregate(
         "builds": builds,
         "installs": receipts,
         "release_qualified": False,
+        "core": core,
     }
 
 
@@ -348,6 +664,13 @@ def main() -> None:
     bundle.add_argument("--root", type=Path, default=Path.cwd())
     bundle.add_argument("--bundle", type=Path, required=True)
     bundle.add_argument("--commit", required=True)
+    core = sub.add_parser("core-checks")
+    core.add_argument("--root", type=Path, default=Path.cwd())
+    core.add_argument("--wheels", type=Path, required=True)
+    core.add_argument("--base", type=Path, required=True)
+    core.add_argument("--output", type=Path, required=True)
+    core.add_argument("--commit", required=True)
+    core.add_argument("--run-id", required=True)
     build = sub.add_parser("record")
     build.add_argument("--root", type=Path, default=Path.cwd())
     for name in ("wheels", "base", "build-info", "output"):
@@ -360,6 +683,8 @@ def main() -> None:
     summary.add_argument("--commit", required=True)
     summary.add_argument("--run-id", required=True)
     summary.add_argument("--needs", required=True)
+    summary.add_argument("--root", type=Path, default=Path.cwd())
+    summary.add_argument("--core-evidence", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "source":
         check_source(args.root, args.commit)
@@ -367,9 +692,16 @@ def main() -> None:
         restore_bundle(args.root, args.bundle, args.commit)
     elif args.command == "record":
         record(args)
+    elif args.command == "core-checks":
+        core_checks(args)
     else:
         result = aggregate(
-            args.directory, args.commit, args.run_id, json.loads(args.needs)
+            args.directory,
+            args.commit,
+            args.run_id,
+            json.loads(args.needs),
+            args.core_evidence,
+            args.root,
         )
         args.output.write_bytes(canonical(result))
 

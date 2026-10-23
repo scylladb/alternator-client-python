@@ -30,6 +30,10 @@ jobs:
     name: Native core and package
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -62,15 +66,42 @@ jobs:
           cargo fmt --all --check
           cargo clippy --locked --all-targets --features extension -- -D warnings
           cargo test --locked
+      - name: Build the base wheel without native dependencies
+        run: |
+          python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+          python -m build --wheel --no-isolation --outdir dist-base
+      - name: Build current wheel for Linux startup fault probes
+        working-directory: native
+        run: |
+          command -v cc
+          command -v cargo
+          command -v rustc
+          test -d /proc/self/task
+          test -d /proc/self/fd
+          python -m pip install maturin==1.15.0
+          maturin build --release --locked --interpreter python --out ../dist-core
+      - name: Require audited vendor and installed-wheel startup cleanup
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          ORIGINAL_RUN_ID: ${{ github.run_id }}
+        run: |
+          python scripts/native/ci.py core-checks --commit "$SOURCE_COMMIT" --run-id "$ORIGINAL_RUN_ID" \
+            --wheels dist-core --base dist-base --output core-evidence
+      - name: Attest original core wheel and complete test proof on trusted builds
+        if: inputs.attest
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: core-evidence/*
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-core
+          path: core-evidence/*
+          if-no-files-found: error
       - name: Validate CI and Python interface contracts
         run: |
           python -m pip install pytest==8.4.2 '.[async]'
           python -m unittest discover -s scripts/native -p 'test_*.py' -v
           python -m pytest tests/unit/test_native_interface.py -q
-      - name: Build the base wheel without native dependencies
-        run: |
-          python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
-          python -m build --wheel --no-isolation --outdir dist-base
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ inputs.artifact-prefix }}-base
@@ -226,6 +257,10 @@ jobs:
         with:
           pattern: ${{ inputs.artifact-prefix }}-cell-*
           path: cells
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-core
+          path: core-evidence
       - name: Require all 20 successful exact-source cells
         env:
           SOURCE_COMMIT: ${{ inputs.source-commit }}
@@ -234,7 +269,8 @@ jobs:
         run: |
           python scripts/native/ci.py source --commit "$SOURCE_COMMIT"
           python scripts/native/ci.py aggregate --directory cells --output native-summary.json \
-            --commit "$SOURCE_COMMIT" --run-id "$ORIGINAL_RUN_ID" --needs "$NATIVE_NEEDS"
+            --commit "$SOURCE_COMMIT" --run-id "$ORIGINAL_RUN_ID" --needs "$NATIVE_NEEDS" \
+            --core-evidence core-evidence
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ inputs.artifact-prefix }}-complete

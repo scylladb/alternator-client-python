@@ -13,6 +13,7 @@ import venv
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
+from xml.etree import ElementTree
 
 import ci
 
@@ -20,6 +21,46 @@ COMMIT = "a" * 40
 RUN_ID = "12345"
 VERSION = "2.0.1"
 NEEDS = {"core": {"result": "success"}, "wheel": {"result": "success"}}
+
+
+def core_evidence(directory: Path, source: Path) -> None:
+    provenance = source / "native/vendor/tokio-provenance.json"
+    provenance.parent.mkdir(parents=True, exist_ok=True)
+    provenance.write_bytes(b'{"synthetic_vendor_source": true}\n')
+    artifact = directory / "core.whl"
+    artifact.write_bytes(b"synthetic core test artifact")
+    reports = {}
+    root = ElementTree.Element("testsuites")
+    for suite, (_, count) in ci.CORE_SUITES.items():
+        report = ElementTree.SubElement(root, "testsuite", tests=str(count))
+        if suite == "startup":
+            names = sorted(ci.STARTUP_CASES)
+        elif suite == "vendor":
+            names = sorted(ci.VENDOR_CASES)
+        else:
+            names = sorted(ci.INTERFACE_CASES)
+        for name in names:
+            ElementTree.SubElement(
+                report,
+                "testcase",
+                name=name,
+                classname=Path(ci.CORE_SUITES[suite][0]).stem,
+            )
+    path = directory / "native.xml"
+    ElementTree.ElementTree(root).write(path)
+    reports = {suite: ci.pytest_report(path, suite) for suite in ci.CORE_SUITES}
+    receipt = {
+        "schema": 1,
+        "stage": "interface",
+        "commit": COMMIT,
+        "run_id": RUN_ID,
+        "wheel": {"filename": artifact.name, "sha256": ci.digest(artifact)},
+        "vendor": {"verified_files": 581, "one_tokio": True},
+        "vendor_provenance_sha256": ci.digest(provenance),
+        "tests": reports,
+        "native_tests": ci.pytest_report(path),
+    }
+    (directory / "core.json").write_bytes(ci.canonical(receipt))
 
 
 def wheel(
@@ -86,6 +127,13 @@ class EvidenceTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
+        core = tempfile.TemporaryDirectory()
+        self.addCleanup(core.cleanup)
+        self.core = Path(core.name)
+        source = tempfile.TemporaryDirectory()
+        self.addCleanup(source.cleanup)
+        self.source = Path(source.name)
+        core_evidence(self.core, self.source)
         self.cells = [
             cell(self.directory, python, platform)
             for python in ci.PYTHONS
@@ -93,7 +141,9 @@ class EvidenceTests(unittest.TestCase):
         ]
 
     def aggregate(self) -> dict:
-        return ci.aggregate(self.directory, COMMIT, RUN_ID, NEEDS)
+        return ci.aggregate(
+            self.directory, COMMIT, RUN_ID, NEEDS, self.core, self.source
+        )
 
     def edit(self, file: str, **changes: object) -> None:
         path = self.cells[0] / file
@@ -139,16 +189,30 @@ class EvidenceTests(unittest.TestCase):
                 with self.subTest(job=job, conclusion=conclusion):
                     needs = {**NEEDS, job: {"result": conclusion}}
                     with self.assertRaisesRegex(ValueError, "conclude successfully"):
-                        ci.aggregate(self.directory, COMMIT, RUN_ID, needs)
+                        ci.aggregate(
+                            self.directory,
+                            COMMIT,
+                            RUN_ID,
+                            needs,
+                            self.core,
+                            self.source,
+                        )
 
     def test_missing_job_fails(self) -> None:
         with self.assertRaisesRegex(ValueError, "conclude successfully"):
-            ci.aggregate(self.directory, COMMIT, RUN_ID, {"core": NEEDS["core"]})
+            ci.aggregate(
+                self.directory,
+                COMMIT,
+                RUN_ID,
+                {"core": NEEDS["core"]},
+                self.core,
+                self.source,
+            )
 
     def test_wrong_head_or_run_fails(self) -> None:
         for commit, run in (("c" * 40, RUN_ID), (COMMIT, "different-run")):
-            with self.assertRaisesRegex(ValueError, "source/run/hash"):
-                ci.aggregate(self.directory, commit, run, NEEDS)
+            with self.assertRaisesRegex(ValueError, "source/run"):
+                ci.aggregate(self.directory, commit, run, NEEDS, self.core, self.source)
 
     def test_incomplete_smoke_fails(self) -> None:
         for check in ci.CHECKS:
