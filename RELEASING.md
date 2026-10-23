@@ -9,10 +9,13 @@ Python.
    release workflow.
 2. PyPI trusted publishing must authorize this repository's release workflow.
    TestPyPI trusted publishing must also be configured before using the dry-run
-   path.
+   path. Both trusted-publisher registrations must require environment `release`.
+   Configure its maintainer approval, self-review prevention, administrator-bypass
+   prohibition, and `main`-only branch policy before using this workflow.
 3. GPG signing is required by the workflow. Configure `GPG_PRIVATE_KEY` with the
    protected repository signing-subkey export and `GPG_PASSPHRASE` with its
-   nonempty single-line passphrase. Both Actions secrets are required; see
+   nonempty single-line passphrase in the protected `release` environment. Both
+   environment secrets are required; see
    [GPG Signing Setup](#gpg-signing-setup).
 4. Publish the public certificate matching the pinned certification and signing
    fingerprints in [scripts/release/SIGNING.md](scripts/release/SIGNING.md) so
@@ -59,9 +62,11 @@ required. The workflow:
 
 1. Validates version availability, the main-branch CI result, and release blockers.
 2. Sets `alternator/_version.py` to the requested package version and runs unit
-   tests, integration tests, and linters.
-3. Creates and verifies a signed release commit containing only the version-file
-   change. This commit is a child of the selected `main` commit and is published
+   tests, integration tests, and linters on an unprivileged validation runner.
+3. After validation succeeds, requests protected-environment approval. Release
+   preparation starts on a fresh runner, checks out the exact validated commit,
+   and applies the requested version again. Creates and verifies a signed release
+   commit containing only the version-file change. This commit is a child of the selected `main` commit and is published
    through its signed release tag; it is not pushed to `main`.
 4. Builds the wheel and source archive from that release commit, validates their
    metadata in a separate step without signing secrets, then signs the artifacts
@@ -81,7 +86,8 @@ both distributions contain the chosen version. Releases are serialized to
 prevent overlapping production runs.
 
 For an optional TestPyPI rehearsal, enable **dry run**. It performs version
-preparation, checks, builds, and signing, then uploads to TestPyPI. It does not
+preparation, checks, builds, and signing, then uploads to TestPyPI. Rehearsals
+also require `main` and environment approval. It does not
 push a commit or tag, publish to production PyPI, or create a GitHub release.
 
 The verification commands below can also be used to inspect a published release.
@@ -93,7 +99,7 @@ Use the repository-specific protected signing subkey documented in
 pinned fingerprints, local Make targets, account requirements, and rotation.
 Keep the certification primary private key offline.
 
-Export only the protected signing subkey for repository Actions secrets:
+Export only the protected signing subkey for protected environment secrets:
 
 ```bash
 gpg --armor --export-secret-subkeys '445DBF7AC99EDE94850D1A621C6365BBFEB16995!' > signing-private.asc
@@ -105,8 +111,11 @@ gpg --armor --export-secret-subkeys '445DBF7AC99EDE94850D1A621C6365BBFEB16995!' 
 | `GPG_PASSPHRASE` | Yes | Nonempty single-line passphrase protecting that subkey |
 
 Securely delete the exported file after configuring the secret. Never upload the
-full primary private-key backup to CI. Release targets automatically reject any
-GitHub user other than `scylladb-publisher`, locally and in Actions.
+full primary private-key backup to CI. Local release targets require the authenticated
+`gh` account `scylladb-publisher`. Actions operators are authorized by the protected
+`release` environment and may differ from the signing identity, including reruns.
+Follow the [environment rollout and secret migration](scripts/release/SIGNING.md#protected-environment-rollout)
+before using the migrated workflow. Historical release dispatch is unsupported.
 
 ## Verify a Release
 

@@ -27,7 +27,7 @@ def prepare_version(
     version_file: Path, requested: str
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["make", "--no-print-directory", "release-version"],
+        ["make", "--no-print-directory", "release-version", "RELEASE_WORKFLOW=1"],
         cwd=ROOT,
         env={
             **os.environ,
