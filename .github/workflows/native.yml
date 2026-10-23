@@ -1,0 +1,242 @@
+name: Native wheels
+
+on:
+  workflow_call:
+    inputs:
+      source-commit:
+        description: Exact full source SHA (including a verified prepared release commit)
+        required: true
+        type: string
+      source-bundle-artifact:
+        description: Same-run artifact containing release-source.bundle, authenticated by the release caller
+        default: ""
+        type: string
+      artifact-prefix:
+        description: Unique artifact namespace within this Actions run
+        default: native
+        type: string
+      attest:
+        description: Attest artifacts on trusted builds with OIDC permissions
+        default: false
+        type: boolean
+
+# No publishing or signing secrets are accepted. Trusted release callers may
+# grant id-token:write and attestations:write when enabling attestations.
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Native core and package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source-bundle-artifact == '' && inputs.source-commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.source-bundle-artifact != ''
+        with:
+          name: ${{ inputs.source-bundle-artifact }}
+          path: ${{ runner.temp }}/native-prepared-source
+      - name: Restore prepared source from same-run bundle
+        if: inputs.source-bundle-artifact != ''
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          SOURCE_BUNDLE: ${{ runner.temp }}/native-prepared-source/release-source.bundle
+        shell: bash
+        run: python scripts/native/ci.py restore-bundle --bundle "$SOURCE_BUNDLE" --commit "$SOURCE_COMMIT"
+      - name: Require exact source
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+        run: python scripts/native/ci.py source --commit "$SOURCE_COMMIT"
+      - name: Rust formatting, lint and core tests
+        working-directory: native
+        run: |
+          rustup show active-toolchain
+          cargo fmt --all --check
+          cargo clippy --locked --all-targets --features extension -- -D warnings
+          cargo test --locked
+      - name: Validate CI and Python interface contracts
+        run: |
+          python -m pip install pytest==8.4.2 '.[async]'
+          python -m unittest discover -s scripts/native -p 'test_*.py' -v
+          python -m pytest tests/unit/test_native_interface.py -q
+      - name: Build the base wheel without native dependencies
+        run: |
+          python -m pip install build==1.3.0 setuptools==80.9.0 wheel==0.45.1
+          python -m build --wheel --no-isolation --outdir dist-base
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-base
+          path: dist-base/*.whl
+          if-no-files-found: error
+
+  wheel:
+    name: Native ${{ matrix.python }} / ${{ matrix.platform }}
+    needs: core
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.11', '3.12', '3.13', '3.14']
+        platform: [manylinux_2_28_x86_64, macos_x86_64, macos_arm64, win_amd64]
+        include:
+          - platform: manylinux_2_28_x86_64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            manylinux: '2_28'
+          - platform: macos_x86_64
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            manylinux: 'off'
+          - platform: macos_arm64
+            runner: macos-14
+            target: aarch64-apple-darwin
+            manylinux: 'off'
+          - platform: win_amd64
+            runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            manylinux: 'off'
+    defaults:
+      run:
+        shell: bash
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      SOURCE_COMMIT: ${{ inputs.source-commit }}
+      ORIGINAL_RUN_ID: ${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source-bundle-artifact == '' && inputs.source-commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: ${{ matrix.python }}
+          architecture: ${{ matrix.platform == 'macos_arm64' && 'arm64' || 'x64' }}
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.source-bundle-artifact != ''
+        with:
+          name: ${{ inputs.source-bundle-artifact }}
+          path: ${{ runner.temp }}/native-prepared-source
+      - name: Restore prepared source from same-run bundle
+        if: inputs.source-bundle-artifact != ''
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          SOURCE_BUNDLE: ${{ runner.temp }}/native-prepared-source/release-source.bundle
+        shell: bash
+        run: python scripts/native/ci.py restore-bundle --bundle "$SOURCE_BUNDLE" --commit "$SOURCE_COMMIT"
+      - name: Require exact source
+        run: python scripts/native/ci.py source --commit "$SOURCE_COMMIT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-base
+          path: dist-base
+      - name: Prepare host-owned wheel output directory
+        # The manylinux container runs as root; host-side receipts need write access.
+        run: mkdir -p dist-native
+      - name: Build locked interpreter-specific release wheel
+        uses: PyO3/maturin-action@3e2bdf6ba6453a61e649744019b8a2d906c7eb38 # v1.51.0
+        with:
+          command: build
+          maturin-version: '1.15.0'
+          rust-toolchain: '1.94.1'
+          target: ${{ matrix.target }}
+          manylinux: ${{ matrix.manylinux }}
+          container: ${{ runner.os == 'Linux' && 'quay.io/pypa/manylinux_2_28_x86_64@sha256:076b19ef6e698f28649fa817c49d14443201e01da85240e8e52f93e8daa49bff' || '' }}
+          working-directory: native
+          args: >-
+            --release --locked --out ../dist-native
+            --interpreter ${{ runner.os == 'Linux' && format('python{0}', matrix.python) || 'python' }}
+          before-script-linux: |
+            mkdir -p ci-build-info
+            rustc --version --verbose > ci-build-info/rustc.txt
+            maturin --version > ci-build-info/maturin.txt
+            cargo metadata --locked --features extension --format-version 1 > ci-build-info/cargo-metadata.json
+      - name: Record non-Linux build toolchain
+        if: runner.os != 'Linux'
+        working-directory: native
+        run: |
+          mkdir -p ci-build-info
+          rustc --version --verbose > ci-build-info/rustc.txt
+          maturin --version > ci-build-info/maturin.txt
+          cargo metadata --locked --features extension --format-version 1 > ci-build-info/cargo-metadata.json
+      - name: Install exact wheels outside checkout without Rust and check interface
+        env:
+          CELL_PYTHON: ${{ matrix.python }}
+          CELL_PLATFORM: ${{ matrix.platform }}
+          CELL_TARGET: ${{ matrix.target }}
+        run: |
+          python scripts/native/ci.py record --commit "$SOURCE_COMMIT" --run-id "$ORIGINAL_RUN_ID" \
+            --python "$CELL_PYTHON" --platform "$CELL_PLATFORM" --target "$CELL_TARGET" \
+            --wheels dist-native --base dist-base --build-info native/ci-build-info --output dist-native
+      - name: Attest original wheel and evidence on trusted builds
+        if: inputs.attest
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            dist-native/*.whl
+            dist-native/*.json
+            dist-native/SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-cell-${{ matrix.python }}-${{ matrix.platform }}
+          path: dist-native/*
+          if-no-files-found: error
+
+  complete:
+    name: Native matrix complete
+    needs: [core, wheel]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ inputs.source-bundle-artifact == '' && inputs.source-commit || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.11'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: inputs.source-bundle-artifact != ''
+        with:
+          name: ${{ inputs.source-bundle-artifact }}
+          path: ${{ runner.temp }}/native-prepared-source
+      - name: Restore prepared source from same-run bundle
+        if: inputs.source-bundle-artifact != ''
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          SOURCE_BUNDLE: ${{ runner.temp }}/native-prepared-source/release-source.bundle
+        shell: bash
+        run: python scripts/native/ci.py restore-bundle --bundle "$SOURCE_BUNDLE" --commit "$SOURCE_COMMIT"
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: ${{ inputs.artifact-prefix }}-cell-*
+          path: cells
+      - name: Require all 20 successful exact-source cells
+        env:
+          SOURCE_COMMIT: ${{ inputs.source-commit }}
+          ORIGINAL_RUN_ID: ${{ github.run_id }}
+          NATIVE_NEEDS: ${{ toJSON(needs) }}
+        run: |
+          python scripts/native/ci.py source --commit "$SOURCE_COMMIT"
+          python scripts/native/ci.py aggregate --directory cells --output native-summary.json \
+            --commit "$SOURCE_COMMIT" --run-id "$ORIGINAL_RUN_ID" --needs "$NATIVE_NEEDS"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ${{ inputs.artifact-prefix }}-complete
+          path: native-summary.json
+          if-no-files-found: error
