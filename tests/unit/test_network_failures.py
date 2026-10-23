@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import json
 import socket
-import time
-from collections.abc import Sequence
+import subprocess
+import sys
+import traceback
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Thread
+from threading import Event, Thread
 
 import pytest
 
@@ -37,10 +40,11 @@ from alternator.core.live_nodes import SyncLiveNodesManager
 class SlowHandler(BaseHTTPRequestHandler):
     """Handler that delays before responding."""
 
-    delay_seconds: float = 5.0
+    release_response: Event
 
     def do_GET(self) -> None:
-        time.sleep(self.delay_seconds)
+        if self.release_response.wait(timeout=5):
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.end_headers()
@@ -81,6 +85,98 @@ def _get_url(server: HTTPServer, path: str = "/localnodes") -> str:
     return f"http://{host}:{port}{path}"
 
 
+@contextmanager
+def _slow_server() -> Iterator[HTTPServer]:
+    release = Event()
+    errors: list[str] = []
+
+    class Handler(SlowHandler):
+        release_response = release
+
+    class Server(HTTPServer):
+        def handle_error(
+            self,
+            request: socket.socket | tuple[bytes, socket.socket],
+            client_address: object,
+        ) -> None:
+            errors.append(traceback.format_exc())
+            super().handle_error(request, client_address)
+
+    server = Server(("127.0.0.1", 0), Handler)
+    # Also bound cleanup when construction fails before a request is sent.
+    server.timeout = 1
+    thread = Thread(target=server.handle_request, name="slow-http-server")
+    try:
+        thread.start()
+        yield server
+    finally:
+        release.set()
+        if thread.ident is not None:
+            thread.join(timeout=6)
+        server.server_close()
+        assert not thread.is_alive(), "slow HTTP server failed to stop"
+        assert not errors, "\n".join(errors)
+
+
+@pytest.mark.parametrize("kind", ["sync", "async"])
+def test_timeout_server_cleanup_in_subprocess(kind: str) -> None:
+    code = """
+import asyncio
+import sys
+import threading
+from unittest.mock import patch
+from tests.unit import test_network_failures as cases
+
+kind = sys.argv[1]
+workers = []
+def thread(*args, **kwargs):
+    worker = threading.Thread(*args, **kwargs)
+    workers.append(worker)
+    return worker
+
+def run():
+    if kind == 'sync':
+        cases.TestSyncFetcherNetworkFailures().test_timeout()
+    else:
+        asyncio.run(cases.TestAsyncFetcherNetworkFailures().test_timeout())
+
+target = ('tests.unit.test_network_failures.create_sync_http_fetcher'
+          if kind == 'sync' else 'alternator._http.create_async_http_fetcher')
+with patch.object(cases, 'Thread', thread):
+    run()
+    assert workers and all(not worker.is_alive() for worker in workers)
+    with patch(target, side_effect=RuntimeError('construction failed')):
+        try:
+            run()
+        except RuntimeError as error:
+            assert str(error) == 'construction failed'
+        else:
+            raise AssertionError('construction must fail')
+    assert len(workers) == 2 and all(not worker.is_alive() for worker in workers)
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", code, kind],
+        capture_output=True,
+        text=True,
+        timeout=15,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not result.stderr
+
+
+def test_slow_server_surfaces_handler_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fail(self: SlowHandler) -> None:
+        raise RuntimeError("unexpected handler failure")
+
+    monkeypatch.setattr(SlowHandler, "do_GET", fail)
+    with (
+        pytest.raises(AssertionError, match="unexpected handler failure"),
+        _slow_server() as server,
+    ):
+        fetcher = create_sync_http_fetcher(timeout_seconds=1)
+        assert list(fetcher(_get_url(server))) == []
+
+
 # ---------------------------------------------------------------------------
 # Sync fetcher tests
 # ---------------------------------------------------------------------------
@@ -102,18 +198,10 @@ class TestSyncFetcherNetworkFailures:
 
     def test_timeout(self) -> None:
         """Fetcher returns empty list when request times out."""
-        SlowHandler.delay_seconds = 5.0
-        server = HTTPServer(("127.0.0.1", 0), SlowHandler)
-        thread = Thread(target=server.handle_request, daemon=True)
-        thread.start()
-
-        fetcher = create_sync_http_fetcher(timeout_seconds=0.3)
-        result = fetcher(_get_url(server))
-
-        assert list(result) == []
-        # Don't call server.shutdown() — handle_request returns on its own
-        # and the daemon thread will be cleaned up at process exit.
-        server.server_close()
+        with _slow_server() as server:
+            fetcher = create_sync_http_fetcher(timeout_seconds=0.3)
+            result = fetcher(_get_url(server))
+            assert list(result) == []
 
     def test_partial_data(self) -> None:
         """Fetcher returns empty list when server sends truncated JSON."""
@@ -267,18 +355,13 @@ class TestAsyncFetcherNetworkFailures:
         """Async fetcher returns empty list when request times out."""
         from alternator._http import create_async_http_fetcher
 
-        SlowHandler.delay_seconds = 5.0
-        server = HTTPServer(("127.0.0.1", 0), SlowHandler)
-        thread = Thread(target=server.handle_request, daemon=True)
-        thread.start()
-
-        fetcher = create_async_http_fetcher(timeout_seconds=0.3)
-        try:
-            result = await fetcher(_get_url(server))
-            assert list(result) == []
-        finally:
-            await fetcher.close()
-            server.server_close()
+        with _slow_server() as server:
+            fetcher = create_async_http_fetcher(timeout_seconds=0.3)
+            try:
+                result = await fetcher(_get_url(server))
+                assert list(result) == []
+            finally:
+                await fetcher.close()
 
     @pytest.mark.asyncio
     async def test_dns_resolution_failure(self) -> None:
