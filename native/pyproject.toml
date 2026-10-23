@@ -1,0 +1,39 @@
+[build-system]
+requires = ["maturin==1.15.0"]
+build-backend = "maturin"
+
+[project]
+name = "alternator-client-rust-backend"
+version = "2.0.1"
+description = "Experimental native backend for the ScyllaDB Alternator Python client"
+readme = "README.md"
+requires-python = ">=3.10,<3.15"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{name = "ScyllaDB", email = "info@scylladb.com"}]
+keywords = ["scylladb", "alternator", "dynamodb"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Database",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/scylladb/alternator-client-python"
+Documentation = "https://github.com/scylladb/alternator-client-python/tree/main/native"
+Repository = "https://github.com/scylladb/alternator-client-python"
+Issues = "https://github.com/scylladb/alternator-client-python/issues"
+
+[tool.maturin]
+bindings = "pyo3"
+module-name = "_alternator_rust"
+features = ["extension"]
+locked = true

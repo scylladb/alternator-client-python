@@ -1,0 +1,26 @@
+[package]
+name = "alternator-python-native"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94.1"
+publish = false
+license = "Apache-2.0"
+description = "Private native interface for alternator-client"
+
+[lib]
+name = "_alternator_rust"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+extension = ["dep:pyo3", "dep:pyo3-async-runtimes", "pyo3/extension-module"]
+
+[dependencies]
+tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "time", "net"] }
+pyo3 = { version = "=0.27.2", optional = true }
+pyo3-async-runtimes = { version = "=0.27.0", features = ["tokio-runtime"], optional = true }
+
+[package.metadata.alternator]
+# P4 adds this dependency after P0 merges; never build against an unpinned branch.
+rust-repository = "https://github.com/scylladb/alternator-client-rust"
+rust-baseline-revision = "68cf706d3578c251877d6e008298b59306e3f1df"
