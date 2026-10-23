@@ -16,6 +16,7 @@ from unittest.mock import patch
 from xml.etree import ElementTree
 
 import ci
+from test_provenance import provenance_fixture, source_fixture
 
 COMMIT = "a" * 40
 RUN_ID = "12345"
@@ -88,7 +89,7 @@ def wheel(
     return path
 
 
-def cell(directory: Path, python: str, platform: str) -> Path:
+def cell(directory: Path, python: str, platform: str, source: Path) -> Path:
     path = directory / f"custom-cell-{python}-{platform}"
     path.mkdir()
     artifact = wheel(path, python, platform)
@@ -110,13 +111,7 @@ def cell(directory: Path, python: str, platform: str) -> Path:
     (path / "build.json").write_bytes(ci.canonical(build))
     (path / "install.json").write_bytes(ci.canonical(install))
     (path / "provenance.json").write_bytes(
-        ci.canonical(
-            {
-                "build": build,
-                "slot": install["slot"],
-                "stage": "interface",
-            }
-        )
+        ci.canonical(provenance_fixture(source, install, build))
     )
     (path / "SHA256SUMS").write_text(f"{ci.digest(artifact)}  {artifact.name}\n")
     return path
@@ -134,8 +129,9 @@ class EvidenceTests(unittest.TestCase):
         self.addCleanup(source.cleanup)
         self.source = Path(source.name)
         core_evidence(self.core, self.source)
+        source_fixture(self.source)
         self.cells = [
-            cell(self.directory, python, platform)
+            cell(self.directory, python, platform, self.source)
             for python in ci.PYTHONS
             for platform in ci.PLATFORMS
         ]
@@ -237,7 +233,43 @@ class EvidenceTests(unittest.TestCase):
 
     def test_inconsistent_base_wheel_fails(self) -> None:
         self.edit("install.json", base_sha256="c" * 64)
+        self.edit("provenance.json", base_sha256="c" * 64)
         with self.assertRaisesRegex(ValueError, "different base"):
+            self.aggregate()
+
+    def test_review_reproduction_cannot_complete(self) -> None:
+        self.edit(
+            "provenance.json",
+            schema=999,
+            target="aarch64-apple-darwin",
+            version="0.0.0",
+            base_sha256="c" * 64,
+            cargo_lock_sha256="d" * 64,
+            native_pyproject_sha256="e" * 64,
+            cargo_metadata={},
+            installed_environment={},
+        )
+        with self.assertRaisesRegex(ValueError, "provenance"):
+            self.aggregate()
+
+    def test_cells_must_agree_on_workflow_identity_and_portable_features(self) -> None:
+        path = self.cells[0] / "provenance.json"
+        original = path.read_bytes()
+        value = json.loads(original)
+        value["workflow_ref"] += "-different"
+        path.write_bytes(ci.canonical(value))
+        with self.assertRaises(ValueError):
+            self.aggregate()
+        value = json.loads(original)
+        metadata = value["cargo_metadata"]
+        package = next(item for item in metadata["packages"] if item["name"] == "tokio")
+        package["features"]["different"] = []
+        node = next(
+            item for item in metadata["resolve"]["nodes"] if item["id"] == package["id"]
+        )
+        node["features"].append("different")
+        path.write_bytes(ci.canonical(value))
+        with self.assertRaisesRegex(ValueError, "features"):
             self.aggregate()
 
     def test_mismatched_provenance_fails(self) -> None:

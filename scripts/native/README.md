@@ -116,6 +116,51 @@ release consumers must authenticate GitHub attestations for original wheel and
 receipt hashes, workflow/repository/run identity and successful conclusions;
 these JSON receipts alone are not cryptographic proof of provenance.
 
+## Provenance validation contract
+
+`source_provenance()` reads the verified checkout's native project, Cargo
+manifest/lock and toolchain, plus base dependencies, using standard-library TOML.
+Aggregation therefore needs Python 3.11+, as pinned in the reusable workflow.
+The source/build/install commands still support Python 3.10+. Validation does
+not compile code, run Cargo, import installed packages or fetch dependencies.
+
+`validate_provenance()` requires exactly the version-1 fields emitted by
+`record()`. Schema, interface stage, build receipt, slot and version must match
+the installation and pinned source; target/runner must match that cell. Compiler
+release/host and maturin must match source pins. The lock and project hashes
+must match exact source-derived bytes: LF on Linux/macOS, or LF/checkout-CRLF on
+Windows. Other hashes are rejected. Windows newline conversion is not permission
+to accept a regenerated lock or edited project metadata.
+
+Cargo metadata must contain every locked package identity (name/version/source),
+the complete locked dependency edges, one native root and workspace, and all
+enabled maturin/native/direct dependency features. Collect full
+`cargo metadata --locked --features extension --format-version 1`, without
+`--no-deps` or platform filtering. Opaque Cargo IDs join references only within
+their own document; absolute paths and target directories are never compared
+across OSes. Portable enabled features and workflow/repository identity must
+agree across cells. Each receipt retains a positive attempt number; successful
+prior-attempt cells remain valid during unchanged-head failed-job reruns because
+the original source/run is bound through the build receipt.
+
+Installed environment evidence must name the matching standard CPython minor,
+both installed distributions at the source release version, and the base
+dependencies satisfying the source's numeric `>=` bounds. Empty, duplicate or
+contradictory evidence fails. This captures additional installed dependency
+versions without pretending those versions are locked by the native Cargo lock.
+
+Later installation/release adapters must keep `source_provenance()`,
+`validate_provenance()` and the aggregate cross-cell checks authoritative when
+extending `record()` or the installation schema. A new stage/schema or field
+requires an explicit validator update and complete negative/positive evidence;
+do not bypass validation or discard contradictory fields. If future Cargo lock
+files include inactive optional graph branches, derive the expected enabled
+graph explicitly from the verified source rather than silently accepting an
+arbitrary subset. New base requirement forms likewise need deliberate support.
+Recovery callers must bind original workflow identity using authenticated
+attestations, not substitute an unrelated current workflow. The core proof,
+all 20 cell checks and cryptographic provenance requirements still apply.
+
 Run credential-free utility checks with:
 
 ```sh

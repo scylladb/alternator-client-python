@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # Copyright ScyllaDB, Inc.
 # SPDX-License-Identifier: Apache-2.0
-"""Build evidence and isolated interface-wheel qualification (Python 3.10+).
+"""Build evidence and isolated interface-wheel qualification.
 
 This stage intentionally cannot satisfy coordinated release installation evidence:
 native requests, both extras and per-client cleanup belong to P10 qualification.
+Build/install commands support Python 3.10+; source-TOML aggregation uses 3.11+.
 """
 
 from __future__ import annotations
@@ -39,6 +40,35 @@ SLOTS = frozenset(
 )
 BACKEND = "alternator-client-rust-backend"
 SHA = re.compile(r"[0-9a-f]{40}\Z")
+DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+TARGETS = {
+    "manylinux_2_28_x86_64": ("x86_64-unknown-linux-gnu", "Linux", "X64"),
+    "macos_x86_64": ("x86_64-apple-darwin", "macOS", "X64"),
+    "macos_arm64": ("aarch64-apple-darwin", "macOS", "ARM64"),
+    "win_amd64": ("x86_64-pc-windows-msvc", "Windows", "X64"),
+}
+PROVENANCE_FIELDS = frozenset(
+    {
+        "schema",
+        "stage",
+        "build",
+        "slot",
+        "target",
+        "version",
+        "rustc",
+        "maturin",
+        "cargo_metadata",
+        "cargo_lock_sha256",
+        "native_pyproject_sha256",
+        "base_sha256",
+        "installed_environment",
+        "repository",
+        "workflow_ref",
+        "run_attempt",
+        "runner_os",
+        "runner_arch",
+    }
+)
 CHECKS = (
     "fresh_environments",
     "outside_checkout",
@@ -367,6 +397,424 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def require(condition: bool, message: str) -> None:
+    if not condition:
+        raise ValueError(f"Invalid provenance: {message}")
+
+
+def source_provenance(root: Path) -> dict[str, Any]:
+    """Read pinned source without Cargo, compilation or package imports (3.11+)."""
+    import tomllib
+
+    native = root / "native"
+    cargo = tomllib.loads((native / "Cargo.toml").read_text())
+    project = tomllib.loads((native / "pyproject.toml").read_text())
+    lock = tomllib.loads((native / "Cargo.lock").read_text())
+    identities = {
+        (item["name"], item["version"], item.get("source")): item
+        for item in lock["package"]
+    }
+    require(len(identities) == len(lock["package"]), "duplicate locked package")
+    edges = {}
+    for identity, package in identities.items():
+        dependencies = set()
+        for reference in package.get("dependencies", []):
+            parts = reference.split(" ", 2)
+            matches = [
+                key
+                for key in identities
+                if key[0] == parts[0]
+                and (len(parts) < 2 or key[1] == parts[1])
+                and (len(parts) < 3 or f"({key[2]})" == parts[2])
+            ]
+            require(len(matches) == 1, "ambiguous locked dependency")
+            dependencies.add(matches[0])
+        edges[identity] = dependencies
+    features = {"default", *project["tool"]["maturin"]["features"]}
+    while True:
+        expanded = features | {
+            value
+            for name in features
+            for value in cargo["features"][name]
+            if value in cargo["features"]
+        }
+        if expanded == features:
+            break
+        features = expanded
+    dependency_features = {}
+    declarations = []
+    for name, dependency in cargo["dependencies"].items():
+        declaration = (
+            dependency if isinstance(dependency, dict) else {"version": dependency}
+        )
+        required = set(declaration.get("features", []))
+        if declaration.get("default-features", True):
+            required.add("default")
+        dependency_features[declaration.get("package", name)] = required
+        requirement = declaration.get("version", "*")
+        if requirement[0].isdigit():
+            requirement = "^" + requirement
+        declarations.append(
+            (
+                declaration.get("package", name),
+                requirement,
+                tuple(sorted(declaration.get("features", []))),
+                declaration.get("optional", False),
+                declaration.get("default-features", True),
+                name if "package" in declaration else None,
+            )
+        )
+    for feature in features:
+        for reference in cargo["features"][feature]:
+            if "/" in reference:
+                dependency, enabled = reference.split("/", 1)
+                dependency_features[dependency].add(enabled)
+    toolchain = tomllib.loads((native / "rust-toolchain.toml").read_text())
+    maturin = [
+        value.removeprefix("maturin==")
+        for value in project["build-system"]["requires"]
+        if value.startswith("maturin==")
+    ]
+    require(len(maturin) == 1, "maturin must be pinned in source")
+    base_dependencies = {}
+    for value in tomllib.loads((root / "pyproject.toml").read_text())["project"][
+        "dependencies"
+    ]:
+        requirement = re.fullmatch(r"([\w.-]+)>=(\d+(?:\.\d+)*)", value)
+        require(requirement is not None, "unsupported base dependency requirement")
+        base_dependencies[requirement[1].lower().replace("_", "-")] = tuple(
+            int(part) for part in requirement[2].split(".")
+        )
+    return {
+        "version": project["project"]["version"],
+        "rust": toolchain["toolchain"]["channel"],
+        "maturin": f"maturin {maturin[0]}",
+        "root": (cargo["package"]["name"], cargo["package"]["version"], None),
+        "identities": set(identities),
+        "edges": edges,
+        "features": features,
+        "definitions": cargo["features"],
+        "dependency_features": dependency_features,
+        "declarations": declarations,
+        "base_dependencies": base_dependencies,
+        "hashes": {
+            name: (native / filename).read_bytes().replace(b"\r\n", b"\n")
+            for name, filename in (
+                ("cargo_lock_sha256", "Cargo.lock"),
+                ("native_pyproject_sha256", "pyproject.toml"),
+            )
+        },
+    }
+
+
+def enabled_features(
+    definitions: dict[str, list[str]], requested: set[str]
+) -> set[str]:
+    """Expand local aliases and implicit optional dependency features."""
+    result = requested - ({"default"} if "default" not in definitions else set())
+    while True:
+        require(result.issubset(definitions), "required dependency features missing")
+        expanded = set(result)
+        for feature in result:
+            for reference in definitions[feature]:
+                if reference in definitions:
+                    expanded.add(reference)
+                elif "/" in reference:
+                    dependency = reference.split("/", 1)[0]
+                    if dependency in definitions:
+                        expanded.add(dependency)
+        if expanded == result:
+            return result
+        result = expanded
+
+
+def cargo_provenance(metadata: object, source: dict[str, Any]) -> dict[tuple, tuple]:
+    """Compare identities, locked edges and features, never opaque path IDs."""
+    require(
+        isinstance(metadata, dict)
+        and type(metadata.get("version")) is int
+        and metadata["version"] == 1,
+        "missing Cargo format-version 1 metadata",
+    )
+    packages = metadata.get("packages")
+    resolve = metadata.get("resolve")
+    require(
+        isinstance(packages, list) and bool(packages) and isinstance(resolve, dict),
+        "missing Cargo package/resolve metadata",
+    )
+    by_id = {}
+    for package in packages:
+        require(
+            isinstance(package, dict)
+            and all(
+                key in package
+                for key in ("id", "name", "version", "source", "features")
+            ),
+            "incomplete Cargo package",
+        )
+        require(
+            isinstance(package["id"], str)
+            and package["id"]
+            and package["id"] not in by_id,
+            "duplicate or empty Cargo package ID",
+        )
+        require(
+            isinstance(package["name"], str)
+            and isinstance(package["version"], str)
+            and (package["source"] is None or isinstance(package["source"], str))
+            and isinstance(package["features"], dict),
+            "malformed Cargo identity/features",
+        )
+        by_id[package["id"]] = package
+
+    def identity(package: dict[str, Any]) -> tuple:
+        return package["name"], package["version"], package["source"]
+
+    require(
+        {identity(item) for item in packages} == source["identities"]
+        and len(packages) == len(source["identities"]),
+        "Cargo identities differ from Cargo.lock",
+    )
+    root_id = resolve.get("root")
+    require(
+        root_id in by_id
+        and identity(by_id[root_id]) == source["root"]
+        and metadata.get("workspace_members") == [root_id],
+        "Cargo workspace/root differs",
+    )
+    require(
+        by_id[root_id]["features"] == source["definitions"],
+        "native feature definitions differ",
+    )
+    declarations = by_id[root_id].get("dependencies")
+    require(
+        isinstance(declarations, list)
+        and len(declarations) == len(source["declarations"]),
+        "missing native dependency declarations",
+    )
+    actual_declarations = []
+    for declaration in declarations:
+        require(
+            isinstance(declaration, dict)
+            and all(
+                key in declaration
+                for key in (
+                    "name",
+                    "req",
+                    "features",
+                    "optional",
+                    "uses_default_features",
+                    "rename",
+                    "kind",
+                    "target",
+                )
+            )
+            and declaration["kind"] is None
+            and declaration["target"] is None
+            and type(declaration["optional"]) is bool
+            and type(declaration["uses_default_features"]) is bool
+            and isinstance(declaration["features"], list),
+            "malformed native dependency declaration",
+        )
+        actual_declarations.append(
+            (
+                declaration["name"],
+                declaration["req"],
+                tuple(sorted(declaration["features"])),
+                declaration["optional"],
+                declaration["uses_default_features"],
+                declaration["rename"],
+            )
+        )
+    require(
+        sorted(actual_declarations, key=str) == sorted(source["declarations"], key=str),
+        "native dependency declarations differ from source",
+    )
+    nodes = resolve.get("nodes")
+    require(
+        isinstance(nodes, list) and len(nodes) == len(by_id),
+        "missing Cargo graph nodes",
+    )
+    portable = {}
+    for node in nodes:
+        require(
+            isinstance(node, dict) and node.get("id") in by_id, "unknown Cargo node"
+        )
+        package = by_id[node["id"]]
+        key = identity(package)
+        require(key not in portable, "duplicate Cargo graph node")
+        dependencies, deps, features = (
+            node.get("dependencies"),
+            node.get("deps"),
+            node.get("features"),
+        )
+        require(
+            isinstance(dependencies, list)
+            and all(isinstance(value, str) and value in by_id for value in dependencies)
+            and len(set(dependencies)) == len(dependencies),
+            "missing or dangling Cargo dependencies",
+        )
+        require(
+            isinstance(deps, list)
+            and all(
+                isinstance(value, dict) and value.get("pkg") in by_id for value in deps
+            )
+            and {value["pkg"] for value in deps} == set(dependencies),
+            "contradictory Cargo edges",
+        )
+        require(
+            {identity(by_id[value]) for value in dependencies} == source["edges"][key],
+            "Cargo graph differs from Cargo.lock",
+        )
+        require(
+            isinstance(features, list)
+            and all(
+                isinstance(value, str) and value in package["features"]
+                for value in features
+            )
+            and len(set(features)) == len(features),
+            "missing or unknown Cargo features",
+        )
+        if key == source["root"]:
+            require(
+                set(features) == source["features"], "native extension features differ"
+            )
+        elif package["name"] in source["dependency_features"]:
+            required = source["dependency_features"][package["name"]]
+            require(
+                set(features) == enabled_features(package["features"], required),
+                "dependency features differ from source",
+            )
+        portable[key] = tuple(sorted(features))
+    return portable
+
+
+def validate_provenance(
+    provenance: object,
+    install: dict[str, Any],
+    build: dict[str, str],
+    source: dict[str, Any],
+) -> tuple[dict[tuple, tuple], tuple[str, str]]:
+    require(
+        isinstance(provenance, dict) and set(provenance) == PROVENANCE_FIELDS,
+        "missing or unknown provenance fields",
+    )
+    require(
+        type(provenance["schema"]) is int
+        and provenance["schema"] == 1
+        and provenance["stage"] == "interface"
+        and provenance["build"] == build
+        and provenance["slot"] == install["slot"],
+        "schema/build/cell mismatch",
+    )
+    python, platform = install["slot"].split("/")
+    target, runner_os, runner_arch = TARGETS[platform]
+    require(
+        (provenance["target"], provenance["runner_os"], provenance["runner_arch"])
+        == (target, runner_os, runner_arch),
+        "target/runner differs from cell",
+    )
+    require(
+        provenance["version"] == install["version"] == source["version"],
+        "release version differs from source",
+    )
+    require(
+        isinstance(install.get("base_sha256"), str)
+        and DIGEST.fullmatch(install["base_sha256"]) is not None
+        and provenance["base_sha256"] == install["base_sha256"],
+        "base wheel hash differs",
+    )
+    for name, payload in source["hashes"].items():
+        allowed = {hashlib.sha256(payload).hexdigest()}
+        if platform == "win_amd64":
+            allowed.add(hashlib.sha256(payload.replace(b"\n", b"\r\n")).hexdigest())
+        require(
+            isinstance(provenance[name], str) and provenance[name] in allowed,
+            f"{name} differs from pinned source",
+        )
+    rustc = provenance["rustc"]
+    require(
+        isinstance(rustc, str)
+        and rustc.startswith(f"rustc {source['rust']} ")
+        and f"\nrelease: {source['rust']}\n" in rustc
+        and f"\nhost: {target}\n" in rustc
+        and re.search(r"^commit-hash: [0-9a-f]{40}$", rustc, re.MULTILINE) is not None,
+        "missing or contradictory Rust toolchain",
+    )
+    require(
+        provenance["maturin"] == source["maturin"],
+        "maturin version differs from source",
+    )
+    environment = provenance["installed_environment"]
+    require(
+        isinstance(environment, dict)
+        and set(environment) == {"python", "distributions"},
+        "missing installed environment",
+    )
+    require(
+        isinstance(environment["python"], str)
+        and "free-thread" not in environment["python"].lower()
+        and re.match(rf"3\.{python[3:]}\.\d+(?:\s|$)", environment["python"])
+        is not None,
+        "installed interpreter differs from cell",
+    )
+    distributions = environment["distributions"]
+    require(
+        isinstance(distributions, list) and bool(distributions),
+        "missing installed distributions",
+    )
+    installed = {}
+    for item in distributions:
+        require(
+            isinstance(item, dict)
+            and set(item) == {"name", "version"}
+            and all(isinstance(item[key], str) and item[key].strip() for key in item),
+            "incomplete installed distribution",
+        )
+        require(
+            re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", item["name"]) is not None
+            and item["version"] == item["version"].strip(),
+            "malformed installed distribution",
+        )
+        name = re.sub(r"[-_.]+", "-", item["name"]).lower()
+        require(name not in installed, "duplicate installed distribution")
+        installed[name] = item["version"]
+    require(
+        installed.get("alternator-client") == source["version"]
+        and installed.get(BACKEND) == source["version"]
+        and set(source["base_dependencies"]).issubset(installed),
+        "installed project/dependency versions missing or contradictory",
+    )
+    for name, minimum in source["base_dependencies"].items():
+        version = installed[name]
+        require(
+            re.fullmatch(r"\d+(?:\.\d+)*", version) is not None
+            and tuple(int(part) for part in version.split(".")) >= minimum,
+            "installed dependency version does not satisfy source",
+        )
+    identity = tuple(
+        provenance[key] for key in ("repository", "workflow_ref", "run_attempt")
+    )
+    require(
+        all(isinstance(value, str) and value.strip() for value in identity)
+        and re.fullmatch(r"[^/\s]+/[^/\s]+", identity[0]) is not None
+        and identity[1].startswith(identity[0] + "/.github/workflows/")
+        and "@" in identity[1]
+        and re.fullmatch(r"[1-9][0-9]*", identity[2]) is not None,
+        "missing execution identity",
+    )
+    # Earlier successful cells remain valid on unchanged-head failed-job reruns.
+    # Their original run is bound through build.json; attempts can legitimately vary.
+    for key, value in zip(
+        ("GITHUB_REPOSITORY", "GITHUB_WORKFLOW_REF"), identity[:2], strict=True
+    ):
+        require(
+            key not in os.environ or os.environ[key] == value,
+            f"{key} differs from current build",
+        )
+    return cargo_provenance(provenance["cargo_metadata"], source), identity[:2]
+
+
 def git(root: Path, *args: str) -> str:
     return subprocess.check_output(["git", "-C", str(root), *args], text=True).strip()
 
@@ -603,9 +1051,11 @@ def aggregate(
     if not SHA.fullmatch(commit):
         raise ValueError("Expected full source SHA")
     core = verify_core_evidence(core_evidence, commit, run_id, root)
+    source = source_provenance(root)
     receipts = []
     builds = []
     seen = set()
+    common_provenance = None
     for path in sorted(directory.iterdir()):
         if not path.is_dir():
             raise ValueError("Expected only cell artifact directories")
@@ -613,7 +1063,13 @@ def aggregate(
         build = json.loads((path / "build.json").read_bytes())
         provenance = json.loads((path / "provenance.json").read_bytes())
         slot = install["slot"]
-        if slot in seen or slot not in SLOTS or install.get("stage") != "interface":
+        if (
+            slot in seen
+            or slot not in SLOTS
+            or install.get("stage") != "interface"
+            or type(install.get("schema")) is not int
+            or install["schema"] != 1
+        ):
             raise ValueError("Unknown, duplicate or wrong-stage cell")
         if any(install.get(check) is not True for check in CHECKS):
             raise ValueError("Incomplete isolated interface qualification")
@@ -627,8 +1083,13 @@ def aggregate(
         inspect_wheel(wheel, f"3.{python[3:]}", platform, install["version"])
         if digest(wheel) != build["sha256"] or provenance["build"] != build:
             raise ValueError("Wheel/provenance digest mismatch")
-        if provenance["slot"] != slot or provenance["stage"] != "interface":
-            raise ValueError("Provenance cell mismatch")
+        portable = validate_provenance(provenance, install, build, source)
+        if common_provenance is None:
+            common_provenance = portable
+        require(
+            portable == common_provenance,
+            "cells disagree on Cargo features or execution identity",
+        )
         if (path / "SHA256SUMS").read_text() != f"{digest(wheel)}  {wheel.name}\n":
             raise ValueError("Wheel checksum mismatch")
         seen.add(slot)
