@@ -1,0 +1,1139 @@
+{
+  "contract_version": 1,
+  "service": "DynamoDB_20120810",
+  "operations": {
+    "GetItem": {
+      "method": "get_item",
+      "input": "GetItemInput",
+      "output": "GetItemOutput",
+      "errors": [
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ThrottlingException"
+      ]
+    },
+    "PutItem": {
+      "method": "put_item",
+      "input": "PutItemInput",
+      "output": "PutItemOutput",
+      "errors": [
+        "ConditionalCheckFailedException",
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "ItemCollectionSizeLimitExceededException",
+        "TransactionConflictException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ReplicatedWriteConflictException",
+        "ThrottlingException"
+      ]
+    },
+    "UpdateItem": {
+      "method": "update_item",
+      "input": "UpdateItemInput",
+      "output": "UpdateItemOutput",
+      "errors": [
+        "ConditionalCheckFailedException",
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "ItemCollectionSizeLimitExceededException",
+        "TransactionConflictException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ReplicatedWriteConflictException",
+        "ThrottlingException"
+      ]
+    },
+    "DeleteItem": {
+      "method": "delete_item",
+      "input": "DeleteItemInput",
+      "output": "DeleteItemOutput",
+      "errors": [
+        "ConditionalCheckFailedException",
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "ItemCollectionSizeLimitExceededException",
+        "TransactionConflictException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ReplicatedWriteConflictException",
+        "ThrottlingException"
+      ]
+    },
+    "Query": {
+      "method": "query",
+      "input": "QueryInput",
+      "output": "QueryOutput",
+      "errors": [
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ThrottlingException"
+      ]
+    },
+    "Scan": {
+      "method": "scan",
+      "input": "ScanInput",
+      "output": "ScanOutput",
+      "errors": [
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ThrottlingException"
+      ]
+    },
+    "BatchGetItem": {
+      "method": "batch_get_item",
+      "input": "BatchGetItemInput",
+      "output": "BatchGetItemOutput",
+      "errors": [
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ThrottlingException"
+      ]
+    },
+    "BatchWriteItem": {
+      "method": "batch_write_item",
+      "input": "BatchWriteItemInput",
+      "output": "BatchWriteItemOutput",
+      "errors": [
+        "ProvisionedThroughputExceededException",
+        "ResourceNotFoundException",
+        "ItemCollectionSizeLimitExceededException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ReplicatedWriteConflictException",
+        "ThrottlingException"
+      ]
+    },
+    "TransactGetItems": {
+      "method": "transact_get_items",
+      "input": "TransactGetItemsInput",
+      "output": "TransactGetItemsOutput",
+      "errors": [
+        "ResourceNotFoundException",
+        "TransactionCanceledException",
+        "ProvisionedThroughputExceededException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ThrottlingException"
+      ]
+    },
+    "TransactWriteItems": {
+      "method": "transact_write_items",
+      "input": "TransactWriteItemsInput",
+      "output": "TransactWriteItemsOutput",
+      "errors": [
+        "ResourceNotFoundException",
+        "TransactionCanceledException",
+        "TransactionInProgressException",
+        "IdempotentParameterMismatchException",
+        "ProvisionedThroughputExceededException",
+        "RequestLimitExceeded",
+        "InternalServerError",
+        "ThrottlingException"
+      ]
+    }
+  },
+  "shapes": {
+    "GetItemInput": {
+      "type": "structure",
+      "required": [
+        "TableName",
+        "Key"
+      ],
+      "members": {
+        "TableName": "TableArn",
+        "Key": "Key",
+        "AttributesToGet": "AttributeNameList",
+        "ConsistentRead": "ConsistentRead",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ProjectionExpression": "ProjectionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap"
+      }
+    },
+    "TableArn": {
+      "type": "string",
+      "min": 1,
+      "max": 1024
+    },
+    "Key": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "AttributeValue"
+    },
+    "AttributeName": {
+      "type": "string",
+      "max": 65535
+    },
+    "AttributeValue": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "S": "StringAttributeValue",
+        "N": "NumberAttributeValue",
+        "B": "BinaryAttributeValue",
+        "SS": "StringSetAttributeValue",
+        "NS": "NumberSetAttributeValue",
+        "BS": "BinarySetAttributeValue",
+        "M": "MapAttributeValue",
+        "L": "ListAttributeValue",
+        "NULL": "NullAttributeValue",
+        "BOOL": "BooleanAttributeValue"
+      }
+    },
+    "StringAttributeValue": {
+      "type": "string"
+    },
+    "NumberAttributeValue": {
+      "type": "string"
+    },
+    "BinaryAttributeValue": {
+      "type": "blob"
+    },
+    "StringSetAttributeValue": {
+      "type": "list",
+      "member": "StringAttributeValue"
+    },
+    "NumberSetAttributeValue": {
+      "type": "list",
+      "member": "NumberAttributeValue"
+    },
+    "BinarySetAttributeValue": {
+      "type": "list",
+      "member": "BinaryAttributeValue"
+    },
+    "MapAttributeValue": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "AttributeValue"
+    },
+    "ListAttributeValue": {
+      "type": "list",
+      "member": "AttributeValue"
+    },
+    "NullAttributeValue": {
+      "type": "boolean"
+    },
+    "BooleanAttributeValue": {
+      "type": "boolean"
+    },
+    "AttributeNameList": {
+      "type": "list",
+      "min": 1,
+      "member": "AttributeName"
+    },
+    "ConsistentRead": {
+      "type": "boolean"
+    },
+    "ReturnConsumedCapacity": {
+      "type": "string",
+      "enum": [
+        "INDEXES",
+        "TOTAL",
+        "NONE"
+      ]
+    },
+    "ProjectionExpression": {
+      "type": "string"
+    },
+    "ExpressionAttributeNameMap": {
+      "type": "map",
+      "key": "ExpressionAttributeNameVariable",
+      "value": "AttributeName"
+    },
+    "ExpressionAttributeNameVariable": {
+      "type": "string"
+    },
+    "GetItemOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Item": "AttributeMap",
+        "ConsumedCapacity": "ConsumedCapacity"
+      }
+    },
+    "AttributeMap": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "AttributeValue"
+    },
+    "ConsumedCapacity": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "TableName": "TableArn",
+        "CapacityUnits": "ConsumedCapacityUnits",
+        "ReadCapacityUnits": "ConsumedCapacityUnits",
+        "WriteCapacityUnits": "ConsumedCapacityUnits",
+        "Table": "Capacity",
+        "LocalSecondaryIndexes": "SecondaryIndexesCapacityMap",
+        "GlobalSecondaryIndexes": "SecondaryIndexesCapacityMap",
+        "VectorIndexes": "VectorIndexesCapacityMap"
+      }
+    },
+    "ConsumedCapacityUnits": {
+      "type": "double"
+    },
+    "Capacity": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "ReadCapacityUnits": "ConsumedCapacityUnits",
+        "WriteCapacityUnits": "ConsumedCapacityUnits",
+        "CapacityUnits": "ConsumedCapacityUnits"
+      }
+    },
+    "SecondaryIndexesCapacityMap": {
+      "type": "map",
+      "key": "IndexName",
+      "value": "Capacity"
+    },
+    "IndexName": {
+      "type": "string",
+      "min": 3,
+      "max": 255,
+      "pattern": "[a-zA-Z0-9_.-]+"
+    },
+    "VectorIndexesCapacityMap": {
+      "type": "map",
+      "key": "IndexName",
+      "value": "VectorCapacity"
+    },
+    "VectorCapacity": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "VectorSearchRequestBytes": "ConsumedCapacityUnits",
+        "VectorWriteRequestBytes": "ConsumedCapacityUnits"
+      }
+    },
+    "ProvisionedThroughputExceededException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage",
+        "ThrottlingReasons": "ThrottlingReasonList"
+      }
+    },
+    "ErrorMessage": {
+      "type": "string"
+    },
+    "ThrottlingReasonList": {
+      "type": "list",
+      "member": "ThrottlingReason"
+    },
+    "ThrottlingReason": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "reason": "Reason",
+        "resource": "Resource"
+      }
+    },
+    "Reason": {
+      "type": "string"
+    },
+    "Resource": {
+      "type": "string"
+    },
+    "ResourceNotFoundException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage"
+      }
+    },
+    "RequestLimitExceeded": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage",
+        "ThrottlingReasons": "ThrottlingReasonList"
+      }
+    },
+    "InternalServerError": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage"
+      }
+    },
+    "ThrottlingException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "AvailabilityErrorMessage",
+        "throttlingReasons": "ThrottlingReasonList"
+      }
+    },
+    "AvailabilityErrorMessage": {
+      "type": "string"
+    },
+    "PutItemInput": {
+      "type": "structure",
+      "required": [
+        "TableName",
+        "Item"
+      ],
+      "members": {
+        "TableName": "TableArn",
+        "Item": "PutItemInputAttributeMap",
+        "Expected": "ExpectedAttributeMap",
+        "ReturnValues": "ReturnValue",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ReturnItemCollectionMetrics": "ReturnItemCollectionMetrics",
+        "ConditionalOperator": "ConditionalOperator",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "PutItemInputAttributeMap": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "AttributeValue"
+    },
+    "ExpectedAttributeMap": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "ExpectedAttributeValue"
+    },
+    "ExpectedAttributeValue": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Value": "AttributeValue",
+        "Exists": "BooleanObject",
+        "ComparisonOperator": "ComparisonOperator",
+        "AttributeValueList": "AttributeValueList"
+      }
+    },
+    "BooleanObject": {
+      "type": "boolean"
+    },
+    "ComparisonOperator": {
+      "type": "string",
+      "enum": [
+        "EQ",
+        "NE",
+        "IN",
+        "LE",
+        "LT",
+        "GE",
+        "GT",
+        "BETWEEN",
+        "NOT_NULL",
+        "NULL",
+        "CONTAINS",
+        "NOT_CONTAINS",
+        "BEGINS_WITH"
+      ]
+    },
+    "AttributeValueList": {
+      "type": "list",
+      "member": "AttributeValue"
+    },
+    "ReturnValue": {
+      "type": "string",
+      "enum": [
+        "NONE",
+        "ALL_OLD",
+        "UPDATED_OLD",
+        "ALL_NEW",
+        "UPDATED_NEW"
+      ]
+    },
+    "ReturnItemCollectionMetrics": {
+      "type": "string",
+      "enum": [
+        "SIZE",
+        "NONE"
+      ]
+    },
+    "ConditionalOperator": {
+      "type": "string",
+      "enum": [
+        "AND",
+        "OR"
+      ]
+    },
+    "ConditionExpression": {
+      "type": "string"
+    },
+    "ExpressionAttributeValueMap": {
+      "type": "map",
+      "key": "ExpressionAttributeValueVariable",
+      "value": "AttributeValue"
+    },
+    "ExpressionAttributeValueVariable": {
+      "type": "string"
+    },
+    "ReturnValuesOnConditionCheckFailure": {
+      "type": "string",
+      "enum": [
+        "ALL_OLD",
+        "NONE"
+      ]
+    },
+    "PutItemOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Attributes": "AttributeMap",
+        "ConsumedCapacity": "ConsumedCapacity",
+        "ItemCollectionMetrics": "ItemCollectionMetrics"
+      }
+    },
+    "ItemCollectionMetrics": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "ItemCollectionKey": "ItemCollectionKeyAttributeMap",
+        "SizeEstimateRangeGB": "ItemCollectionSizeEstimateRange"
+      }
+    },
+    "ItemCollectionKeyAttributeMap": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "AttributeValue"
+    },
+    "ItemCollectionSizeEstimateRange": {
+      "type": "list",
+      "member": "ItemCollectionSizeEstimateBound"
+    },
+    "ItemCollectionSizeEstimateBound": {
+      "type": "double"
+    },
+    "ConditionalCheckFailedException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage",
+        "Item": "AttributeMap"
+      }
+    },
+    "ItemCollectionSizeLimitExceededException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage"
+      }
+    },
+    "TransactionConflictException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage"
+      }
+    },
+    "ReplicatedWriteConflictException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "message": "ErrorMessage"
+      }
+    },
+    "UpdateItemInput": {
+      "type": "structure",
+      "required": [
+        "TableName",
+        "Key"
+      ],
+      "members": {
+        "TableName": "TableArn",
+        "Key": "Key",
+        "AttributeUpdates": "AttributeUpdates",
+        "Expected": "ExpectedAttributeMap",
+        "ConditionalOperator": "ConditionalOperator",
+        "ReturnValues": "ReturnValue",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ReturnItemCollectionMetrics": "ReturnItemCollectionMetrics",
+        "UpdateExpression": "UpdateExpression",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "AttributeUpdates": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "AttributeValueUpdate"
+    },
+    "AttributeValueUpdate": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Value": "AttributeValue",
+        "Action": "AttributeAction"
+      }
+    },
+    "AttributeAction": {
+      "type": "string",
+      "enum": [
+        "ADD",
+        "PUT",
+        "DELETE"
+      ]
+    },
+    "UpdateExpression": {
+      "type": "string"
+    },
+    "UpdateItemOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Attributes": "AttributeMap",
+        "ConsumedCapacity": "ConsumedCapacity",
+        "ItemCollectionMetrics": "ItemCollectionMetrics"
+      }
+    },
+    "DeleteItemInput": {
+      "type": "structure",
+      "required": [
+        "TableName",
+        "Key"
+      ],
+      "members": {
+        "TableName": "TableArn",
+        "Key": "Key",
+        "Expected": "ExpectedAttributeMap",
+        "ConditionalOperator": "ConditionalOperator",
+        "ReturnValues": "ReturnValue",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ReturnItemCollectionMetrics": "ReturnItemCollectionMetrics",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "DeleteItemOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Attributes": "AttributeMap",
+        "ConsumedCapacity": "ConsumedCapacity",
+        "ItemCollectionMetrics": "ItemCollectionMetrics"
+      }
+    },
+    "QueryInput": {
+      "type": "structure",
+      "required": [
+        "TableName"
+      ],
+      "members": {
+        "TableName": "TableArn",
+        "IndexName": "IndexName",
+        "Select": "Select",
+        "AttributesToGet": "AttributeNameList",
+        "Limit": "PositiveIntegerObject",
+        "ConsistentRead": "ConsistentRead",
+        "KeyConditions": "KeyConditions",
+        "QueryFilter": "FilterConditionMap",
+        "ConditionalOperator": "ConditionalOperator",
+        "ScanIndexForward": "BooleanObject",
+        "ExclusiveStartKey": "Key",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ProjectionExpression": "ProjectionExpression",
+        "FilterExpression": "ConditionExpression",
+        "KeyConditionExpression": "KeyExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap"
+      }
+    },
+    "Select": {
+      "type": "string",
+      "enum": [
+        "ALL_ATTRIBUTES",
+        "ALL_PROJECTED_ATTRIBUTES",
+        "SPECIFIC_ATTRIBUTES",
+        "COUNT"
+      ]
+    },
+    "PositiveIntegerObject": {
+      "type": "integer",
+      "min": 1
+    },
+    "KeyConditions": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "Condition"
+    },
+    "Condition": {
+      "type": "structure",
+      "required": [
+        "ComparisonOperator"
+      ],
+      "members": {
+        "AttributeValueList": "AttributeValueList",
+        "ComparisonOperator": "ComparisonOperator"
+      }
+    },
+    "FilterConditionMap": {
+      "type": "map",
+      "key": "AttributeName",
+      "value": "Condition"
+    },
+    "KeyExpression": {
+      "type": "string"
+    },
+    "QueryOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Items": "ItemList",
+        "Count": "Integer",
+        "ScannedCount": "Integer",
+        "LastEvaluatedKey": "Key",
+        "ConsumedCapacity": "ConsumedCapacity"
+      }
+    },
+    "ItemList": {
+      "type": "list",
+      "member": "AttributeMap"
+    },
+    "Integer": {
+      "type": "integer"
+    },
+    "ScanInput": {
+      "type": "structure",
+      "required": [
+        "TableName"
+      ],
+      "members": {
+        "TableName": "TableArn",
+        "IndexName": "IndexName",
+        "AttributesToGet": "AttributeNameList",
+        "Limit": "PositiveIntegerObject",
+        "Select": "Select",
+        "ScanFilter": "FilterConditionMap",
+        "ConditionalOperator": "ConditionalOperator",
+        "ExclusiveStartKey": "Key",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "TotalSegments": "ScanTotalSegments",
+        "Segment": "ScanSegment",
+        "ProjectionExpression": "ProjectionExpression",
+        "FilterExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ConsistentRead": "ConsistentRead"
+      }
+    },
+    "ScanTotalSegments": {
+      "type": "integer",
+      "min": 1,
+      "max": 1000000
+    },
+    "ScanSegment": {
+      "type": "integer",
+      "min": 0,
+      "max": 999999
+    },
+    "ScanOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Items": "ItemList",
+        "Count": "Integer",
+        "ScannedCount": "Integer",
+        "LastEvaluatedKey": "Key",
+        "ConsumedCapacity": "ConsumedCapacity"
+      }
+    },
+    "BatchGetItemInput": {
+      "type": "structure",
+      "required": [
+        "RequestItems"
+      ],
+      "members": {
+        "RequestItems": "BatchGetRequestMap",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity"
+      }
+    },
+    "BatchGetRequestMap": {
+      "type": "map",
+      "min": 1,
+      "max": 100,
+      "key": "TableArn",
+      "value": "KeysAndAttributes"
+    },
+    "KeysAndAttributes": {
+      "type": "structure",
+      "required": [
+        "Keys"
+      ],
+      "members": {
+        "Keys": "KeyList",
+        "AttributesToGet": "AttributeNameList",
+        "ConsistentRead": "ConsistentRead",
+        "ProjectionExpression": "ProjectionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap"
+      }
+    },
+    "KeyList": {
+      "type": "list",
+      "min": 1,
+      "max": 100,
+      "member": "Key"
+    },
+    "BatchGetItemOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Responses": "BatchGetResponseMap",
+        "UnprocessedKeys": "BatchGetRequestMap",
+        "ConsumedCapacity": "ConsumedCapacityMultiple"
+      }
+    },
+    "BatchGetResponseMap": {
+      "type": "map",
+      "key": "TableArn",
+      "value": "ItemList"
+    },
+    "ConsumedCapacityMultiple": {
+      "type": "list",
+      "member": "ConsumedCapacity"
+    },
+    "BatchWriteItemInput": {
+      "type": "structure",
+      "required": [
+        "RequestItems"
+      ],
+      "members": {
+        "RequestItems": "BatchWriteItemRequestMap",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ReturnItemCollectionMetrics": "ReturnItemCollectionMetrics"
+      }
+    },
+    "BatchWriteItemRequestMap": {
+      "type": "map",
+      "min": 1,
+      "max": 25,
+      "key": "TableArn",
+      "value": "WriteRequests"
+    },
+    "WriteRequests": {
+      "type": "list",
+      "min": 1,
+      "max": 25,
+      "member": "WriteRequest"
+    },
+    "WriteRequest": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "PutRequest": "PutRequest",
+        "DeleteRequest": "DeleteRequest"
+      }
+    },
+    "PutRequest": {
+      "type": "structure",
+      "required": [
+        "Item"
+      ],
+      "members": {
+        "Item": "PutItemInputAttributeMap"
+      }
+    },
+    "DeleteRequest": {
+      "type": "structure",
+      "required": [
+        "Key"
+      ],
+      "members": {
+        "Key": "Key"
+      }
+    },
+    "BatchWriteItemOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "UnprocessedItems": "BatchWriteItemRequestMap",
+        "ItemCollectionMetrics": "ItemCollectionMetricsPerTable",
+        "ConsumedCapacity": "ConsumedCapacityMultiple"
+      }
+    },
+    "ItemCollectionMetricsPerTable": {
+      "type": "map",
+      "key": "TableArn",
+      "value": "ItemCollectionMetricsMultiple"
+    },
+    "ItemCollectionMetricsMultiple": {
+      "type": "list",
+      "member": "ItemCollectionMetrics"
+    },
+    "TransactGetItemsInput": {
+      "type": "structure",
+      "required": [
+        "TransactItems"
+      ],
+      "members": {
+        "TransactItems": "TransactGetItemList",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity"
+      }
+    },
+    "TransactGetItemList": {
+      "type": "list",
+      "min": 1,
+      "max": 100,
+      "member": "TransactGetItem"
+    },
+    "TransactGetItem": {
+      "type": "structure",
+      "required": [
+        "Get"
+      ],
+      "members": {
+        "Get": "Get"
+      }
+    },
+    "Get": {
+      "type": "structure",
+      "required": [
+        "Key",
+        "TableName"
+      ],
+      "members": {
+        "Key": "Key",
+        "TableName": "TableArn",
+        "ProjectionExpression": "ProjectionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap"
+      }
+    },
+    "TransactGetItemsOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "ConsumedCapacity": "ConsumedCapacityMultiple",
+        "Responses": "ItemResponseList"
+      }
+    },
+    "ItemResponseList": {
+      "type": "list",
+      "min": 1,
+      "max": 100,
+      "member": "ItemResponse"
+    },
+    "ItemResponse": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Item": "AttributeMap"
+      }
+    },
+    "TransactionCanceledException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Message": "ErrorMessage",
+        "CancellationReasons": "CancellationReasonList"
+      }
+    },
+    "CancellationReasonList": {
+      "type": "list",
+      "min": 1,
+      "max": 100,
+      "member": "CancellationReason"
+    },
+    "CancellationReason": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Item": "AttributeMap",
+        "Code": "Code",
+        "Message": "ErrorMessage"
+      }
+    },
+    "Code": {
+      "type": "string"
+    },
+    "TransactWriteItemsInput": {
+      "type": "structure",
+      "required": [
+        "TransactItems"
+      ],
+      "members": {
+        "TransactItems": "TransactWriteItemList",
+        "ReturnConsumedCapacity": "ReturnConsumedCapacity",
+        "ReturnItemCollectionMetrics": "ReturnItemCollectionMetrics",
+        "ClientRequestToken": "ClientRequestToken"
+      }
+    },
+    "TransactWriteItemList": {
+      "type": "list",
+      "min": 1,
+      "max": 100,
+      "member": "TransactWriteItem"
+    },
+    "TransactWriteItem": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "ConditionCheck": "ConditionCheck",
+        "Put": "Put",
+        "Delete": "Delete",
+        "Update": "Update"
+      }
+    },
+    "ConditionCheck": {
+      "type": "structure",
+      "required": [
+        "Key",
+        "TableName",
+        "ConditionExpression"
+      ],
+      "members": {
+        "Key": "Key",
+        "TableName": "TableArn",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "Put": {
+      "type": "structure",
+      "required": [
+        "Item",
+        "TableName"
+      ],
+      "members": {
+        "Item": "PutItemInputAttributeMap",
+        "TableName": "TableArn",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "Delete": {
+      "type": "structure",
+      "required": [
+        "Key",
+        "TableName"
+      ],
+      "members": {
+        "Key": "Key",
+        "TableName": "TableArn",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "Update": {
+      "type": "structure",
+      "required": [
+        "Key",
+        "UpdateExpression",
+        "TableName"
+      ],
+      "members": {
+        "Key": "Key",
+        "UpdateExpression": "UpdateExpression",
+        "TableName": "TableArn",
+        "ConditionExpression": "ConditionExpression",
+        "ExpressionAttributeNames": "ExpressionAttributeNameMap",
+        "ExpressionAttributeValues": "ExpressionAttributeValueMap",
+        "ReturnValuesOnConditionCheckFailure": "ReturnValuesOnConditionCheckFailure"
+      }
+    },
+    "ClientRequestToken": {
+      "type": "string",
+      "min": 1,
+      "max": 36
+    },
+    "TransactWriteItemsOutput": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "ConsumedCapacity": "ConsumedCapacityMultiple",
+        "ItemCollectionMetrics": "ItemCollectionMetricsPerTable"
+      }
+    },
+    "TransactionInProgressException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Message": "ErrorMessage"
+      }
+    },
+    "IdempotentParameterMismatchException": {
+      "type": "structure",
+      "required": [],
+      "members": {
+        "Message": "ErrorMessage"
+      }
+    }
+  },
+  "config": {
+    "seed_hosts": "Map host-only names/IPs to native seeds; freeze a copy at construction.",
+    "port": "Shared Alternator port for data and discovery.",
+    "scheme": "http or verified https.",
+    "routing_scope": "ClusterScope/DatacenterScope/RackScope and explicit built-in fallback chains only; reject subclasses/custom implementations.",
+    "request_compression": "NONE/GZIP, min_size_bytes, gzip_level (0..9); Rust serializes and compresses.",
+    "response_compression": "Native gzip/deflate negotiation and decompression, preserving original headers.",
+    "header_optimization": "enabled bool only. Reject non-None whitelist or whitelist_callback before network.",
+    "tls": "Verified system/custom CA trust and optional client cert/key; see nested settings.",
+    "key_affinity": "NONE/RMW/ANY_WRITE and frozen table_pk_attributes. Default discovery_backoff uses native policy; reject custom backoff.",
+    "retries": "STANDARD only; max_attempts counts initial attempt. Reject LEGACY/ADAPTIVE before network.",
+    "max_pool_connections": "Default 200 accepted without translation; native pools own capacity. Reject nondefault Python pool tuning.",
+    "node_list_polling": "active_interval_ms/idle_interval_ms map to native intervals.",
+    "timeouts": "connect_seconds maps connect timeout; read_seconds maps native operation/attempt deadline (not Python socket-read semantics); discovery_seconds bounds discovery request.",
+    "aws_region": "Signing region; default us-east-1.",
+    "user_agent": "Literal/None or supported construction callback resolved once against DEFAULT_USER_AGENT, then frozen for native and lazy Python delegate; no request callback."
+  },
+  "tls": {
+    "custom_ca_cert_paths": "Load all PEM paths before network.",
+    "trust_system_ca_certs": "Enable/disable system CA roots independently of custom roots; fail if no usable roots.",
+    "trust_all_certificates": "False only; reject True.",
+    "verify_hostname": "True only; reject False.",
+    "session_cache": "Default TlsSessionCacheConfig accepted using native TLS session policy; reject any nondefault member.",
+    "client_cert_path": "PEM client chain, optional combined private key.",
+    "client_key_path": "PEM client private key; requires certificate.",
+    "key_log_file_path": "None only; reject a configured path."
+  },
+  "exclusions": {
+    "operations": [
+      "execute_statement",
+      "batch_execute_statement",
+      "execute_transaction",
+      "resource",
+      "vectors"
+    ],
+    "interfaces": [
+      "arbitrary boto_kwargs",
+      "botocore event hooks",
+      "exact boto3 client identity",
+      "custom routing/header policies",
+      "per-request Python callbacks",
+      "inherited clients after fork",
+      "subinterpreters",
+      "free-threaded CPython"
+    ],
+    "input_failures": {
+      "unknown_parameter": "botocore.exceptions.ParamValidationError",
+      "wrong_type": "botocore.exceptions.ParamValidationError",
+      "missing_required": "botocore.exceptions.ParamValidationError",
+      "unsupported_config": "alternator.exceptions.ConfigurationError",
+      "unsupported_operation": "NotImplementedError"
+    },
+    "limitations": [
+      "Native typed SDK may reject malformed AttributeValue unions locally; Python/service validation timing and exact messages are not guaranteed.",
+      "Do not promise byte-identical JSON, header order, retry timing, SDK user-agent suffix, or native socket/pool defaults."
+    ]
+  },
+  "error_payload_policy": {
+    "python": "Canonical Error plus only body fields declared by the operation error shape; unmodeled body fields are discarded.",
+    "rust": "Canonical Error plus every body field except protocol __type; preserve message casing and unknown members. Modeled Item/CancellationReasons attributes use decoded Python values. Preserve original wire body and headers separately in native exception context."
+  }
+}

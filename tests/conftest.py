@@ -32,6 +32,9 @@ if TYPE_CHECKING:
     from tests.integration.scylla_version import ScyllaVersion
 
 
+pytest_plugins = ["tests.contract.fixtures"]
+
+
 @pytest.fixture
 def fake_alternator_server() -> Iterator[FakeAlternatorServer]:
     """Provide a deterministic local HTTP server for Alternator unit tests."""
