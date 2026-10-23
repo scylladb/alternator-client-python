@@ -1,0 +1,7 @@
+This distribution includes Tokio 1.54.1, Copyright (c) Tokio Contributors,
+under the MIT license retained in vendor/tokio/LICENSE.
+Upstream: https://github.com/tokio-rs/tokio
+Source commit: b53b2001ed2ccfd9b87e32a0c6da1a1eebdc80b8
+Two downstream changes repair cleanup after worker-startup failures.
+The exact patch and archive/per-file checksums are retained with build sources
+in vendor/tokio-1.54.1-startup-cleanup.patch and vendor/tokio-provenance.json.
