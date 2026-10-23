@@ -23,7 +23,7 @@ uv venv .venv
 uv pip install --python .venv/bin/python -e '.[dev,async]' maturin==1.15.0
 (cd native && ../.venv/bin/maturin build --release --locked --interpreter ../.venv/bin/python --out ../dist/native)
 uv pip install --python .venv/bin/python dist/native/*.whl
-.venv/bin/python -m pytest native/tests/test_extension.py
+.venv/bin/python -m pytest native/tests/test_extension.py native/tests/test_startup_cleanup.py
 ```
 
 Run the Rust core independently of Python or extension-module linking:
@@ -45,3 +45,11 @@ pyo3-async-runtimes 0.27.0. Upstream references:
 [PyO3 extension and ABI features](https://pyo3.rs/v0.27.2/features.html),
 [maturin configuration](https://www.maturin.rs/config.html), and
 [async bridge runtime initialization](https://docs.rs/pyo3-async-runtimes/0.27.0/pyo3_async_runtimes/tokio/fn.init_with_runtime.html).
+
+Tokio 1.54.1 carries a small downstream worker-startup cleanup patch, applied
+through one Cargo-root override. The original archive, exact two-file patch,
+MIT license, per-file checksums and removal criteria are documented in
+[vendor/README.md](vendor/README.md). Wheels retain Tokio's license, attribution
+and patch provenance. Core and Linux fault probes cover failed construction;
+portable runtime/interface tests run on every supported interpreter/platform.
+Linux fault probes require a C compiler and run only in disposable subprocesses.

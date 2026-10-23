@@ -1,0 +1,64 @@
+--- a/src/runtime/scheduler/multi_thread/worker.rs
++++ b/src/runtime/scheduler/multi_thread/worker.rs
+@@ -511,8 +511,25 @@
+ 
+ impl Launch {
+     pub(crate) fn launch(mut self) {
++        // Retain all cores until startup completes so a failed spawn can be
++        // unwound without leaving workers running or unstarted cores behind.
++        for worker in self.0.iter().cloned() {
++            runtime::spawn_blocking(move || run(worker));
++        }
++        self.0.clear();
++    }
++}
++
++impl Drop for Launch {
++    fn drop(&mut self) {
++        if let Some(worker) = self.0.first() {
++            worker.handle.shutdown();
++        }
+         for worker in self.0.drain(..) {
+-            runtime::spawn_blocking(move || run(worker));
++            if let Some(mut core) = worker.core.take() {
++                core.pre_shutdown(&worker);
++                worker.handle.shutdown_core(core);
++            }
+         }
+     }
+ }
+--- a/src/runtime/blocking/pool.rs
++++ b/src/runtime/blocking/pool.rs
+@@ -575,7 +575,7 @@
+ 
+     fn begin_shutdown(&self, metrics: &SpawnerMetrics) -> Option<ShutdownHandles> {
+         match self {
+-            InnerImpl::Locked(l) => l.begin_shutdown(),
++            InnerImpl::Locked(l) => l.begin_shutdown(metrics),
+             InnerImpl::Sharded(s) => s.begin_shutdown(metrics),
+         }
+     }
+@@ -739,10 +739,22 @@
+     /// Begin pool shutdown: set the shutdown flag, drop the shutdown
+     /// sender, wake all waiting workers, and hand back the worker
+     /// `JoinHandle`s for the caller to join.
+-    fn begin_shutdown(&self) -> Option<ShutdownHandles> {
++    fn begin_shutdown(&self, metrics: &SpawnerMetrics) -> Option<ShutdownHandles> {
+         let mut locked = self.mutex.lock();
+         let handles = locked.thread_mgmt_state.begin_shutdown()?;
+         self.condvar.notify_all();
++        // A failed first spawn can leave tasks queued with no worker to
++        // cancel them. Match the sharded queue's no-workers shutdown path.
++        let tasks = if metrics.num_threads() == 0 {
++            std::mem::take(&mut locked.queue)
++        } else {
++            VecDeque::new()
++        };
++        drop(locked);
++        for task in tasks {
++            metrics.dec_queue_depth();
++            task.shutdown_or_run_if_mandatory();
++        }
+         Some(handles)
+     }
+ }

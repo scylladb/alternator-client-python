@@ -9,7 +9,7 @@ description = "Experimental native backend for the ScyllaDB Alternator Python cl
 readme = "README.md"
 requires-python = ">=3.10,<3.15"
 license = "Apache-2.0"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "vendor/tokio/LICENSE", "vendor/NOTICE.txt"]
 authors = [{name = "ScyllaDB", email = "info@scylladb.com"}]
 keywords = ["scylladb", "alternator", "dynamodb"]
 classifiers = [
@@ -37,3 +37,11 @@ bindings = "pyo3"
 module-name = "_alternator_rust"
 features = ["extension"]
 locked = true
+include = [
+    { path = "vendor/tokio/**/*", format = "sdist" },
+    { path = "vendor/tokio-provenance.json", format = ["sdist", "wheel"] },
+    { path = "vendor/tokio-1.54.1-startup-cleanup.patch", format = ["sdist", "wheel"] },
+    { path = "vendor/README.md", format = "sdist" },
+    { path = "scripts/verify_vendor.py", format = "sdist" },
+    { path = "tests/**/*", format = "sdist" },
+]

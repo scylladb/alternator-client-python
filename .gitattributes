@@ -1,0 +1,4 @@
+
+# Keep third-party source and its audited patch byte-identical on all platforms.
+native/vendor/tokio/** -text
+native/vendor/tokio-1.54.1-startup-cleanup.patch -text whitespace=-blank-at-eol

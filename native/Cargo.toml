@@ -24,3 +24,11 @@ pyo3-async-runtimes = { version = "=0.27.0", features = ["tokio-runtime"], optio
 # P4 adds this dependency after P0 merges; never build against an unpinned branch.
 rust-repository = "https://github.com/scylladb/alternator-client-rust"
 rust-baseline-revision = "68cf706d3578c251877d6e008298b59306e3f1df"
+
+[patch.crates-io]
+tokio = { path = "vendor/tokio" }
+
+[[test]]
+name = "startup_cleanup"
+path = "tests/startup_cleanup.rs"
+harness = false
