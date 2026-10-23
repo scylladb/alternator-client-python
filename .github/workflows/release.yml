@@ -18,19 +18,17 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  build:
-    name: Build & Test
+  validate:
+    name: Validate Release
     runs-on: ubuntu-latest
-    environment: release
     permissions:
       actions: read
       contents: read
       issues: read
     outputs:
-      commit: ${{ steps.release-commit.outputs.sha }}
+      commit: ${{ github.sha }}
       package-version: ${{ steps.version.outputs.package-version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
-      baseline: ${{ github.sha }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -68,7 +66,6 @@ jobs:
             echo 'All releases, including TestPyPI rehearsals, must start from main.' >&2
             exit 1
           }
-          echo "RELEASE_BASE_COMMIT=$GITHUB_SHA" >> "$GITHUB_ENV"
 
       - name: Validate and set package version
         id: version
@@ -147,6 +144,37 @@ jobs:
 
       - name: Run linters
         run: make lint
+
+  build:
+    name: Prepare & Sign Release
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.release-commit.outputs.sha }}
+      package-version: ${{ needs.validate.outputs.package-version }}
+      prerelease: ${{ needs.validate.outputs.prerelease }}
+      baseline: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify validated revision
+        env:
+          VALIDATED_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          test "$VALIDATED_COMMIT" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$VALIDATED_COMMIT"
+          echo "RELEASE_BASE_COMMIT=$VALIDATED_COMMIT" >> "$GITHUB_ENV"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.11"
 
       - name: Prepare signed release commit
         id: release-commit

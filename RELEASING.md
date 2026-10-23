@@ -62,9 +62,11 @@ required. The workflow:
 
 1. Validates version availability, the main-branch CI result, and release blockers.
 2. Sets `alternator/_version.py` to the requested package version and runs unit
-   tests, integration tests, and linters.
-3. Creates and verifies a signed release commit containing only the version-file
-   change. This commit is a child of the selected `main` commit and is published
+   tests, integration tests, and linters on an unprivileged validation runner.
+3. After validation succeeds, requests protected-environment approval. Release
+   preparation starts on a fresh runner, checks out the exact validated commit,
+   and applies the requested version again. Creates and verifies a signed release
+   commit containing only the version-file change. This commit is a child of the selected `main` commit and is published
    through its signed release tag; it is not pushed to `main`.
 4. Builds the wheel and source archive from that release commit, validates their
    metadata in a separate step without signing secrets, then signs the artifacts

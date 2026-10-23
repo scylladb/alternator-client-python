@@ -561,21 +561,51 @@ class DiagnosticTests(unittest.TestCase):
 
 
 class WorkflowTests(unittest.TestCase):
-    def test_all_signing_and_publishing_jobs_require_release_environment(self):
+    def workflow_jobs(self):
         import re
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        jobs = re.findall(r"^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", workflow, re.M | re.S)
-        self.assertEqual({name for name, _ in jobs},
-                         {"build", "tag-release", "publish-testpypi", "publish", "create-release"})
-        for name, body in jobs:
+        return dict(re.findall(r"^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", workflow, re.M | re.S))
+
+    def test_all_signing_and_publishing_jobs_require_release_environment(self):
+        jobs = self.workflow_jobs()
+        protected = {"build", "tag-release", "publish-testpypi", "publish", "create-release"}
+        self.assertEqual(set(jobs), protected | {"validate"})
+        for name in protected:
             with self.subTest(job=name):
-                self.assertRegex(body, r"(?m)^    environment: release$")
-                self.assertNotIn("GITHUB_TRIGGERING_ACTOR", body)
-                self.assertNotIn("Require publisher release user", body)
+                self.assertRegex(jobs[name], r"(?m)^    environment: release$")
+                self.assertNotIn("GITHUB_TRIGGERING_ACTOR", jobs[name])
+                self.assertNotIn("Require publisher release user", jobs[name])
+        workflow = (ROOT / ".github/workflows/release.yml").read_text()
         self.assertIn('test "$GITHUB_REF" = refs/heads/main', workflow)
         self.assertNotRegex(workflow, r"echo .*RELEASE_GPG_.*GITHUB_ENV")
         self.assertIn('baseline: ${{ github.sha }}', workflow)
         self.assertIn('RELEASE_BASE_COMMIT: ${{ needs.build.outputs.baseline }}', workflow)
+
+    def test_validation_finishes_before_approval_on_separate_runner(self):
+        jobs = self.workflow_jobs()
+        validation, release = jobs["validate"], jobs["build"]
+        self.assertRegex(validation, r"(?m)^    runs-on: ubuntu-latest$")
+        self.assertNotIn("environment:", validation)
+        self.assertNotIn("secrets.", validation)
+        self.assertNotIn("RELEASE_GPG_", validation)
+        self.assertNotIn("id-token:", validation)
+        for command in ("make test-unit", "make test-integration", "make lint"):
+            self.assertIn(command, validation)
+            self.assertNotIn(command, release)
+        for command in ("make release-commit", "make release-build", "make release-sign"):
+            self.assertIn(command, release)
+            self.assertNotIn(command, validation)
+        self.assertRegex(release, r"(?m)^    needs: validate$")
+        self.assertRegex(release, r"(?m)^    runs-on: ubuntu-latest$")
+        self.assertNotIn("always()", release.split("    steps:\n", 1)[0])
+        self.assertNotIn("continue-on-error:", validation)
+        self.assertNotIn("actions/download-artifact", release)
+        self.assertIn("ref: ${{ github.sha }}", release)
+        self.assertIn("VALIDATED_COMMIT: ${{ needs.validate.outputs.commit }}", release)
+        self.assertIn('test "$VALIDATED_COMMIT" = "$GITHUB_SHA"', release)
+        self.assertIn('test "$(git rev-parse HEAD)" = "$VALIDATED_COMMIT"', release)
+        for output in ("package-version", "prerelease"):
+            self.assertIn(output + ": ${{ needs.validate.outputs." + output + " }}", release)
 
     def test_local_entrypoints_all_authorize_before_changes(self):
         with tempfile.TemporaryDirectory() as temp:

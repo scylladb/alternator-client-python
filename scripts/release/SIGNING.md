@@ -54,10 +54,14 @@ commit signing session opens. Package tooling and metadata checks receive neithe
 release credential values/file paths nor session Git/GPG configuration. Artifact
 signing uses a separate session after the build succeeds. In Actions these are
 separate `release-commit`, `release-build`, and `release-sign` steps; only the signing
-steps receive signing secrets. These scopes prevent direct credential inheritance;
-they do not provide separate runners or protection against arbitrary same-user
-persistence. `release-tag` requires `release-source.bundle` from preparation and
-checks that its advertised commit matches both the current commit and the requested
+steps receive signing secrets. Validation runs first in a separate job without a
+protected environment or signing secrets. Only after validation succeeds does the
+release-preparation job request environment approval and start on a fresh runner.
+It checks out the exact validated SHA and recreates the requested version; no
+validation workspace or executable artifacts are restored. Building and artifact
+signing still share this release runner, so credential scoping does not protect
+against arbitrary build code or same-user persistence within that runner.
+`release-tag` requires `release-source.bundle` from preparation and checks that its advertised commit matches both the current commit and the requested
 release version before creating or accepting the signed tag. These targets prepare
 local outputs; the workflow handles uploads and publication. Do not change or replace
 existing tags.
@@ -116,7 +120,8 @@ release**. Require one approval from the repository's designated release-maintai
 team, prevent self-review, disable administrator bypass, and permit only the
 `main` branch. Confirm the actual team with repository administrators; this code
 cannot choose that team or configure approval rules. Every job may require its own
-approval. The same branch restriction applies to TestPyPI rehearsals.
+approval. The first approval is requested only after the separate validation job
+succeeds. The same branch restriction applies to TestPyPI rehearsals.
 
 Upload `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` into that environment using the original
 secure material. Existing GitHub secrets cannot be downloaded. Pass values through
