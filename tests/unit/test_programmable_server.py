@@ -181,6 +181,40 @@ def test_topology_routes_respect_scopes(
         )
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "dc=dc%20one%2B%25%26",
+        "dc=dc+one%2B%25%26",
+        "dc=dc%20one%2B%25%26&rack=r%20%2F%2B%25%26",
+        "dc=dc+one%2B%25%26&rack=r+%2F%2B%25%26",
+    ],
+    ids=["python-dc", "rust-dc", "python-rack", "rust-rack"],
+)
+def test_topology_supports_python_and_rust_query_encodings(
+    fake_alternator_server: FakeAlternatorServer, query: str
+) -> None:
+    server = fake_alternator_server
+    server.set_topology(
+        [("127.0.0.1", "dc one+%&", "r /+%&")],
+        [("127.0.0.2", "dc other", "r2")],
+    )
+    with closing(connect(server)) as connection:
+        assert get(connection, f"/localnodes?{query}") == (200, b'["127.0.0.1"]')
+        # Form-encoded spaces must not reinterpret a literal '+' as whitespace.
+        assert get(connection, "/localnodes?dc=dc+one+%25%26")[0] == 404
+
+
+def test_get_scripts_keep_space_encodings_distinct(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    server = fake_alternator_server
+    server.script_get("/localnodes?dc=dc%20one", [FakeAlternatorResponse.json([])])
+    with closing(connect(server)) as connection:
+        assert get(connection, "/localnodes?dc=dc+one")[0] == 404
+        assert get(connection, "/localnodes?dc=dc%20one") == (200, b"[]")
+
+
 def test_get_scripts_preserve_raw_failures_and_exhaustion(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:

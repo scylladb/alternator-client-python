@@ -413,6 +413,11 @@ class FakeAlternatorServer:
                     nodes.append(address)
         for query, nodes in scopes.items():
             self.set_localnodes(nodes, query=query)
+            # Python quotes spaces as %20; Rust form-encodes them as +. A
+            # literal plus remains %2B in both forms. Keep scripted GET paths
+            # exact; only this semantic topology helper installs both forms.
+            if "%20" in query:
+                self.set_localnodes(nodes, query=query.replace("%20", "+"))
 
     def set_partition_key(self, table: str, name: str, *, key_type: str = "S") -> None:
         """Serve native/Python affinity's DescribeTable HASH-key metadata."""
