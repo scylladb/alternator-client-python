@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -50,14 +51,13 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 @pytest.fixture
-def contract_config(fake_alternator_server: FakeAlternatorServer) -> Config:
+def contract_config(fake_alternator_server: FakeAlternatorServer) -> Iterator[Config]:
     """Disable retries for error assertions and keep discovery on the fake peer."""
     endpoint = urlsplit(fake_alternator_server.url())
     fake_alternator_server.set_localnodes(["127.0.0.1"])
-    fake_alternator_server.set_topology([("127.0.0.1", "dc1", "rack1")])
     fake_alternator_server.set_partition_key("contract", "pk")
     assert endpoint.port is not None
-    return Config(
+    yield Config(
         seed_hosts=["127.0.0.1"],
         port=endpoint.port,
         retries=RetryConfig(max_attempts=1),
@@ -66,6 +66,11 @@ def contract_config(fake_alternator_server: FakeAlternatorServer) -> Config:
         ),
         timeouts=TimeoutConfig(discovery_seconds=1, connect_seconds=1, read_seconds=2),
     )
+    assert not [
+        request
+        for request in fake_alternator_server.captured_requests(operation="Scan")
+        if request.table and request.table.startswith(".scylla.alternator.system.")
+    ], "topology discovery must use GET /localnodes, never system-table Scan"
 
 
 @pytest.fixture

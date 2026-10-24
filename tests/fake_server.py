@@ -27,7 +27,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, cast
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 
 
 def _merge_headers(
@@ -106,13 +106,13 @@ class FakeAlternatorServer:
     """Thread-safe fake peer. Unscripted POST calls fail visibly with HTTP 400.
 
     Scripts are consumed in arrival order within an operation/table route.
-    Table-specific scripts precede operation-only scripts. GET routes retain
-    the original discovery fixture API. All waits have finite deadlines.
+    Table-specific scripts precede operation-only scripts. GET scripts match
+    exact paths, including scoped discovery queries. All waits have finite deadlines.
     """
 
     def __init__(self) -> None:
         self.requests: list[str] = []
-        self._routes: dict[str, FakeAlternatorResponse] = {}
+        self._routes: dict[str, _Route] = {}
         self._operations: dict[tuple[str, str | None], _Route] = {}
         self._captured: list[CapturedRequest] = []
         self._condition = threading.Condition()
@@ -256,20 +256,20 @@ class FakeAlternatorServer:
 
     def _response_for(self, request: CapturedRequest) -> FakeAlternatorResponse:
         if request.method == "GET":
-            return self._routes.get(
-                request.path,
-                FakeAlternatorResponse(
-                    404, b"not found", {"Content-Type": "text/plain"}
-                ),
-            )
-        route = self._operations.get((request.operation, request.table))
-        if route is None:
-            route = self._operations.get((request.operation, None))
+            route = self._routes.get(request.path)
+        else:
+            route = self._operations.get((request.operation, request.table))
+            if route is None:
+                route = self._operations.get((request.operation, None))
         if route is not None:
             if route.responses:
                 return route.responses.popleft()
             if route.fallback is not None:
                 return route.fallback
+        if request.method == "GET":
+            return FakeAlternatorResponse(
+                404, b"not found", {"Content-Type": "text/plain"}
+            )
         return FakeAlternatorResponse.json(
             {
                 "__type": "ValidationException",
@@ -312,10 +312,11 @@ class FakeAlternatorServer:
         headers: Mapping[str, str] | None = None,
     ) -> None:
         """Configure a persistent JSON GET response."""
-        with self._condition:
-            self._routes[path] = FakeAlternatorResponse.json(
-                body, status=status, headers=headers
-            )
+        self.script_get(
+            path,
+            [],
+            fallback=FakeAlternatorResponse.json(body, status=status, headers=headers),
+        )
 
     def set_text(
         self,
@@ -326,20 +327,34 @@ class FakeAlternatorServer:
         headers: Mapping[str, str] | None = None,
     ) -> None:
         """Configure a persistent text GET response."""
-        with self._condition:
-            self._routes[path] = FakeAlternatorResponse(
+        self.script_get(
+            path,
+            [],
+            fallback=FakeAlternatorResponse(
                 status,
                 body.encode(),
                 _merge_headers({"Content-Type": "text/plain"}, headers),
-            )
+            ),
+        )
 
     def set_localnodes(
         self, nodes: Sequence[str], *, query: str = "", status: int = 200
     ) -> None:
-        """Configure Python discovery, including a scoped query."""
+        """Configure Python/native discovery, including an exact scoped query."""
         self.set_json(
             "/localnodes" + (f"?{query}" if query else ""), list(nodes), status=status
         )
+
+    def script_get(
+        self,
+        path: str,
+        responses: Sequence[FakeAlternatorResponse],
+        *,
+        fallback: FakeAlternatorResponse | None = None,
+    ) -> None:
+        """Replace a GET FIFO script; exhaustion uses fallback or returns 404."""
+        with self._condition:
+            self._routes[path] = _Route(deque(responses), fallback)
 
     def script(
         self,
@@ -375,21 +390,29 @@ class FakeAlternatorServer:
         local: Sequence[tuple[str, str, str]],
         peers: Sequence[tuple[str, str, str]] = (),
     ) -> None:
-        """Serve Rust virtual-table scans; rows are (address, datacenter, rack)."""
-        for name, rows in (("local", local), ("peers", peers)):
-            items = [
-                {
-                    "rpc_address": {"S": address},
-                    "data_center": {"S": dc},
-                    "rack": {"S": rack},
-                }
-                for address, dc, rack in rows
+        """Serve scoped GET lists from (address, datacenter, rack) rows.
+
+        Unscoped /localnodes returns the first local row's datacenter, as a
+        responder does; cluster discovery must union responses from seeds.
+        Unknown scopes return 404 unless explicitly scripted (e.g. empty/error
+        responses driving a client's fallback chain). This never scripts Scan.
+        """
+        rows = [*local, *peers]
+        scopes: dict[str, list[str]] = {"": []}
+        responder_dc = local[0][1] if local else None
+        for address, dc, rack in rows:
+            queries = [
+                urlencode({"dc": dc}, quote_via=quote),
+                urlencode({"dc": dc, "rack": rack}, quote_via=quote),
             ]
-            self.set_operation(
-                "Scan",
-                {"Items": items, "Count": len(items), "ScannedCount": len(items)},
-                table=f".scylla.alternator.system.{name}",
-            )
+            if dc == responder_dc:
+                queries.append("")
+            for query in queries:
+                nodes = scopes.setdefault(query, [])
+                if address not in nodes:
+                    nodes.append(address)
+        for query, nodes in scopes.items():
+            self.set_localnodes(nodes, query=query)
 
     def set_partition_key(self, table: str, name: str, *, key_type: str = "S") -> None:
         """Serve native/Python affinity's DescribeTable HASH-key metadata."""
@@ -409,14 +432,15 @@ class FakeAlternatorServer:
         )
 
     def captured_requests(
-        self, *, operation: str | None = None
+        self, *, operation: str | None = None, path: str | None = None
     ) -> list[CapturedRequest]:
         """Return a snapshot; discovery can be filtered from data operations."""
         with self._condition:
             return [
                 r
                 for r in self._captured
-                if operation is None or r.operation == operation
+                if (operation is None or r.operation == operation)
+                and (path is None or r.path == path)
             ]
 
     def wait_for_connections(self, count: int, *, timeout: float = 3) -> None:
@@ -428,16 +452,25 @@ class FakeAlternatorServer:
                 raise TimeoutError(f"expected {count} active connections")
 
     def wait_for_requests(
-        self, count: int, *, operation: str | None = None, timeout: float = 3
+        self,
+        count: int,
+        *,
+        operation: str | None = None,
+        path: str | None = None,
+        timeout: float = 3,
     ) -> list[CapturedRequest]:
         """Wait for capture without polling or depending on request completion."""
         with self._condition:
             if not self._condition.wait_for(
-                lambda: len(self.captured_requests(operation=operation)) >= count,
+                lambda: (
+                    len(self.captured_requests(operation=operation, path=path)) >= count
+                ),
                 timeout,
             ):
-                raise TimeoutError(f"expected {count} {operation or 'HTTP'} requests")
-            return self.captured_requests(operation=operation)
+                raise TimeoutError(
+                    f"expected {count} {operation or path or 'HTTP'} requests"
+                )
+            return self.captured_requests(operation=operation, path=path)
 
     def requested_paths(self) -> list[str]:
         """Return captured paths, preserving the original fixture interface."""

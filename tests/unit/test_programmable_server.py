@@ -32,6 +32,10 @@ from urllib.parse import urlsplit
 
 import pytest
 
+from alternator import Config
+from alternator._http import create_sync_http_fetcher
+from alternator.core.live_nodes import SyncLiveNodesManager
+from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
 
 
@@ -46,6 +50,14 @@ def post(
     )
     response = connection.getresponse()
     return response.status, json.loads(response.read())
+
+
+def get(
+    connection: http.client.HTTPConnection, path: str = "/localnodes"
+) -> tuple[int, bytes]:
+    connection.request("GET", path)
+    response = connection.getresponse()
+    return response.status, response.read()
 
 
 def connect(server: FakeAlternatorServer) -> http.client.HTTPConnection:
@@ -91,8 +103,6 @@ def test_native_discovery_scripts_and_connection_reuse(
     fake_alternator_server: FakeAlternatorServer,
 ) -> None:
     server = fake_alternator_server
-    local = ".scylla.alternator.system.local"
-    peers = ".scylla.alternator.system.peers"
     server.set_topology(
         [("127.0.0.1", "dc1", "rack1")], [("127.0.0.2", "dc2", "rack2")]
     )
@@ -110,23 +120,8 @@ def test_native_discovery_scripts_and_connection_reuse(
     )
     connection = connect(server)
     try:
-        _, body = post(
-            connection,
-            "Scan",
-            {
-                "TableName": local,
-                "ProjectionExpression": "rpc_address,data_center,rack",
-            },
-        )
-        assert body["Items"] == [
-            {
-                "rpc_address": {"S": "127.0.0.1"},
-                "data_center": {"S": "dc1"},
-                "rack": {"S": "rack1"},
-            }
-        ]
-        _, body = post(connection, "Scan", {"TableName": peers})
-        assert body["Count"] == 1
+        assert get(connection) == (200, b'["127.0.0.1"]')
+        assert get(connection, "/localnodes?dc=dc2") == (200, b'["127.0.0.2"]')
         _, body = post(connection, "DescribeTable", {"TableName": "contract"})
         assert body == {
             "Table": {
@@ -149,22 +144,143 @@ def test_native_discovery_scripts_and_connection_reuse(
     requests = server.captured_requests()
     assert len({r.connection_id for r in requests}) == 1
     assert requests[5].document["ExclusiveStartKey"] == {"pk": {"S": "next"}}
+    assert all(request.method == "GET" for request in requests[:2])
+    assert not any(
+        request.table and request.table.startswith(".scylla.") for request in requests
+    )
 
 
-def test_blocked_request_allows_parallel_progress(
+@pytest.mark.parametrize(
+    "query,expected",
+    [
+        ("", ["127.0.0.1", "127.0.0.2"]),
+        ("dc=dc%20one", ["127.0.0.1", "127.0.0.2"]),
+        ("dc=dc%20one&rack=r%2F1", ["127.0.0.1"]),
+        ("dc=dc2", ["127.0.0.3"]),
+    ],
+)
+def test_topology_routes_respect_scopes(
+    fake_alternator_server: FakeAlternatorServer, query: str, expected: list[str]
+) -> None:
+    server = fake_alternator_server
+    server.set_topology(
+        [("127.0.0.1", "dc one", "r/1")],
+        [("127.0.0.2", "dc one", "r2"), ("127.0.0.3", "dc2", "r3")],
+    )
+    path = "/localnodes" + (f"?{query}" if query else "")
+    with closing(connect(server)) as connection:
+        status, body = get(connection, path)
+        assert status == 200
+        assert json.loads(body) == expected
+        assert get(connection, "/localnodes?dc=unknown")[0] == 404
+        assert (
+            post(connection, "Scan", {"TableName": ".scylla.alternator.system.local"})[
+                0
+            ]
+            == 400
+        )
+
+
+def test_get_scripts_preserve_raw_failures_and_exhaustion(
     fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    server = fake_alternator_server
+    responses = [
+        FakeAlternatorResponse(200, b"not JSON", {"Content-Type": "text/plain"}),
+        FakeAlternatorResponse.json([]),
+        FakeAlternatorResponse.json({"message": "retry"}, status=503),
+    ]
+    server.script_get("/localnodes", responses)
+    server.set_localnodes(["127.0.0.2"], query="dc=other")
+    with closing(connect(server)) as connection:
+        for response in responses:
+            assert get(connection) == (response.status, response.body)
+        assert get(connection)[0] == 404
+        assert get(connection, "/localnodes?dc=other") == (200, b'["127.0.0.2"]')
+    requests = server.wait_for_requests(4, path="/localnodes")
+    assert len(requests) == 4
+    assert all(
+        request.method == "GET" and request.operation == "" for request in requests
+    )
+    assert len({request.connection_id for request in server.captured_requests()}) == 1
+
+
+@pytest.mark.parametrize("failure", ["malformed", "empty", "error"])
+@pytest.mark.parametrize("fallback", [False, True], ids=["strict", "fallback"])
+def test_real_python_discovery_preserves_explicit_fallbacks(
+    fake_alternator_server: FakeAlternatorServer, failure: str, fallback: bool
+) -> None:
+    server = fake_alternator_server
+    rack_path = "/localnodes?dc=dc1&rack=r1"
+    response = {
+        "malformed": FakeAlternatorResponse(200, b"not JSON", {}),
+        "empty": FakeAlternatorResponse.json([]),
+        "error": FakeAlternatorResponse.json({"message": "unavailable"}, status=503),
+    }[failure]
+    server.script_get(rack_path, [], fallback=response)
+    server.set_localnodes(["127.0.0.1"], query="dc=dc1")
+    server.set_localnodes(["127.0.0.2"])
+    scope = RackScope(
+        "dc1",
+        "r1",
+        fallback=DatacenterScope("dc1", fallback=ClusterScope()) if fallback else None,
+    )
+    manager = SyncLiveNodesManager(
+        Config(["127.0.0.1"], urlsplit(server.url()).port or 0, routing_scope=scope),
+        create_sync_http_fetcher(timeout_seconds=1),
+    )
+    assert manager.refresh_nodes() is fallback
+    expected_paths = [rack_path, "/localnodes?dc=dc1"] if fallback else [rack_path]
+    assert server.requested_paths() == expected_paths
+    assert all(request.method == "GET" for request in server.captured_requests())
+
+
+def test_get_script_fallback_and_disconnection(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    server = fake_alternator_server
+    server.script_get(
+        "/localnodes",
+        [FakeAlternatorResponse(200, b"", {}, disconnect=True)],
+        fallback=FakeAlternatorResponse.json(["127.0.0.1"]),
+    )
+    with (
+        closing(connect(server)) as connection,
+        pytest.raises(http.client.RemoteDisconnected),
+    ):
+        get(connection)
+    with closing(connect(server)) as connection:
+        assert get(connection) == (200, b'["127.0.0.1"]')
+        assert get(connection) == (200, b'["127.0.0.1"]')
+    requests = server.wait_for_requests(3, path="/localnodes")
+    assert requests[0].connection_id != requests[1].connection_id
+    assert requests[1].connection_id == requests[2].connection_id
+
+
+@pytest.mark.parametrize("held_method", ["GET", "POST"])
+def test_blocked_request_allows_parallel_progress(
+    fake_alternator_server: FakeAlternatorServer, held_method: str
 ) -> None:
     entered, release = threading.Event(), threading.Event()
     server = fake_alternator_server
-    server.script(
-        "GetItem",
-        [FakeAlternatorResponse.json({"Item": {}}, entered=entered, release=release)],
+    held = FakeAlternatorResponse.json(
+        {"Item": {}} if held_method == "POST" else ["127.0.0.1"],
+        entered=entered,
+        release=release,
     )
+    if held_method == "POST":
+        server.script("GetItem", [held])
+    else:
+        server.script_get("/localnodes", [held])
     server.set_operation("PutItem", {})
     first, second = connect(server), connect(server)
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
-            pending = pool.submit(post, first, "GetItem", {"TableName": "contract"})
+            pending = (
+                pool.submit(post, first, "GetItem", {"TableName": "contract"})
+                if held_method == "POST"
+                else pool.submit(get, first)
+            )
             try:
                 assert entered.wait(2)
                 assert post(second, "PutItem", {"TableName": "contract"}) == (200, {})
@@ -173,7 +289,11 @@ def test_blocked_request_allows_parallel_progress(
                 assert len({r.connection_id for r in requests}) == 2
             finally:
                 release.set()
-            assert pending.result(timeout=2) == (200, {"Item": {}})
+            assert pending.result(timeout=2) == (
+                (200, {"Item": {}})
+                if held_method == "POST"
+                else (200, b'["127.0.0.1"]')
+            )
     finally:
         first.close()
         second.close()
@@ -209,18 +329,24 @@ def test_gzip_capture_preserves_wire_bytes(
     assert ("X-Custom-Case", "original") in request.headers
 
 
-def test_stop_interrupts_held_response() -> None:
+@pytest.mark.parametrize("held_method", ["GET", "POST"])
+def test_stop_interrupts_held_response(held_method: str) -> None:
     server = FakeAlternatorServer()
     server.start()
     entered = threading.Event()
-    server.script(
-        "GetItem",
-        [FakeAlternatorResponse.json({}, entered=entered, release=threading.Event())],
-    )
+    held = FakeAlternatorResponse.json({}, entered=entered, release=threading.Event())
+    if held_method == "POST":
+        server.script("GetItem", [held])
+    else:
+        server.script_get("/localnodes", [held])
     connection = connect(server)
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
-            pending = pool.submit(post, connection, "GetItem", {})
+            pending = (
+                pool.submit(post, connection, "GetItem", {})
+                if held_method == "POST"
+                else pool.submit(get, connection)
+            )
             assert entered.wait(2)
             server.stop()
             with pytest.raises(OSError):
@@ -271,6 +397,7 @@ def tls_server(tls_material: tuple[Path, Path]) -> Iterator[FakeAlternatorServer
     context.load_cert_chain(cert, key)
     server = FakeAlternatorServer()
     server.set_operation("GetItem", {})
+    server.set_localnodes(["127.0.0.1"])
     server.start(ssl_context=context)
     try:
         yield server
@@ -288,6 +415,7 @@ def test_verified_tls_and_hostname(
         http.client.HTTPSConnection("localhost", port, context=trusted, timeout=2)
     ) as connection:
         assert post(connection, "GetItem", {}) == (200, {})
+        assert get(connection) == (200, b'["127.0.0.1"]')
     with (
         pytest.raises(ssl.SSLCertVerificationError),
         closing(
@@ -304,7 +432,7 @@ def test_verified_tls_and_hostname(
         ) as connection,
     ):
         post(connection, "GetItem", {})
-    assert len(tls_server.captured_requests()) == 1
+    assert len(tls_server.captured_requests()) == 2
 
 
 def test_mutual_tls_requires_client_certificate(
@@ -317,6 +445,7 @@ def test_mutual_tls_requires_client_certificate(
     context.verify_mode = ssl.CERT_REQUIRED
     server = FakeAlternatorServer()
     server.set_operation("GetItem", {})
+    server.set_localnodes(["127.0.0.1"])
     server.start(ssl_context=context)
     port = urlsplit(server.url()).port
     trusted = ssl.create_default_context(cafile=str(cert))
