@@ -54,7 +54,7 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 def contract_config(fake_alternator_server: FakeAlternatorServer) -> Iterator[Config]:
     """Disable retries for error assertions and keep discovery on the fake peer."""
     endpoint = urlsplit(fake_alternator_server.url())
-    fake_alternator_server.set_localnodes(["127.0.0.1"])
+    fake_alternator_server.set_topology([("127.0.0.1", "dc1", "rack1")])
     fake_alternator_server.set_partition_key("contract", "pk")
     assert endpoint.port is not None
     yield Config(

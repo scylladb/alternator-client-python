@@ -150,6 +150,47 @@ def test_native_discovery_scripts_and_connection_reuse(
     )
 
 
+def test_contract_fixture_bootstrap_topology_can_be_replaced(
+    fake_alternator_server: FakeAlternatorServer, contract_config: Config
+) -> None:
+    server = fake_alternator_server
+    with closing(
+        http.client.HTTPConnection("127.0.0.1", contract_config.port, timeout=3)
+    ) as connection:
+        assert get(connection) == (200, b'["127.0.0.1"]')
+        server.set_topology(
+            [("127.0.0.2", "dc2", "rack2")], [("127.0.0.3", "dc2", "rack3")]
+        )
+        assert get(connection) == (200, b'["127.0.0.2", "127.0.0.3"]')
+        assert get(connection, "/localnodes?dc=dc2") == (
+            200,
+            b'["127.0.0.2", "127.0.0.3"]',
+        )
+        assert get(connection, "/localnodes?dc=dc2&rack=rack2") == (
+            200,
+            b'["127.0.0.2"]',
+        )
+        assert get(connection, "/localnodes?dc=dc2&rack=rack3") == (
+            200,
+            b'["127.0.0.3"]',
+        )
+        assert get(connection, "/localnodes?dc=dc1")[0] == 404
+        assert get(connection, "/localnodes?dc=dc1&rack=rack1")[0] == 404
+        assert post(connection, "DescribeTable", {"TableName": "contract"}) == (
+            200,
+            {
+                "Table": {
+                    "TableName": "contract",
+                    "TableStatus": "ACTIVE",
+                    "KeySchema": [{"AttributeName": "pk", "KeyType": "HASH"}],
+                    "AttributeDefinitions": [
+                        {"AttributeName": "pk", "AttributeType": "S"}
+                    ],
+                }
+            },
+        )
+
+
 @pytest.mark.parametrize(
     "query,expected",
     [
