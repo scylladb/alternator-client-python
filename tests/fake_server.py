@@ -401,10 +401,12 @@ class FakeAlternatorServer:
         scopes: dict[str, list[str]] = {"": []}
         responder_dc = local[0][1] if local else None
         for address, dc, rack in rows:
-            queries = [
-                urlencode({"dc": dc}, quote_via=quote),
-                urlencode({"dc": dc, "rack": rack}, quote_via=quote),
-            ]
+            queries = []
+            for parameters in ({"dc": dc}, {"dc": dc, "rack": rack}):
+                queries.append(urlencode(parameters, quote_via=quote))
+                # Rust URL query pairs use the form-urlencoded safe set:
+                # spaces become +, * stays literal, and ~ becomes %7E.
+                queries.append(urlencode(parameters, safe="*").replace("~", "%7E"))
             if dc == responder_dc:
                 queries.append("")
             for query in queries:
@@ -413,11 +415,6 @@ class FakeAlternatorServer:
                     nodes.append(address)
         for query, nodes in scopes.items():
             self.set_localnodes(nodes, query=query)
-            # Python quotes spaces as %20; Rust form-encodes them as +. A
-            # literal plus remains %2B in both forms. Keep scripted GET paths
-            # exact; only this semantic topology helper installs both forms.
-            if "%20" in query:
-                self.set_localnodes(nodes, query=query.replace("%20", "+"))
 
     def set_partition_key(self, table: str, name: str, *, key_type: str = "S") -> None:
         """Serve native/Python affinity's DescribeTable HASH-key metadata."""

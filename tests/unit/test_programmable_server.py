@@ -205,14 +205,38 @@ def test_topology_supports_python_and_rust_query_encodings(
         assert get(connection, "/localnodes?dc=dc+one+%25%26")[0] == 404
 
 
-def test_get_scripts_keep_space_encodings_distinct(
-    fake_alternator_server: FakeAlternatorServer,
+@pytest.mark.parametrize(
+    "query",
+    [
+        "dc=dc%20~%2A%2B%25%26",
+        "dc=dc+%7E*%2B%25%26",
+        "dc=dc%20~%2A%2B%25%26&rack=r%20~%2A%2B%25%26%2F",
+        "dc=dc+%7E*%2B%25%26&rack=r+%7E*%2B%25%26%2F",
+    ],
+    ids=["python-dc", "rust-dc", "python-rack", "rust-rack"],
+)
+def test_topology_supports_form_encoded_tilde_and_asterisk(
+    fake_alternator_server: FakeAlternatorServer, query: str
 ) -> None:
     server = fake_alternator_server
-    server.script_get("/localnodes?dc=dc%20one", [FakeAlternatorResponse.json([])])
+    server.set_topology([("127.0.0.1", "dc ~*+%&", "r ~*+%&/")])
     with closing(connect(server)) as connection:
-        assert get(connection, "/localnodes?dc=dc+one")[0] == 404
-        assert get(connection, "/localnodes?dc=dc%20one") == (200, b"[]")
+        assert get(connection, f"/localnodes?{query}") == (200, b'["127.0.0.1"]')
+
+
+@pytest.mark.parametrize(
+    "python_value,rust_value", [("dc%20one", "dc+one"), ("~%2A", "%7E*")]
+)
+def test_get_scripts_keep_encodings_distinct(
+    fake_alternator_server: FakeAlternatorServer, python_value: str, rust_value: str
+) -> None:
+    server = fake_alternator_server
+    server.script_get(
+        f"/localnodes?dc={python_value}", [FakeAlternatorResponse.json([])]
+    )
+    with closing(connect(server)) as connection:
+        assert get(connection, f"/localnodes?dc={rust_value}")[0] == 404
+        assert get(connection, f"/localnodes?dc={python_value}") == (200, b"[]")
 
 
 def test_get_scripts_preserve_raw_failures_and_exhaustion(
