@@ -182,6 +182,89 @@ def test_topology_routes_respect_scopes(
 
 
 @pytest.mark.parametrize(
+    "dc,rack",
+    [
+        ("dc%20~%2A%2B%25%26%C3%A9", "r%20~%2A%2B%25%26%2F%C3%A9"),
+        ("dc+%7E*%2B%25%26%C3%A9", "r+%7E*%2B%25%26%2F%C3%A9"),
+    ],
+    ids=["python", "rust"],
+)
+def test_topology_replaces_removed_scopes_and_empty_snapshot(
+    fake_alternator_server: FakeAlternatorServer, dc: str, rack: str
+) -> None:
+    server = fake_alternator_server
+    dc_path = f"/localnodes?dc={dc}"
+    rack_path = f"{dc_path}&rack={rack}"
+    server.set_topology(
+        [("127.0.0.1", "dc ~*+%&é", "r ~*+%&/é")],
+        [("127.0.0.2", "removed", "old")],
+    )
+    with closing(connect(server)) as connection:
+        assert get(connection, rack_path) == (200, b'["127.0.0.1"]')
+        assert get(connection, "/localnodes?dc=removed") == (200, b'["127.0.0.2"]')
+        server.set_topology([("127.0.0.3", "dc ~*+%&é", "new")])
+        assert get(connection) == (200, b'["127.0.0.3"]')
+        assert get(connection, dc_path) == (200, b'["127.0.0.3"]')
+        assert get(connection, f"{dc_path}&rack=new") == (200, b'["127.0.0.3"]')
+        for removed in (
+            rack_path,
+            "/localnodes?dc=removed",
+            "/localnodes?dc=removed&rack=old",
+        ):
+            assert get(connection, removed)[0] == 404
+
+        server.set_topology([])
+        assert get(connection) == (200, b"[]")
+        for removed in (dc_path, rack_path, f"{dc_path}&rack=new"):
+            assert get(connection, removed)[0] == 404
+
+        server.set_topology([("127.0.0.4", "restored", "rack")])
+        assert get(connection) == (200, b'["127.0.0.4"]')
+        assert get(connection, dc_path)[0] == 404
+        assert get(connection, "/localnodes?dc=restored") == (200, b'["127.0.0.4"]')
+
+
+@pytest.mark.parametrize("script_first", [True, False], ids=["script", "topology"])
+def test_topology_preserves_explicit_get_scripts_and_overrides(
+    fake_alternator_server: FakeAlternatorServer, script_first: bool
+) -> None:
+    server = fake_alternator_server
+    initial = [("127.0.0.1", "dc1", "r1")]
+    if not script_first:
+        server.set_topology(initial)
+    responses = [
+        FakeAlternatorResponse.json(["first"]),
+        FakeAlternatorResponse.json(["second"]),
+        FakeAlternatorResponse.json(["third"]),
+        FakeAlternatorResponse.json(["fourth"]),
+    ]
+    dc_path = "/localnodes?dc=dc1"
+    rack_path = f"{dc_path}&rack=r1"
+    server.script_get(dc_path, responses)
+    server.set_localnodes(["manual"], query="dc=dc1&rack=r1")
+    server.set_text("/health?exact=1", "healthy")
+    if script_first:
+        server.set_topology(initial)
+    with closing(connect(server)) as connection:
+        for snapshot, response in zip(
+            (
+                initial,
+                [("127.0.0.2", "dc1", "r2")],
+                [("127.0.0.3", "dc2", "r3")],
+                [],
+            ),
+            responses,
+            strict=True,
+        ):
+            server.set_topology(snapshot)
+            assert get(connection, dc_path) == (response.status, response.body)
+            assert get(connection, rack_path) == (200, b'["manual"]')
+            assert get(connection, "/health?exact=1") == (200, b"healthy")
+        assert get(connection, dc_path)[0] == 404
+        assert get(connection, "/health?exact=2")[0] == 404
+
+
+@pytest.mark.parametrize(
     "query",
     [
         "dc=dc%20one%2B%25%26",

@@ -113,6 +113,7 @@ class FakeAlternatorServer:
     def __init__(self) -> None:
         self.requests: list[str] = []
         self._routes: dict[str, _Route] = {}
+        self._topology_routes: dict[str, _Route] = {}
         self._operations: dict[tuple[str, str | None], _Route] = {}
         self._captured: list[CapturedRequest] = []
         self._condition = threading.Condition()
@@ -395,7 +396,9 @@ class FakeAlternatorServer:
         Unscoped /localnodes returns the first local row's datacenter, as a
         responder does; cluster discovery must union responses from seeds.
         Unknown scopes return 404 unless explicitly scripted (e.g. empty/error
-        responses driving a client's fallback chain). This never scripts Scan.
+        responses driving a client's fallback chain). Replacing a snapshot removes
+        obsolete helper routes and preserves explicit GET scripts and overrides.
+        This never scripts Scan.
         """
         rows = [*local, *peers]
         scopes: dict[str, list[str]] = {"": []}
@@ -413,8 +416,22 @@ class FakeAlternatorServer:
                 nodes = scopes.setdefault(query, [])
                 if address not in nodes:
                     nodes.append(address)
-        for query, nodes in scopes.items():
-            self.set_localnodes(nodes, query=query)
+        routes = {
+            "/localnodes" + (f"?{query}" if query else ""): _Route(
+                fallback=FakeAlternatorResponse.json(nodes)
+            )
+            for query, nodes in scopes.items()
+        }
+        with self._condition:
+            for path, route in self._topology_routes.items():
+                if self._routes.get(path) is route:
+                    del self._routes[path]
+            self._topology_routes = {
+                path: route
+                for path, route in routes.items()
+                if path not in self._routes
+            }
+            self._routes.update(self._topology_routes)
 
     def set_partition_key(self, table: str, name: str, *, key_type: str = "S") -> None:
         """Serve native/Python affinity's DescribeTable HASH-key metadata."""
