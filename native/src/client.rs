@@ -55,17 +55,17 @@ impl Client {
 
     /// P5/P6/P7 run every complete SDK operation (including retry sleeps) here.
     /// Request/attempt metadata is isolated from concurrent operations/discovery.
-    pub async fn run<F, Fut>(
-        &self,
+    pub async fn run<'a, F, Fut>(
+        &'a self,
         operation: F,
     ) -> Result<(Fut::Output, OperationMetadata), Closed>
     where
-        F: FnOnce(AlternatorClient) -> Fut,
+        F: FnOnce(&'a AlternatorClient) -> Fut,
         Fut: Future,
     {
         self.0
             .registry
-            .run(async { metadata::capture(operation(self.0.sdk.clone())).await })
+            .run(async { metadata::capture(operation(&self.0.sdk)).await })
             .await
     }
 
