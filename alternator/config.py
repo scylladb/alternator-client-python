@@ -439,6 +439,7 @@ class Config:
     # SDK settings
     aws_region: str = "us-east-1"
     user_agent: UserAgent | None = DEFAULT_USER_AGENT
+    parameter_validation: bool = True
 
     def __post_init__(self) -> None:
         """Validate configuration values."""
@@ -508,6 +509,7 @@ class AlternatorConfigBuilder:
         self._timeouts = TimeoutConfig()
         self._aws_region = "us-east-1"
         self._user_agent: UserAgent | None = DEFAULT_USER_AGENT
+        self._parameter_validation = True
 
     def with_seeds(self, *hosts: str) -> AlternatorConfigBuilder:
         """Add seed hosts for node discovery."""
@@ -665,6 +667,13 @@ class AlternatorConfigBuilder:
         self._user_agent = user_agent
         return self
 
+    def with_parameter_validation(
+        self, enabled: bool = True
+    ) -> AlternatorConfigBuilder:
+        """Set SDK input validation; disable for trusted, already validated inputs."""
+        self._parameter_validation = enabled
+        return self
+
     def build(self) -> Config:
         """Build the configuration object."""
         from alternator.core.routing_scope import ClusterScope
@@ -685,6 +694,7 @@ class AlternatorConfigBuilder:
             timeouts=self._timeouts,
             aws_region=self._aws_region,
             user_agent=self._user_agent,
+            parameter_validation=self._parameter_validation,
         )
 
 
@@ -698,6 +708,7 @@ def build_sdk_config_kwargs(config: Config) -> dict[str, Any]:
         "max_pool_connections": config.max_pool_connections,
         "connect_timeout": config.timeouts.connect_seconds,
         "read_timeout": config.timeouts.read_seconds,
+        "parameter_validation": config.parameter_validation,
     }
     if config.scheme == "https" and config.tls.sdk_client_cert is not None:
         kwargs["client_cert"] = config.tls.sdk_client_cert
