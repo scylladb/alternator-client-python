@@ -62,6 +62,7 @@ fn _alternator_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
             "alternator-client-rust-backend requires GIL-enabled CPython 3.10-3.14",
         ));
     }
+    crate::python_client::register(module)?;
     module.add("INTERFACE_VERSION", INTERFACE_VERSION)?;
     module.add("__version__", PYTHON_VERSION)?;
     module.add_function(wrap_pyfunction!(_runtime_id, module)?)?;

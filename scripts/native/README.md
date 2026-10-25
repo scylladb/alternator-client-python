@@ -36,10 +36,11 @@ builds and inspects it before core qualification. The environment installs that
 base wheel with async dependencies, the exact native wheel, pytest and the async
 plugin. It copies only the shared `tests` fixture package into the environment;
 production base/extension imports must resolve under that environment, with no
-checkout production path. This lets later operation/facade cases join the 53
-required baseline probes without collection errors or skipped async cases. This
-developer check retains Rust and requires `cc`, `cargo`, `rustc`, and Linux `/proc`
-before it can start. The C compiler builds a child-local thread-creation fault
+checkout production path. It collects the complete native suite, including
+client lifecycle cases, so later operation/facade cases can join without
+collection errors or skipped async cases. This developer check retains Rust and
+requires `cc`, `cargo`, `rustc`, and Linux `/proc` before it can start. The C
+compiler builds a child-local thread-creation fault
 interposer; package installation itself does not invoke or require that compiler.
 The installed-wheel probes fail startup at the first, middle and last worker,
 check stable cached sync/async failures and absence of leaked threads/file
@@ -52,9 +53,10 @@ Tokio source and one Cargo Tokio identity using the native toolchain directory.
 Every collected native test must pass: missing cases, skips, duplicate cases,
 errors and failures invalidate the JUnit proof even if pytest exits zero. Future
 native test files are included by directory collection. The core job retains
-`core.json`, the original core wheel and the complete `native.xml` report, bound
-to the source SHA, original run, wheel hash and vendor provenance hash. This is
-separate from all 20 package cells, which still install with Rust absent on PATH.
+`core.json`, `startup-context.json`, the original core wheel and the complete
+`native.xml` report, bound to the source SHA, original run, wheel/context hashes
+and vendor provenance hash. This is separate from all 20 package cells, which
+still install with Rust absent on PATH.
 
 ## Reusable workflow inputs
 
@@ -173,3 +175,73 @@ tags, metadata inconsistencies, wrong source/run/base, bundle identity and actua
 subprocess PATH/import isolation. They also reject missing core prerequisites,
 skipped or altered test reports, absent startup cases and mismatched core wheel,
 source/run or vendor proof. Synthetic test wheels are never build evidence.
+
+## Full SDK source graph profile
+
+P4 adds a reviewed, source-owned `native/cargo-provenance.json` contract for the
+full SDK graph. The original strict minimal model remains available only for the
+three-dependency P3 foundation without dev/build/target dependency tables. Other
+source graphs require the explicit contract; a missing contract never falls back
+to receipt-derived subsets or direct-only feature checks.
+
+Generate a reviewable contract change from the verified source, using Cargo
+rather than a received metadata file:
+
+```sh
+python scripts/native/graph_contract.py --output native/cargo-provenance.json
+```
+
+Capture runs `cargo metadata --locked --features extension --format-version 1`
+itself, without platform filters or `--no-deps`, and checks the inputs before and
+afterwards. Contract schema 1 records exact Cargo manifest/lock LF hashes and the
+maturin feature-selection projection, all locked identities, explicit inactive
+optional identities, and the complete active graph. Each package records local
+feature definitions, its resolved direct-plus-transitive feature union, portable
+dependency declarations, exact edges, aliases, kinds and target expressions.
+Declaration tuples contain name, version requirement, source, optional flag,
+default-feature flag, explicit features, rename, kind, target and registry.
+Native normal/dev/build/target tables are checked against source TOML. Opaque
+Cargo IDs and absolute source/build paths are never cross-runner identities.
+
+The SDK graph contract records every active/locked package and explicit inactive
+branch. Separate actual Cargo fixtures exercise a lock with an inactive optional
+package and rejection of metadata that enables that unrequested branch. The
+committed normalized graph is an explicit reviewed expectation, not a Python
+reimplementation of Cargo's resolver. Source contract changes require fresh capture and review;
+recording or aggregation never writes or derives the expected graph from a
+receipt. All receipt identities, definitions, declarations, edges and resolved
+feature unions must match that source-owned expectation exactly.
+
+A Python release-version-only change does not alter Cargo resolution, so it does
+not require graph regeneration: the contract binds selected maturin features,
+not the Python project version/readme metadata. P3's raw native pyproject hash,
+release version and installation/source/run checks still bind each receipt to
+all prepared metadata bytes. Changes to Cargo inputs or maturin feature selection
+invalidate the contract. P5 owns recapture after its Cargo feature/dependency
+changes. Final merged P0 Git pin/lock/source changes likewise require recapture,
+including positive and negative source/identity/feature/edge proof. The current
+driver source in both lock and graph is the exact declared Git revision
+`549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1`. Restoring that Git identity changed no
+package versions or enabled features; it does not establish final merged-pin or
+release evidence. The PR now targets Python main after #150 with its
+PyO3/pyo3-async-runtimes 0.29.0 bridge. Unsuccessful `GET /localnodes` responses
+are rejected, and the held-socket lifecycle test proves the configured discovery
+deadline independently of the read timeout. A compatible final merged Rust pin,
+maintainer approval and renewed source/lock/graph/startup qualification remain
+required before marking the draft ready. Retained local host execution covers
+Linux x86_64 CPython 3.13 with a `manylinux_2_38` wheel; qualification of the
+required `manylinux_2_28` distribution floor, all 20 matrix cells and live Scylla
+behavior requires separate exact-head CI evidence.
+
+## Source-bound Linux startup context
+
+The core job uses `native/tests/startup_context.py build` for its actual normal
+wheel and passes required `--startup-context` to `core-checks`. Collection passes
+that exact context/wheel to the installed native tests, keeps all native cases
+(including client lifecycle cases), and rejects every skip/error/failure. Core
+proof now retains `startup-context.json`, its SHA256 in `core.json`, and verifies
+its source-file/wheel binding during aggregation. Context is covered by the
+existing `core-evidence/*` artifact/attestation boundary. All 20 matrix cells,
+Rust-free install checks, source/run identity and final aggregate remain required.
+See `native/tests/STARTUP.md` for the independent signal ownership boundary,
+negative controls, controlled manifest-anchor update and qualification limits.

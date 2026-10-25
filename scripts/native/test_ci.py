@@ -30,6 +30,28 @@ def core_evidence(directory: Path, source: Path) -> None:
     provenance.write_bytes(b'{"synthetic_vendor_source": true}\n')
     artifact = directory / "core.whl"
     artifact.write_bytes(b"synthetic core test artifact")
+    if not (source / "native/Cargo.toml").exists():
+        source_fixture(source)
+    (source / "native/build.rs").write_text("// synthetic build fixture")
+    context_path = directory / "startup-context.json"
+    context_path.write_bytes(
+        ci.canonical(
+            {
+                "schema": 1,
+                "kind": "normal-linux-wheel-startup",
+                "wheel_sha256": ci.digest(artifact),
+                "source_files": {
+                    name: ci.digest(source / "native" / name)
+                    for name in (
+                        "Cargo.toml",
+                        "Cargo.lock",
+                        "build.rs",
+                        "pyproject.toml",
+                    )
+                },
+            }
+        )
+    )
     reports = {}
     root = ElementTree.Element("testsuites")
     for suite, (_, count) in ci.CORE_SUITES.items():
@@ -60,6 +82,7 @@ def core_evidence(directory: Path, source: Path) -> None:
         "vendor_provenance_sha256": ci.digest(provenance),
         "tests": reports,
         "native_tests": ci.pytest_report(path),
+        "startup_context_sha256": ci.digest(context_path),
     }
     (directory / "core.json").write_bytes(ci.canonical(receipt))
 

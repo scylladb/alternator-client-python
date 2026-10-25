@@ -333,6 +333,11 @@ def core_checks(args: argparse.Namespace) -> None:
         report = output / "native.xml"
         subprocess.run(
             core_test_command(executable, version[1], root / "native/tests", report),
+            env={
+                **os.environ,
+                "ALTERNATOR_STARTUP_CONTEXT": str(args.startup_context.resolve()),
+                "ALTERNATOR_STARTUP_WHEEL": str(wheel),
+            },
             cwd=workspace,
             check=True,
             timeout=300,
@@ -353,8 +358,10 @@ def core_checks(args: argparse.Namespace) -> None:
         "tools": tools,
         "tests": reports,
         "native_tests": native_tests,
+        "startup_context_sha256": digest(args.startup_context),
     }
     shutil.copyfile(wheel, output / wheel.name)
+    shutil.copyfile(args.startup_context, output / "startup-context.json")
     (output / "core.json").write_bytes(canonical(receipt))
 
 
@@ -381,6 +388,31 @@ def verify_core_evidence(
         or digest(directory / wheel["filename"]) != wheel["sha256"]
     ):
         raise ValueError("Core wheel hash mismatch")
+    if digest(directory / "startup-context.json") != receipt.get(
+        "startup_context_sha256"
+    ):
+        raise ValueError("Core startup context proof mismatch")
+    context = json.loads((directory / "startup-context.json").read_bytes())
+    if context.get("wheel_sha256") != wheel["sha256"]:
+        raise ValueError("Core startup context wheel binding mismatch")
+    source_files = context.get("source_files")
+    if (
+        context.get("schema") != 1
+        or context.get("kind") != "normal-linux-wheel-startup"
+        or not isinstance(source_files, dict)
+        or not {"Cargo.toml", "Cargo.lock", "build.rs", "pyproject.toml"}.issubset(
+            source_files
+        )
+    ):
+        raise ValueError("Core startup context source proof missing")
+    for name, checksum in source_files.items():
+        path = Path(name)
+        if (
+            path.is_absolute()
+            or ".." in path.parts
+            or digest(root / "native" / path) != checksum
+        ):
+            raise ValueError("Core startup context source binding mismatch")
     for suite in CORE_SUITES:
         if pytest_report(directory / "native.xml", suite) != receipt["tests"][suite]:
             raise ValueError("Core report proof mismatch")
@@ -402,7 +434,7 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(f"Invalid provenance: {message}")
 
 
-def source_provenance(root: Path) -> dict[str, Any]:
+def source_inputs(root: Path) -> dict[str, Any]:
     """Read pinned source without Cargo, compilation or package imports (3.11+)."""
     import tomllib
 
@@ -430,18 +462,31 @@ def source_provenance(root: Path) -> dict[str, Any]:
             require(len(matches) == 1, "ambiguous locked dependency")
             dependencies.add(matches[0])
         edges[identity] = dependencies
-    features = {"default", *project["tool"]["maturin"]["features"]}
-    while True:
-        expanded = features | {
-            value
-            for name in features
-            for value in cargo["features"][name]
-            if value in cargo["features"]
-        }
-        if expanded == features:
-            break
-        features = expanded
+    definitions = {
+        name: list(values) for name, values in cargo.get("features", {}).items()
+    }
+    explicit_optional = {
+        reference[4:]
+        for values in definitions.values()
+        for reference in values
+        if reference.startswith("dep:")
+    }
+    tables = [cargo, *cargo.get("target", {}).values()]
+    for table in tables:
+        for section in ("dependencies", "build-dependencies"):
+            for name, declaration in table.get(section, {}).items():
+                if (
+                    isinstance(declaration, dict)
+                    and declaration.get("optional")
+                    and name not in explicit_optional
+                    and name not in definitions
+                ):
+                    definitions[name] = ["dep:" + name]
+    features = enabled_features(
+        definitions, {"default", *project["tool"]["maturin"]["features"]}
+    )
     dependency_features = {}
+    dependency_aliases = {}
     declarations = []
     for name, dependency in cargo["dependencies"].items():
         declaration = (
@@ -450,6 +495,7 @@ def source_provenance(root: Path) -> dict[str, Any]:
         required = set(declaration.get("features", []))
         if declaration.get("default-features", True):
             required.add("default")
+        dependency_aliases[name] = declaration.get("package", name)
         dependency_features[declaration.get("package", name)] = required
         requirement = declaration.get("version", "*")
         if requirement[0].isdigit():
@@ -464,11 +510,23 @@ def source_provenance(root: Path) -> dict[str, Any]:
                 name if "package" in declaration else None,
             )
         )
+    for table in tables:
+        for section in ("dependencies", "build-dependencies", "dev-dependencies"):
+            for alias, raw in table.get(section, {}).items():
+                declaration = raw if isinstance(raw, dict) else {"version": raw}
+                name = declaration.get("package", alias)
+                dependency_aliases[alias] = name
+                enabled = set(declaration.get("features", []))
+                if declaration.get("default-features", True):
+                    enabled.add("default")
+                dependency_features.setdefault(name, set()).update(enabled)
     for feature in features:
-        for reference in cargo["features"][feature]:
+        for reference in definitions[feature]:
             if "/" in reference:
                 dependency, enabled = reference.split("/", 1)
-                dependency_features[dependency].add(enabled)
+                dependency_features[dependency_aliases[dependency.rstrip("?")]].add(
+                    enabled
+                )
     toolchain = tomllib.loads((native / "rust-toolchain.toml").read_text())
     maturin = [
         value.removeprefix("maturin==")
@@ -493,7 +551,7 @@ def source_provenance(root: Path) -> dict[str, Any]:
         "identities": set(identities),
         "edges": edges,
         "features": features,
-        "definitions": cargo["features"],
+        "definitions": definitions,
         "dependency_features": dependency_features,
         "declarations": declarations,
         "base_dependencies": base_dependencies,
@@ -505,6 +563,31 @@ def source_provenance(root: Path) -> dict[str, Any]:
             )
         },
     }
+
+
+def source_provenance(root: Path) -> dict[str, Any]:
+    """Select the strict minimal model or a source-owned full graph contract."""
+    import graph_contract
+    import tomllib
+
+    source = source_inputs(root)
+    native = root / "native"
+    path = native / "cargo-provenance.json"
+    if path.exists():
+        source["graph_contract"] = graph_contract.check(
+            json.loads(path.read_text()), source, native
+        )
+    else:
+        cargo = tomllib.loads((native / "Cargo.toml").read_text())
+        require(
+            set(cargo["dependencies"]) == {"tokio", "pyo3", "pyo3-async-runtimes"}
+            and not any(
+                cargo.get(name)
+                for name in ("dev-dependencies", "build-dependencies", "target")
+            ),
+            "full dependency graph requires a source-owned Cargo contract",
+        )
+    return source
 
 
 def enabled_features(
@@ -536,6 +619,18 @@ def cargo_provenance(metadata: object, source: dict[str, Any]) -> dict[tuple, tu
         and metadata["version"] == 1,
         "missing Cargo format-version 1 metadata",
     )
+    if "graph_contract" in source:
+        import graph_contract
+
+        actual = graph_contract.normalize(metadata)
+        require(
+            actual == source["graph_contract"],
+            "Cargo active identities, declarations, edges or resolved feature unions differ from source contract",
+        )
+        return {
+            tuple(item["identity"]): tuple(item["features"])
+            for item in actual["packages"]
+        }
     packages = metadata.get("packages")
     resolve = metadata.get("resolve")
     require(
@@ -1129,6 +1224,7 @@ def main() -> None:
     core.add_argument("--root", type=Path, default=Path.cwd())
     core.add_argument("--wheels", type=Path, required=True)
     core.add_argument("--base", type=Path, required=True)
+    core.add_argument("--startup-context", type=Path, required=True)
     core.add_argument("--output", type=Path, required=True)
     core.add_argument("--commit", required=True)
     core.add_argument("--run-id", required=True)

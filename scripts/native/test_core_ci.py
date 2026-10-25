@@ -85,6 +85,35 @@ class CoreEvidenceTests(unittest.TestCase):
         self.assertEqual(receipt["tests"]["startup"]["passed"], 4)
         self.assertEqual(receipt["tests"]["interface"]["passed"], 4)
 
+    def test_startup_context_is_required_and_source_wheel_bound(self) -> None:
+        path = self.directory / "startup-context.json"
+        original = path.read_bytes()
+        receipt_path = self.directory / "core.json"
+        receipt = json.loads(receipt_path.read_bytes())
+        for mutation in ("bytes", "source", "wheel"):
+            context = json.loads(original)
+            if mutation == "bytes":
+                path.write_bytes(original + b"\n")
+            else:
+                if mutation == "source":
+                    context["source_files"]["Cargo.toml"] = "0" * 64
+                else:
+                    context["wheel_sha256"] = "0" * 64
+                path.write_bytes(ci.canonical(context))
+                receipt_path.write_bytes(
+                    ci.canonical({**receipt, "startup_context_sha256": ci.digest(path)})
+                )
+            with (
+                self.subTest(mutation=mutation),
+                self.assertRaisesRegex(ValueError, "startup context"),
+            ):
+                self.verify()
+            path.write_bytes(original)
+            receipt_path.write_bytes(ci.canonical(receipt))
+        path.unlink()
+        with self.assertRaises(FileNotFoundError):
+            self.verify()
+
     def test_each_missing_report_fails(self) -> None:
         (self.directory / "native.xml").unlink()
         with self.assertRaises(FileNotFoundError):

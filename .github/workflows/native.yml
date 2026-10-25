@@ -79,14 +79,14 @@ jobs:
           test -d /proc/self/task
           test -d /proc/self/fd
           python -m pip install maturin==1.15.0
-          maturin build --release --locked --interpreter python --out ../dist-core
+          python tests/startup_context.py build --interpreter "$(command -v python)" --output ../dist-core
       - name: Require audited vendor and installed-wheel startup cleanup
         env:
           SOURCE_COMMIT: ${{ inputs.source-commit }}
           ORIGINAL_RUN_ID: ${{ github.run_id }}
         run: |
           python scripts/native/ci.py core-checks --commit "$SOURCE_COMMIT" --run-id "$ORIGINAL_RUN_ID" \
-            --wheels dist-core --base dist-base --output core-evidence
+            --wheels dist-core --base dist-base --startup-context dist-core/startup-context.json --output core-evidence
       - name: Attest original core wheel and complete test proof on trusted builds
         if: inputs.attest
         uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
