@@ -31,8 +31,8 @@ jobs:
       - name: Install dependencies
         run: make install
 
-      - name: Test release-note automation
-        run: node --test .github/tests/release-notes.test.cjs
+      - name: Test release workflow
+        run: node --test .github/tests/release-workflow.test.cjs
 
       - name: Lint
         run: make lint

@@ -1,8 +1,8 @@
 # Shared non-code glob: every label below requires ALL changed files
 # to be non-code. This lets non-code categories mix freely (e.g. a PR
 # touching both tests/ and .github/ gets both `test` and `ci`).
-# A PR that also touches alternator/ gets none of these labels and
-# appears in release notes.
+# These categories do not control release-note exclusion. The separate
+# omit-from-release-notes rule below uses a narrower support-only allowlist.
 
 _non-code: &non-code
   - all-globs-to-all-files:
@@ -59,3 +59,10 @@ enhancement:
   - head-branch:
       - ^feat/.*
       - ^feature/.*
+
+# Every reported filename must match this single union of support paths.
+# Keep runtime sources, dependency manifests and packaging/build inputs visible.
+omit-from-release-notes:
+  - changed-files:
+      - all-globs-to-all-files:
+          - "{tests/**,native/tests/**,docs/**,.github/**,README.md,native/README.md,native/INTERFACE.md,scripts/native/README.md,scripts/release/SIGNING.md,.gitignore,.editorconfig,.pre-commit-config.yaml,.ruff.toml,ruff.toml,.mypy.ini,mypy.ini,docker-compose.yml}"
