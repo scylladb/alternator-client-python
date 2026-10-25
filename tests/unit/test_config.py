@@ -108,6 +108,7 @@ class TestAlternatorConfig:
         assert config.node_list_polling.active_interval_ms == 1000
         assert config.node_list_polling.idle_interval_ms == 60000
         assert config.aws_region == "us-east-1"
+        assert config.parameter_validation is True
         assert isinstance(config.user_agent, str)
         assert config.user_agent.startswith("alternator-client-python/")
         assert isinstance(config.routing_scope, ClusterScope)
@@ -161,6 +162,19 @@ class TestAlternatorConfigBuilder:
         assert config.seed_hosts == ("localhost",)
         assert config.port == 8000
         assert config.scheme == "http"
+        assert config.parameter_validation is True
+
+    @pytest.mark.parametrize("enabled", [False, True])
+    def test_build_with_parameter_validation(self, enabled: bool) -> None:
+        """The builder can disable and re-enable SDK input validation."""
+        config = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_parameter_validation(False)
+            .with_parameter_validation(enabled)
+            .build()
+        )
+        assert config.parameter_validation is enabled
 
     def test_build_with_multiple_seeds(self) -> None:
         """Test building config with multiple seed hosts."""

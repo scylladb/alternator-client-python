@@ -81,6 +81,9 @@ def rejected_native_configs(base: Config) -> list[RejectedConfig]:
         ),
         RejectedConfig("python-pool-tuning", replace(base, max_pool_connections=201)),
         RejectedConfig(
+            "python-validation-bypass", replace(base, parameter_validation=False)
+        ),
+        RejectedConfig(
             "insecure-tls", replace(base, tls=TLS(trust_all_certificates=True))
         ),
         RejectedConfig(

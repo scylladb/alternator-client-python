@@ -15,12 +15,14 @@
 """Tests for internal BotoConfig creation."""
 
 import contextlib
+import json
 from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
 import pytest
 from botocore import UNSIGNED
+from botocore.exceptions import ParamValidationError
 from botocore.session import Session
 
 from alternator.client import _create_boto_config
@@ -117,6 +119,39 @@ class TestCreateBotoConfig:
         boto_config: Any = _create_boto_config(config, auth_enabled=False)
 
         assert boto_config.max_pool_connections == 42
+
+    @pytest.mark.parametrize("enabled", [None, True, False])
+    @pytest.mark.parametrize("auth_enabled", [False, True])
+    def test_parameter_validation_controls_serialization(
+        self, enabled: bool | None, auth_enabled: bool
+    ) -> None:
+        """The SDK rejects missing fields by default and serializes with bypass."""
+        config = (
+            self._make_config()
+            if enabled is None
+            else self._make_config(parameter_validation=enabled)
+        )
+        sdk_config = _create_boto_config(config, auth_enabled=auth_enabled)
+        sdk_client = Session().create_client(
+            "dynamodb",
+            endpoint_url="http://localhost:1",
+            region_name="us-east-1",
+            aws_access_key_id="test-key",
+            aws_secret_access_key="test-secret",
+            config=sdk_config,
+        )
+        try:
+            operation = sdk_client.meta.service_model.operation_model("PutItem")
+            serializer = cast(Any, sdk_client)._serializer
+            params = {"TableName": "tbl"}  # Item is required by the model.
+            if enabled is False:
+                request = serializer.serialize_to_request(params, operation)
+                assert json.loads(request["body"]) == params
+            else:
+                with pytest.raises(ParamValidationError, match='"Item"'):
+                    serializer.serialize_to_request(params, operation)
+        finally:
+            sdk_client.close()
 
     def test_timeouts_propagated(self) -> None:
         """Connect/read timeout settings flow into BotoConfig."""
@@ -228,7 +263,10 @@ class TestCreateAioConfig:
         ):
             _create_aio_config(config, auth_enabled=False)
 
-    def test_async_config_matches_sync_transport_settings(self) -> None:
+    @pytest.mark.parametrize("parameter_validation", [True, False])
+    def test_async_config_matches_sync_transport_settings(
+        self, parameter_validation: bool
+    ) -> None:
         """AioConfig receives retry, timeout, pool, and signature settings."""
         pytest.importorskip("aiobotocore")
 
@@ -244,6 +282,7 @@ class TestCreateAioConfig:
             ),
             retries=RetryConfig(max_attempts=4, mode=RetryMode.STANDARD),
             max_pool_connections=17,
+            parameter_validation=parameter_validation,
             timeouts=TimeoutConfig(
                 discovery_seconds=1.0,
                 connect_seconds=3.0,
@@ -259,6 +298,7 @@ class TestCreateAioConfig:
         assert aio_config.connect_timeout == 3.0
         assert aio_config.read_timeout == 11.0
         assert aio_config.signature_version is UNSIGNED
+        assert aio_config.parameter_validation is parameter_validation
         assert aio_config.client_cert == (
             "/path/to/client.crt",
             "/path/to/client.key",

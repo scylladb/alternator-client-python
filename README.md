@@ -217,6 +217,7 @@ config = (
 | `timeouts` | `TimeoutConfig` | discovery 5s, connect 5s, read 30s | Discovery and SDK per-attempt timeouts |
 | `aws_region` | `str` | `"us-east-1"` | Region placeholder required by the SDK |
 | `user_agent` | str, callable, or `None` | `alternator-client-python/<version>` | Final User-Agent; `None` omits the wire header |
+| `parameter_validation` | `bool` | `True` | Validate SDK request parameters before serialization |
 | `active_refresh_interval_ms` | `int` | `1000` | Node refresh interval when active |
 | `idle_refresh_interval_ms` | `int` | `60000` | Node refresh interval when idle |
 
@@ -740,18 +741,35 @@ The client still owns the SDK config object, endpoint routing, and the final
 wire `User-Agent` header. Use typed Alternator config fields for SDK transport
 settings: `RetryConfig` for retry behavior, `TimeoutConfig` for connect/read
 timeouts, `max_pool_connections` for pool sizing, `aws_region` for the SDK
-region placeholder, and `TLS` for client certificates. Python botocore does not
-expose direct knobs for max idle connections, max idle connections per host, or
-idle connection timeout; tune `max_pool_connections`, retries, and timeouts
-instead.
+region placeholder, `parameter_validation` for SDK input checks, and `TLS` for
+client certificates. Python botocore does not expose direct knobs for max idle
+connections, max idle connections per host, or idle connection timeout; tune
+`max_pool_connections`, retries, and timeouts instead.
 
 ## Production Recommendations
 
+- **Parameter validation**: For trusted, already validated inputs, you can set `parameter_validation=False` to skip Botocore's model-based input checks before serialization. This can reduce client CPU overhead, especially for nested items and batches. Keep the default `True` when you need SDK input validation. Serialization and server-side validation still run; malformed calls may fail later with less informative serializer or service errors. The option applies to sync clients/resources and async clients.
 - **Connection pool sizing**: The default `max_pool_connections=200` works for most workloads. Increase if you see connection pool exhaustion warnings under high concurrency.
 - **Refresh intervals**: Default active refresh (1s) is appropriate for dynamic clusters. For stable clusters, increase `active_refresh_interval_ms` to reduce discovery overhead.
 - **Timeouts**: Default `TimeoutConfig.discovery_seconds=5.0`, `connect_seconds=5.0`, and `read_seconds=30.0` are conservative. Tune based on your network latency and query complexity.
 - **Monitoring**: Enable `INFO`-level logging for the `alternator` logger to track node discovery events. Use `DEBUG` for detailed routing decisions during troubleshooting.
 - **Seed hosts**: Configure at least 2-3 seed hosts for redundancy in case one seed is temporarily unavailable during startup.
+
+For trusted, already validated request parameters:
+
+```python
+from alternator import Config
+
+config = Config(
+    seed_hosts=["node1", "node2"],
+    port=8000,
+    parameter_validation=False,
+)
+```
+
+The builder provides the same setting through
+`.with_parameter_validation(False)`. Use `.with_parameter_validation(True)`
+to re-enable SDK input validation.
 
 ## Thread Safety
 
