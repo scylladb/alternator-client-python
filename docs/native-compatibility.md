@@ -143,17 +143,31 @@ BackendFactory.client is an async context manager exposing `raw` and async
 thread so concurrent backend tests can share one event loop.
 
 `FakeAlternatorServer` in `tests/fake_server.py` retains the existing GET fixture
-API and adds concurrent HTTP/1.1 POST, optional server SSLContext (including client
-certificate verification), and per-operation/per-table FIFO scripts. Tables are
-matched before operation-only scripts; script exhaustion returns an explicit
-HTTP 400 unless a persistent fallback is supplied. `set_topology` serves Rust
-Scan requests for `.scylla.alternator.system.local` and `.peers`; `set_partition_key`
-serves HASH-key DescribeTable metadata. Table-specific scripts can supply
-pagination, errors or held discovery I/O. Python `/localnodes` discovery behavior
-remains unchanged; native discovery uses a complete two-system-table snapshot.
+API and supports concurrent HTTP/1.1 GET/POST, optional server SSLContext
+(including client certificate verification), exact-path GET FIFO scripts and
+per-operation/per-table POST FIFO scripts. `script_get(path, responses, fallback=...)`
+matches the full path including its query; exhaustion returns HTTP 404 unless a
+persistent fallback is supplied. POST tables match before operation-only scripts;
+POST exhaustion returns HTTP 400 without a fallback.
+
+Both backends discover topology through `GET /localnodes`. DC scopes use `dc`,
+rack scopes use `dc` and `rack`, and query values are URL-encoded. An unscoped
+response describes the responder's datacenter; cluster discovery must union
+responses from seeds/known nodes rather than assume one seed exposes all DCs.
+`set_localnodes` supplies a persistent list for one exact query. `set_topology`
+builds scoped IP lists from `(address, datacenter, rack)` rows; its unscoped route
+uses the first local row's datacenter. Unknown scopes return 404 unless explicitly
+scripted. It never installs topology system-table Scan handlers.
+`set_partition_key` still serves HASH-key DescribeTable metadata. GET scripts can
+supply malformed bodies, empty lists, HTTP errors, disconnects or held discovery
+I/O to exercise configured fallback chains and cancellation. Existing Python
+discovery exhaustion behavior remains unchanged. Native lifecycle tests require
+an explicitly rebuilt wheel containing the corrected upstream discovery; old
+system-table wheels do not provide current acceptance evidence.
 
 Capture includes original request header spelling, wire bytes, decoded gzip JSON
-and monotonically assigned connection IDs. `wait_for_requests` and response
+and monotonically assigned connection IDs. `wait_for_requests` (with optional
+exact `path` filtering) and response
 `entered`/`release` events synchronize bounded tests without sleeps. Concurrent
 held responses permit lifecycle/cancellation and pool-reuse assertions. Stop
 interrupts held requests and idle keep-alive sockets. Tests verify server

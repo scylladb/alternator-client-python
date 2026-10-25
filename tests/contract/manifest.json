@@ -1136,5 +1136,11 @@
   "error_payload_policy": {
     "python": "Canonical Error plus only body fields declared by the operation error shape; unmodeled body fields are discarded.",
     "rust": "Canonical Error plus every body field except protocol __type; preserve message casing and unknown members. Modeled Item/CancellationReasons attributes use decoded Python values. Preserve original wire body and headers separately in native exception context."
+  },
+  "discovery": {
+    "topology": "GET /localnodes through the Rust HTTP transport; never Scan topology system tables.",
+    "scopes": "Unscoped responses contain responder-datacenter IP literals; cluster discovery unions responses from seeds/known nodes. DC uses dc; rack uses dc and rack; URL-encode query values.",
+    "fallbacks": "Use only the configured built-in scope fallback chain; preserve existing Python exhaustion semantics.",
+    "partition_key": "DescribeTable HASH-key metadata remains separate from topology discovery."
   }
 }
