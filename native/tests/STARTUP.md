@@ -21,7 +21,7 @@ expected pair count. The accepted P2 minimal manifest requires zero pairs; the
 accepted P4/upstream-full manifests require exactly one. Unknown contracts fail
 closed. Renew the source audit and manifest anchors after relevant dependency
 changes, including the final verified merged P0 Git pin. Regenerate context for
-any source/lock/wheel change. The current manifest, lock and graph name the exact
+any source/lock/wheel change. The current manifest and lock name the exact
 declared P0 Git revision `549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1`; that source
 identity alone does not establish final merged-pin or release qualification.
 
@@ -94,7 +94,7 @@ PyO3/pyo3-async-runtimes 0.29.0 bridge. The transport rejects unsuccessful
 `GET /localnodes` responses, and a held-socket lifecycle test proves the configured
 discovery deadline independently of the read timeout. Before marking the draft
 ready, a compatible final merged Rust pin still requires maintainer approval and
-renewed source/lock/graph/startup qualification.
+renewed source/lock/startup qualification.
 
 ## Controlled final pin update
 

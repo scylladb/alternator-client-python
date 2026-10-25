@@ -60,74 +60,13 @@ dependencies = ["tokio", "pyo3"]
 """)
 
 
-def metadata_fixture(source: dict) -> dict:
-    packages = []
-    nodes = []
-    ids = {
-        key: f"opaque-builder-path-{index}"
-        for index, key in enumerate(sorted(source["identities"], key=str))
-    }
-    for key, identifier in ids.items():
-        features = (
-            source["features"]
-            if key == source["root"]
-            else source["dependency_features"][key[0]]
-        )
-        definitions = (
-            source["definitions"]
-            if key == source["root"]
-            else dict.fromkeys(features, [])
-        )
-        packages.append(
-            {
-                "name": key[0],
-                "version": key[1],
-                "source": key[2],
-                "id": identifier,
-                "features": definitions,
-            }
-        )
-        if key == source["root"]:
-            packages[-1]["dependencies"] = [
-                {
-                    "name": name,
-                    "req": req,
-                    "features": list(features),
-                    "optional": optional,
-                    "uses_default_features": defaults,
-                    "rename": rename,
-                    "kind": None,
-                    "target": None,
-                }
-                for name, req, features, optional, defaults, rename in source[
-                    "declarations"
-                ]
-            ]
-        dependencies = [ids[child] for child in source["edges"][key]]
-        nodes.append(
-            {
-                "id": identifier,
-                "dependencies": dependencies,
-                "deps": [{"pkg": child} for child in dependencies],
-                "features": sorted(features),
-            }
-        )
-    root = ids[source["root"]]
-    return {
-        "version": 1,
-        "packages": packages,
-        "resolve": {"root": root, "nodes": nodes},
-        "workspace_members": [root],
-    }
-
-
 def provenance_fixture(root: Path, install: dict, build: dict) -> dict:
     source = ci.source_provenance(root)
     python, platform = install["slot"].split("/")
     target, runner_os, runner_arch = ci.TARGETS[platform]
     repository = os.environ.get("GITHUB_REPOSITORY", "example/client")
     return {
-        "schema": 1,
+        "schema": 2,
         "stage": "interface",
         "build": build,
         "slot": install["slot"],
@@ -135,7 +74,6 @@ def provenance_fixture(root: Path, install: dict, build: dict) -> dict:
         "version": source["version"],
         "maturin": source["maturin"],
         "rustc": f"rustc 1.94.1 (aaaaaaaaa 2026-03-25)\ncommit-hash: {'a' * 40}\nhost: {target}\nrelease: 1.94.1\n",
-        "cargo_metadata": metadata_fixture(source),
         **{
             name: hashlib.sha256(
                 payload.replace(b"\n", b"\r\n") if runner_os == "Windows" else payload
@@ -211,7 +149,6 @@ class ProvenanceTests(unittest.TestCase):
             "runner_arch": "ARM64",
             "runner_os": "Windows",
             "installed_environment": {},
-            "cargo_metadata": {},
             "repository": None,
             "workflow_ref": "other/repo/.github/workflows/ci.yml@main",
             "run_attempt": "",
@@ -254,84 +191,6 @@ class ProvenanceTests(unittest.TestCase):
                 self.build,
                 self.source,
             )
-
-    def test_cargo_missing_identities_edges_and_features_fail(self) -> None:
-        for mutation in (
-            "package",
-            "pin",
-            "source",
-            "node",
-            "edge",
-            "features",
-            "extension",
-        ):
-            value = copy.deepcopy(self.provenance)
-            metadata = value["cargo_metadata"]
-            node = next(
-                item
-                for item in metadata["resolve"]["nodes"]
-                if item["id"] == metadata["resolve"]["root"]
-            )
-            if mutation == "package":
-                metadata["packages"].pop()
-            elif mutation == "pin":
-                metadata["packages"][0]["version"] = "0.0.0"
-            elif mutation == "source":
-                metadata["packages"][0]["source"] = "git+wrong"
-            elif mutation == "node":
-                metadata["resolve"]["nodes"].pop()
-            elif mutation == "edge":
-                node["dependencies"] = []
-                node["deps"] = []
-            elif mutation == "features":
-                for item in metadata["resolve"]["nodes"]:
-                    item["features"] = []
-            else:
-                node["features"].remove("extension")
-            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                self.validate(value)
-
-    def test_opaque_path_ids_are_not_compared_with_checkout_paths(self) -> None:
-        value = copy.deepcopy(self.provenance)
-        metadata = value["cargo_metadata"]
-        mapping = {
-            item["id"]: f"path+file:///D:/foreign/source/{index}"
-            for index, item in enumerate(metadata["packages"])
-        }
-        for package in metadata["packages"]:
-            package["id"] = mapping[package["id"]]
-        for node in metadata["resolve"]["nodes"]:
-            node["id"] = mapping[node["id"]]
-            node["dependencies"] = [mapping[item] for item in node["dependencies"]]
-            for edge in node["deps"]:
-                edge["pkg"] = mapping[edge["pkg"]]
-        metadata["resolve"]["root"] = mapping[metadata["resolve"]["root"]]
-        metadata["workspace_members"] = [metadata["resolve"]["root"]]
-        self.validate(value)
-
-    def test_unrequested_direct_dependency_features_fail(self) -> None:
-        value = copy.deepcopy(self.provenance)
-        metadata = value["cargo_metadata"]
-        package = next(item for item in metadata["packages"] if item["name"] == "pyo3")
-        package["features"]["abi3"] = []
-        node = next(
-            item for item in metadata["resolve"]["nodes"] if item["id"] == package["id"]
-        )
-        node["features"].append("abi3")
-        with self.assertRaisesRegex(ValueError, "features differ"):
-            self.validate(value)
-
-    def test_native_declared_pins_cannot_contradict_source(self) -> None:
-        value = copy.deepcopy(self.provenance)
-        metadata = value["cargo_metadata"]
-        root = next(
-            item
-            for item in metadata["packages"]
-            if item["id"] == metadata["resolve"]["root"]
-        )
-        root["dependencies"][0]["req"] = "*"
-        with self.assertRaisesRegex(ValueError, "declarations differ"):
-            self.validate(value)
 
     def test_installed_interpreter_and_distribution_evidence_fail_closed(self) -> None:
         for mutation in (

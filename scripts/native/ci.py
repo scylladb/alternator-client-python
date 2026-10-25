@@ -57,7 +57,6 @@ PROVENANCE_FIELDS = frozenset(
         "version",
         "rustc",
         "maturin",
-        "cargo_metadata",
         "cargo_lock_sha256",
         "native_pyproject_sha256",
         "base_sha256",
@@ -434,99 +433,12 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(f"Invalid provenance: {message}")
 
 
-def source_inputs(root: Path) -> dict[str, Any]:
-    """Read pinned source without Cargo, compilation or package imports (3.11+)."""
+def source_provenance(root: Path) -> dict[str, Any]:
+    """Read build pins; Cargo owns dependency and feature resolution."""
     import tomllib
 
     native = root / "native"
-    cargo = tomllib.loads((native / "Cargo.toml").read_text())
     project = tomllib.loads((native / "pyproject.toml").read_text())
-    lock = tomllib.loads((native / "Cargo.lock").read_text())
-    identities = {
-        (item["name"], item["version"], item.get("source")): item
-        for item in lock["package"]
-    }
-    require(len(identities) == len(lock["package"]), "duplicate locked package")
-    edges = {}
-    for identity, package in identities.items():
-        dependencies = set()
-        for reference in package.get("dependencies", []):
-            parts = reference.split(" ", 2)
-            matches = [
-                key
-                for key in identities
-                if key[0] == parts[0]
-                and (len(parts) < 2 or key[1] == parts[1])
-                and (len(parts) < 3 or f"({key[2]})" == parts[2])
-            ]
-            require(len(matches) == 1, "ambiguous locked dependency")
-            dependencies.add(matches[0])
-        edges[identity] = dependencies
-    definitions = {
-        name: list(values) for name, values in cargo.get("features", {}).items()
-    }
-    explicit_optional = {
-        reference[4:]
-        for values in definitions.values()
-        for reference in values
-        if reference.startswith("dep:")
-    }
-    tables = [cargo, *cargo.get("target", {}).values()]
-    for table in tables:
-        for section in ("dependencies", "build-dependencies"):
-            for name, declaration in table.get(section, {}).items():
-                if (
-                    isinstance(declaration, dict)
-                    and declaration.get("optional")
-                    and name not in explicit_optional
-                    and name not in definitions
-                ):
-                    definitions[name] = ["dep:" + name]
-    features = enabled_features(
-        definitions, {"default", *project["tool"]["maturin"]["features"]}
-    )
-    dependency_features = {}
-    dependency_aliases = {}
-    declarations = []
-    for name, dependency in cargo["dependencies"].items():
-        declaration = (
-            dependency if isinstance(dependency, dict) else {"version": dependency}
-        )
-        required = set(declaration.get("features", []))
-        if declaration.get("default-features", True):
-            required.add("default")
-        dependency_aliases[name] = declaration.get("package", name)
-        dependency_features[declaration.get("package", name)] = required
-        requirement = declaration.get("version", "*")
-        if requirement[0].isdigit():
-            requirement = "^" + requirement
-        declarations.append(
-            (
-                declaration.get("package", name),
-                requirement,
-                tuple(sorted(declaration.get("features", []))),
-                declaration.get("optional", False),
-                declaration.get("default-features", True),
-                name if "package" in declaration else None,
-            )
-        )
-    for table in tables:
-        for section in ("dependencies", "build-dependencies", "dev-dependencies"):
-            for alias, raw in table.get(section, {}).items():
-                declaration = raw if isinstance(raw, dict) else {"version": raw}
-                name = declaration.get("package", alias)
-                dependency_aliases[alias] = name
-                enabled = set(declaration.get("features", []))
-                if declaration.get("default-features", True):
-                    enabled.add("default")
-                dependency_features.setdefault(name, set()).update(enabled)
-    for feature in features:
-        for reference in definitions[feature]:
-            if "/" in reference:
-                dependency, enabled = reference.split("/", 1)
-                dependency_features[dependency_aliases[dependency.rstrip("?")]].add(
-                    enabled
-                )
     toolchain = tomllib.loads((native / "rust-toolchain.toml").read_text())
     maturin = [
         value.removeprefix("maturin==")
@@ -547,13 +459,6 @@ def source_inputs(root: Path) -> dict[str, Any]:
         "version": project["project"]["version"],
         "rust": toolchain["toolchain"]["channel"],
         "maturin": f"maturin {maturin[0]}",
-        "root": (cargo["package"]["name"], cargo["package"]["version"], None),
-        "identities": set(identities),
-        "edges": edges,
-        "features": features,
-        "definitions": definitions,
-        "dependency_features": dependency_features,
-        "declarations": declarations,
         "base_dependencies": base_dependencies,
         "hashes": {
             name: (native / filename).read_bytes().replace(b"\r\n", b"\n")
@@ -565,238 +470,19 @@ def source_inputs(root: Path) -> dict[str, Any]:
     }
 
 
-def source_provenance(root: Path) -> dict[str, Any]:
-    """Select the strict minimal model or a source-owned full graph contract."""
-    import graph_contract
-    import tomllib
-
-    source = source_inputs(root)
-    native = root / "native"
-    path = native / "cargo-provenance.json"
-    if path.exists():
-        source["graph_contract"] = graph_contract.check(
-            json.loads(path.read_text()), source, native
-        )
-    else:
-        cargo = tomllib.loads((native / "Cargo.toml").read_text())
-        require(
-            set(cargo["dependencies"]) == {"tokio", "pyo3", "pyo3-async-runtimes"}
-            and not any(
-                cargo.get(name)
-                for name in ("dev-dependencies", "build-dependencies", "target")
-            ),
-            "full dependency graph requires a source-owned Cargo contract",
-        )
-    return source
-
-
-def enabled_features(
-    definitions: dict[str, list[str]], requested: set[str]
-) -> set[str]:
-    """Expand local aliases and implicit optional dependency features."""
-    result = requested - ({"default"} if "default" not in definitions else set())
-    while True:
-        require(result.issubset(definitions), "required dependency features missing")
-        expanded = set(result)
-        for feature in result:
-            for reference in definitions[feature]:
-                if reference in definitions:
-                    expanded.add(reference)
-                elif "/" in reference:
-                    dependency = reference.split("/", 1)[0]
-                    if dependency in definitions:
-                        expanded.add(dependency)
-        if expanded == result:
-            return result
-        result = expanded
-
-
-def cargo_provenance(metadata: object, source: dict[str, Any]) -> dict[tuple, tuple]:
-    """Compare identities, locked edges and features, never opaque path IDs."""
-    require(
-        isinstance(metadata, dict)
-        and type(metadata.get("version")) is int
-        and metadata["version"] == 1,
-        "missing Cargo format-version 1 metadata",
-    )
-    if "graph_contract" in source:
-        import graph_contract
-
-        actual = graph_contract.normalize(metadata)
-        require(
-            actual == source["graph_contract"],
-            "Cargo active identities, declarations, edges or resolved feature unions differ from source contract",
-        )
-        return {
-            tuple(item["identity"]): tuple(item["features"])
-            for item in actual["packages"]
-        }
-    packages = metadata.get("packages")
-    resolve = metadata.get("resolve")
-    require(
-        isinstance(packages, list) and bool(packages) and isinstance(resolve, dict),
-        "missing Cargo package/resolve metadata",
-    )
-    by_id = {}
-    for package in packages:
-        require(
-            isinstance(package, dict)
-            and all(
-                key in package
-                for key in ("id", "name", "version", "source", "features")
-            ),
-            "incomplete Cargo package",
-        )
-        require(
-            isinstance(package["id"], str)
-            and package["id"]
-            and package["id"] not in by_id,
-            "duplicate or empty Cargo package ID",
-        )
-        require(
-            isinstance(package["name"], str)
-            and isinstance(package["version"], str)
-            and (package["source"] is None or isinstance(package["source"], str))
-            and isinstance(package["features"], dict),
-            "malformed Cargo identity/features",
-        )
-        by_id[package["id"]] = package
-
-    def identity(package: dict[str, Any]) -> tuple:
-        return package["name"], package["version"], package["source"]
-
-    require(
-        {identity(item) for item in packages} == source["identities"]
-        and len(packages) == len(source["identities"]),
-        "Cargo identities differ from Cargo.lock",
-    )
-    root_id = resolve.get("root")
-    require(
-        root_id in by_id
-        and identity(by_id[root_id]) == source["root"]
-        and metadata.get("workspace_members") == [root_id],
-        "Cargo workspace/root differs",
-    )
-    require(
-        by_id[root_id]["features"] == source["definitions"],
-        "native feature definitions differ",
-    )
-    declarations = by_id[root_id].get("dependencies")
-    require(
-        isinstance(declarations, list)
-        and len(declarations) == len(source["declarations"]),
-        "missing native dependency declarations",
-    )
-    actual_declarations = []
-    for declaration in declarations:
-        require(
-            isinstance(declaration, dict)
-            and all(
-                key in declaration
-                for key in (
-                    "name",
-                    "req",
-                    "features",
-                    "optional",
-                    "uses_default_features",
-                    "rename",
-                    "kind",
-                    "target",
-                )
-            )
-            and declaration["kind"] is None
-            and declaration["target"] is None
-            and type(declaration["optional"]) is bool
-            and type(declaration["uses_default_features"]) is bool
-            and isinstance(declaration["features"], list),
-            "malformed native dependency declaration",
-        )
-        actual_declarations.append(
-            (
-                declaration["name"],
-                declaration["req"],
-                tuple(sorted(declaration["features"])),
-                declaration["optional"],
-                declaration["uses_default_features"],
-                declaration["rename"],
-            )
-        )
-    require(
-        sorted(actual_declarations, key=str) == sorted(source["declarations"], key=str),
-        "native dependency declarations differ from source",
-    )
-    nodes = resolve.get("nodes")
-    require(
-        isinstance(nodes, list) and len(nodes) == len(by_id),
-        "missing Cargo graph nodes",
-    )
-    portable = {}
-    for node in nodes:
-        require(
-            isinstance(node, dict) and node.get("id") in by_id, "unknown Cargo node"
-        )
-        package = by_id[node["id"]]
-        key = identity(package)
-        require(key not in portable, "duplicate Cargo graph node")
-        dependencies, deps, features = (
-            node.get("dependencies"),
-            node.get("deps"),
-            node.get("features"),
-        )
-        require(
-            isinstance(dependencies, list)
-            and all(isinstance(value, str) and value in by_id for value in dependencies)
-            and len(set(dependencies)) == len(dependencies),
-            "missing or dangling Cargo dependencies",
-        )
-        require(
-            isinstance(deps, list)
-            and all(
-                isinstance(value, dict) and value.get("pkg") in by_id for value in deps
-            )
-            and {value["pkg"] for value in deps} == set(dependencies),
-            "contradictory Cargo edges",
-        )
-        require(
-            {identity(by_id[value]) for value in dependencies} == source["edges"][key],
-            "Cargo graph differs from Cargo.lock",
-        )
-        require(
-            isinstance(features, list)
-            and all(
-                isinstance(value, str) and value in package["features"]
-                for value in features
-            )
-            and len(set(features)) == len(features),
-            "missing or unknown Cargo features",
-        )
-        if key == source["root"]:
-            require(
-                set(features) == source["features"], "native extension features differ"
-            )
-        elif package["name"] in source["dependency_features"]:
-            required = source["dependency_features"][package["name"]]
-            require(
-                set(features) == enabled_features(package["features"], required),
-                "dependency features differ from source",
-            )
-        portable[key] = tuple(sorted(features))
-    return portable
-
-
 def validate_provenance(
     provenance: object,
     install: dict[str, Any],
     build: dict[str, str],
     source: dict[str, Any],
-) -> tuple[dict[tuple, tuple], tuple[str, str]]:
+) -> tuple[str, str]:
     require(
         isinstance(provenance, dict) and set(provenance) == PROVENANCE_FIELDS,
         "missing or unknown provenance fields",
     )
     require(
         type(provenance["schema"]) is int
-        and provenance["schema"] == 1
+        and provenance["schema"] == 2
         and provenance["stage"] == "interface"
         and provenance["build"] == build
         and provenance["slot"] == install["slot"],
@@ -907,7 +593,7 @@ def validate_provenance(
             key not in os.environ or os.environ[key] == value,
             f"{key} differs from current build",
         )
-    return cargo_provenance(provenance["cargo_metadata"], source), identity[:2]
+    return identity[:2]
 
 
 def git(root: Path, *args: str) -> str:
@@ -1076,6 +762,7 @@ def record(args: argparse.Namespace) -> None:
     if len(wheels) != 1 or len(bases) != 1:
         raise ValueError("Expected exactly one native wheel and one base wheel")
     wheel, base = wheels[0], bases[0]
+    wheel_hash, base_hash = digest(wheel), digest(base)
     # Read static metadata without executing the package or requiring tomllib on 3.10.
     version_text = (root / "native/pyproject.toml").read_text()
     version = re.search(r'^version = "([^"]+)"$', version_text, re.MULTILINE)
@@ -1083,11 +770,13 @@ def record(args: argparse.Namespace) -> None:
         raise ValueError("Missing static native version")
     slot = inspect_wheel(wheel, args.python, args.platform, version[1])
     evidence = smoke(root, wheel, base, version[1], args.python)
+    if (digest(wheel), digest(base)) != (wheel_hash, base_hash):
+        raise ValueError("Wheel bytes changed during installation tests")
     check_source(root, args.commit)
     args.output.mkdir(parents=True, exist_ok=True)
     receipt = {
         "filename": wheel.name,
-        "sha256": digest(wheel),
+        "sha256": wheel_hash,
         "commit": args.commit,
         "run_id": args.run_id,
     }
@@ -1097,12 +786,12 @@ def record(args: argparse.Namespace) -> None:
         "slot": slot,
         **receipt,
         "version": version[1],
-        "base_sha256": digest(base),
+        "base_sha256": base_hash,
         **evidence["checks"],
     }
     info = args.build_info
     provenance = {
-        "schema": 1,
+        "schema": 2,
         "stage": "interface",
         "build": receipt,
         "slot": slot,
@@ -1110,10 +799,9 @@ def record(args: argparse.Namespace) -> None:
         "version": version[1],
         "rustc": (info / "rustc.txt").read_text(),
         "maturin": (info / "maturin.txt").read_text().strip(),
-        "cargo_metadata": json.loads((info / "cargo-metadata.json").read_text()),
         "cargo_lock_sha256": digest(root / "native/Cargo.lock"),
         "native_pyproject_sha256": digest(root / "native/pyproject.toml"),
-        "base_sha256": digest(base),
+        "base_sha256": base_hash,
         "installed_environment": evidence["environment"],
         "repository": os.environ.get("GITHUB_REPOSITORY"),
         "workflow_ref": os.environ.get("GITHUB_WORKFLOW_REF"),
@@ -1121,13 +809,14 @@ def record(args: argparse.Namespace) -> None:
         "runner_os": os.environ.get("RUNNER_OS"),
         "runner_arch": os.environ.get("RUNNER_ARCH"),
     }
+    shutil.copyfile(info / "cargo-metadata.json", args.output / "cargo-metadata.json")
     for name, value in (
         ("build.json", receipt),
         ("install.json", install),
         ("provenance.json", provenance),
     ):
         (args.output / name).write_bytes(canonical(value))
-    (args.output / "SHA256SUMS").write_text(f"{digest(wheel)}  {wheel.name}\n")
+    (args.output / "SHA256SUMS").write_text(f"{wheel_hash}  {wheel.name}\n")
 
 
 def aggregate(
@@ -1137,6 +826,7 @@ def aggregate(
     needs: dict[str, Any],
     core_evidence: Path,
     root: Path,
+    base: Path,
 ) -> dict[str, Any]:
     """Fail closed for missing, duplicate, skipped, failed or mismatched cells."""
     if set(needs) != {"core", "wheel"} or any(
@@ -1147,10 +837,14 @@ def aggregate(
         raise ValueError("Expected full source SHA")
     core = verify_core_evidence(core_evidence, commit, run_id, root)
     source = source_provenance(root)
+    bases = list(base.glob("*.whl"))
+    if len(bases) != 1:
+        raise ValueError("Expected exactly one retained base wheel")
+    base_hash = digest(bases[0])
     receipts = []
     builds = []
     seen = set()
-    common_provenance = None
+    common_identity = None
     for path in sorted(directory.iterdir()):
         if not path.is_dir():
             raise ValueError("Expected only cell artifact directories")
@@ -1178,13 +872,10 @@ def aggregate(
         inspect_wheel(wheel, f"3.{python[3:]}", platform, install["version"])
         if digest(wheel) != build["sha256"] or provenance["build"] != build:
             raise ValueError("Wheel/provenance digest mismatch")
-        portable = validate_provenance(provenance, install, build, source)
-        if common_provenance is None:
-            common_provenance = portable
-        require(
-            portable == common_provenance,
-            "cells disagree on Cargo features or execution identity",
-        )
+        identity = validate_provenance(provenance, install, build, source)
+        if common_identity is None:
+            common_identity = identity
+        require(identity == common_identity, "cells disagree on execution identity")
         if (path / "SHA256SUMS").read_text() != f"{digest(wheel)}  {wheel.name}\n":
             raise ValueError("Wheel checksum mismatch")
         seen.add(slot)
@@ -1192,10 +883,9 @@ def aggregate(
         receipts.append(install)
     if seen != SLOTS:
         raise ValueError(f"Missing cells: {sorted(SLOTS - seen)}")
-    if (
-        len({item["version"] for item in receipts}) != 1
-        or len({item["base_sha256"] for item in receipts}) != 1
-    ):
+    if len({item["version"] for item in receipts}) != 1 or {
+        item["base_sha256"] for item in receipts
+    } != {base_hash}:
         raise ValueError("Cells used different base wheels or versions")
     return {
         "schema": 1,
@@ -1242,6 +932,7 @@ def main() -> None:
     summary.add_argument("--needs", required=True)
     summary.add_argument("--root", type=Path, default=Path.cwd())
     summary.add_argument("--core-evidence", type=Path, required=True)
+    summary.add_argument("--base", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "source":
         check_source(args.root, args.commit)
@@ -1259,6 +950,7 @@ def main() -> None:
             json.loads(args.needs),
             args.core_evidence,
             args.root,
+            args.base,
         )
         args.output.write_bytes(canonical(result))
 

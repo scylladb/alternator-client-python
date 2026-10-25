@@ -72,13 +72,12 @@ still install with Rust absent on PATH.
   The release caller must first authenticate the publisher signature and verify
   the deterministic prepared history against its pinned baseline using reviewed
   release tooling. There is no arbitrary run or repository download input.
-- `attest` defaults to false for pull requests. A trusted caller can enable
-  GitHub build attestations for each wheel and its JSON/checksum evidence. It
-  also attests the core qualification wheel, `core.json` and `native.xml` so
-  release callers can authenticate core proof against its source/original run.
-  The caller must grant `contents: read`, `id-token: write` and `attestations: write` to the
-  workflow call. There are no signing secrets, publishing credentials or
-  protected signing environments in any native build/install job.
+- `attest` defaults to false for pull requests. Ordinary CI enables it for
+  pushes to main/master. The final matrix job signs only after the core and all
+  20 wheel cells succeed and their retained bytes pass aggregation. Build and
+  test jobs have no OIDC signing permission. The caller must grant
+  `contents: read`, `id-token: write` and `attestations: write` to the workflow
+  call. No native job has publishing credentials or long-lived signing secrets.
 
 The `${artifact-prefix}-core` artifact and required aggregate argument
 `--core-evidence DIRECTORY` are part of the P10/P11 integration seam. Those
@@ -91,13 +90,12 @@ twenty-first native release wheel.
 ## Evidence and qualification stages
 
 Each cell artifact contains its original wheel, `SHA256SUMS`, `build.json`,
-`install.json`, and `provenance.json`. Build receipts use the coordinated release
-shape: `filename`, `sha256`, `commit`, and original Actions `run_id` (all strings).
-Provenance also records the Rust compiler, maturin, Rust target, complete enabled
-Cargo dependency metadata/revisions, lock and project metadata hashes, base wheel
-hash, installed Python/dependency versions, workflow identity, run attempt, runner
-architecture and OS. Mac deployment
-targets are preserved in the wheel filename and WHEEL metadata.
+`install.json`, `provenance.json`, and diagnostic `cargo-metadata.json`. Build
+receipts use the coordinated release shape: `filename`, `sha256`, `commit`, and original Actions `run_id` (all strings).
+Provenance also records the Rust compiler, maturin, Rust target, lock and project
+metadata hashes, base wheel hash, installed Python/dependency versions, workflow
+identity, run attempt, runner architecture and OS. Mac deployment targets are
+preserved in the wheel filename and WHEEL metadata.
 
 The `Native matrix complete` gate runs with `always()` and requires successful
 core and matrix job conclusions, core wheel/report proof for this source/run, and
@@ -120,13 +118,13 @@ these JSON receipts alone are not cryptographic proof of provenance.
 
 ## Provenance validation contract
 
-`source_provenance()` reads the verified checkout's native project, Cargo
-manifest/lock and toolchain, plus base dependencies, using standard-library TOML.
+`source_provenance()` reads the verified checkout's native project, lock hash
+and toolchain, plus base dependencies, using standard-library TOML.
 Aggregation therefore needs Python 3.11+, as pinned in the reusable workflow.
 The source/build/install commands still support Python 3.10+. Validation does
 not compile code, run Cargo, import installed packages or fetch dependencies.
 
-`validate_provenance()` requires exactly the version-1 fields emitted by
+`validate_provenance()` requires exactly the version-2 fields emitted by
 `record()`. Schema, interface stage, build receipt, slot and version must match
 the installation and pinned source; target/runner must match that cell. Compiler
 release/host and maturin must match source pins. The lock and project hashes
@@ -134,14 +132,12 @@ must match exact source-derived bytes: LF on Linux/macOS, or LF/checkout-CRLF on
 Windows. Other hashes are rejected. Windows newline conversion is not permission
 to accept a regenerated lock or edited project metadata.
 
-Cargo metadata must contain every locked package identity (name/version/source),
-the complete locked dependency edges, one native root and workspace, and all
-enabled maturin/native/direct dependency features. Collect full
-`cargo metadata --locked --features extension --format-version 1`, without
-`--no-deps` or platform filtering. Opaque Cargo IDs join references only within
-their own document; absolute paths and target directories are never compared
-across OSes. Portable enabled features and workflow/repository identity must
-agree across cells. Each receipt retains a positive attempt number; successful
+Cargo performs dependency and feature resolution using the committed manifest,
+lockfile and pinned dependencies. CI retains the actual `cargo metadata --locked
+--features extension --format-version 1` output as a diagnostic artifact; it does
+not maintain a second expected dependency graph or compare feature unions across
+platforms. There is no committed dependency-graph JSON or graph-contract generator
+or validator. Each receipt retains a positive attempt number; successful
 prior-attempt cells remain valid during unchanged-head failed-job reruns because
 the original source/run is bound through the build receipt.
 
@@ -151,17 +147,29 @@ dependencies satisfying the source's numeric `>=` bounds. Empty, duplicate or
 contradictory evidence fails. This captures additional installed dependency
 versions without pretending those versions are locked by the native Cargo lock.
 
-Later installation/release adapters must keep `source_provenance()`,
-`validate_provenance()` and the aggregate cross-cell checks authoritative when
-extending `record()` or the installation schema. A new stage/schema or field
-requires an explicit validator update and complete negative/positive evidence;
-do not bypass validation or discard contradictory fields. If future Cargo lock
-files include inactive optional graph branches, derive the expected enabled
-graph explicitly from the verified source rather than silently accepting an
-arbitrary subset. New base requirement forms likewise need deliberate support.
-Recovery callers must bind original workflow identity using authenticated
-attestations, not substitute an unrelated current workflow. The core proof,
-all 20 cell checks and cryptographic provenance requirements still apply.
+The `record` command hashes native and base wheels before installing them and
+rejects changes during testing. Aggregation additionally requires `--base DIRECTORY`
+and hashes the retained base wheel, rather than merely comparing receipts with
+each other. It rehashes every retained native wheel and binds the successful
+installation evidence to its original source/run and digest.
+
+After aggregation succeeds, trusted builds attest the original native and base
+wheels, receipts, core proof, diagnostic metadata and `native-summary.json`
+together. The summary records the successful matrix, source commit, original run
+and wheel hashes. The final job uses `gh attestation verify` with the action's
+returned bundle, expected repository, signer workflow, workflow source SHA/ref
+and hosted-runner requirement. The completion artifact retains both the summary
+and `native-attestation.sigstore.json` for later verification.
+
+Release consumers must download the same wheel artifacts and verify the bundle
+again before publication, checking the trusted workflow/repository/source and the
+intended build commit/run in the signed summary. Prepared source bundles can have
+a build commit different from the workflow's commit; authenticate both rather
+than treating one as the other. Never rebuild or repackage the tested wheel for
+publication. A changed wheel requires fresh testing and signing. A build signature
+alone is not test evidence: require the signed successful summary and original
+core/install evidence. This interface stage remains `release_qualified: false`
+until the later native-request, extras and integration requirements are met.
 
 Run credential-free utility checks with:
 
@@ -175,63 +183,6 @@ tags, metadata inconsistencies, wrong source/run/base, bundle identity and actua
 subprocess PATH/import isolation. They also reject missing core prerequisites,
 skipped or altered test reports, absent startup cases and mismatched core wheel,
 source/run or vendor proof. Synthetic test wheels are never build evidence.
-
-## Full SDK source graph profile
-
-P4 adds a reviewed, source-owned `native/cargo-provenance.json` contract for the
-full SDK graph. The original strict minimal model remains available only for the
-three-dependency P3 foundation without dev/build/target dependency tables. Other
-source graphs require the explicit contract; a missing contract never falls back
-to receipt-derived subsets or direct-only feature checks.
-
-Generate a reviewable contract change from the verified source, using Cargo
-rather than a received metadata file:
-
-```sh
-python scripts/native/graph_contract.py --output native/cargo-provenance.json
-```
-
-Capture runs `cargo metadata --locked --features extension --format-version 1`
-itself, without platform filters or `--no-deps`, and checks the inputs before and
-afterwards. Contract schema 1 records exact Cargo manifest/lock LF hashes and the
-maturin feature-selection projection, all locked identities, explicit inactive
-optional identities, and the complete active graph. Each package records local
-feature definitions, its resolved direct-plus-transitive feature union, portable
-dependency declarations, exact edges, aliases, kinds and target expressions.
-Declaration tuples contain name, version requirement, source, optional flag,
-default-feature flag, explicit features, rename, kind, target and registry.
-Native normal/dev/build/target tables are checked against source TOML. Opaque
-Cargo IDs and absolute source/build paths are never cross-runner identities.
-
-The SDK graph contract records every active/locked package and explicit inactive
-branch. Separate actual Cargo fixtures exercise a lock with an inactive optional
-package and rejection of metadata that enables that unrequested branch. The
-committed normalized graph is an explicit reviewed expectation, not a Python
-reimplementation of Cargo's resolver. Source contract changes require fresh capture and review;
-recording or aggregation never writes or derives the expected graph from a
-receipt. All receipt identities, definitions, declarations, edges and resolved
-feature unions must match that source-owned expectation exactly.
-
-A Python release-version-only change does not alter Cargo resolution, so it does
-not require graph regeneration: the contract binds selected maturin features,
-not the Python project version/readme metadata. P3's raw native pyproject hash,
-release version and installation/source/run checks still bind each receipt to
-all prepared metadata bytes. Changes to Cargo inputs or maturin feature selection
-invalidate the contract. P5 owns recapture after its Cargo feature/dependency
-changes. Final merged P0 Git pin/lock/source changes likewise require recapture,
-including positive and negative source/identity/feature/edge proof. The current
-driver source in both lock and graph is the exact declared Git revision
-`549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1`. Restoring that Git identity changed no
-package versions or enabled features; it does not establish final merged-pin or
-release evidence. The PR now targets Python main after #150 with its
-PyO3/pyo3-async-runtimes 0.29.0 bridge. Unsuccessful `GET /localnodes` responses
-are rejected, and the held-socket lifecycle test proves the configured discovery
-deadline independently of the read timeout. A compatible final merged Rust pin,
-maintainer approval and renewed source/lock/graph/startup qualification remain
-required before marking the draft ready. Retained local host execution covers
-Linux x86_64 CPython 3.13 with a `manylinux_2_38` wheel; qualification of the
-required `manylinux_2_28` distribution floor, all 20 matrix cells and live Scylla
-behavior requires separate exact-head CI evidence.
 
 ## Source-bound Linux startup context
 
