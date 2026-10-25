@@ -387,6 +387,15 @@ jobs:
           name: dist
           path: dist/
 
+      - name: Verify published tag identifies the signed release commit
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
+        run: |
+          set -euo pipefail
+          git fetch --force origin "refs/tags/v${RELEASE_VERSION}:refs/tags/v${RELEASE_VERSION}"
+          test "$(git rev-parse "refs/tags/v${RELEASE_VERSION}^{commit}")" = "$RELEASE_COMMIT"
+
       - name: Build release body
         env:
           GH_TOKEN: ${{ github.token }}

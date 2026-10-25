@@ -1,14 +1,7 @@
 changelog:
   exclude:
     labels:
-      - ci
-      - docs
-      - chore
-      - dependencies
-      - test
-    authors:
-      - dependabot
-      - dependabot[bot]
+      - omit-from-release-notes
   categories:
     - title: Breaking Changes
       labels:
