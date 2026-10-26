@@ -92,16 +92,16 @@ def test_selected_destination_survives_topology_handoff(
     known_pools = {
         host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
     }
-    manager.set_fallback_nodes(["retired.test"], ClusterScope())
+    retired = "retired0.test"
 
     def replace_topology(request: AWSRequest, **kwargs: object) -> None:
-        assert urlsplit(request.url).hostname == "retired.test"
+        assert urlsplit(request.url).hostname == retired
         manager.set_fallback_nodes(nodes, ClusterScope())
 
     def respond(
         self: HTTPSConnectionPool, method: str, url: str, **kwargs: object
     ) -> HTTPResponse:
-        assert self.host == "retired.test"
+        assert self.host == retired
         return HTTPResponse(
             body=BytesIO(b'{"TableNames": []}'), status=200, preload_content=False
         )
@@ -109,10 +109,59 @@ def test_selected_destination_survives_topology_handoff(
     client.meta.events.register_last("request-created.dynamodb.*", replace_topology)
     monkeypatch.setattr(HTTPSConnectionPool, "urlopen", respond)
     try:
-        assert client.list_tables()["TableNames"] == []
+        for retired in ("retired0.test", "retired1.test", "retired2.test"):
+            manager.set_fallback_nodes([retired], ClusterScope())
+            assert client.list_tables()["TableNames"] == []
         for host, pool in known_pools.items():
             assert pools.connection_from_url(f"https://{host}:8043/") is pool
     finally:
+        close_client(owner)
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_current_pools_survive_concurrent_retired_destinations(proxy: bool) -> None:
+    """Retired plans cannot evict normalized ordinary/affinity host pools."""
+    nodes = ["Node0.test", "[2001:DB8::1]", "bücher.test"]
+    nodes.extend(f"node{n}.test" for n in range(3, 11))
+    config = Config(seed_hosts=[nodes[0]], port=8043, scheme="https")
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(nodes[:5], ClusterScope())
+    manager._core.update_affinity_nodes(nodes[5:], ClusterScope())
+    owner: Any = _create_client_with_manager(config, manager, owns_manager=False)
+    session = owner._endpoint.http_session
+    proxy_url = "http://proxy.test:8080" if proxy else None
+    session._proxy_config = ProxyConfiguration(
+        {"https": proxy_url} if proxy_url else {}
+    )
+    owner.meta.events.emit(
+        "before-send.dynamodb.ListTables",
+        request=AWSRequest(method="POST", url="https://node0.test:8043/").prepare(),
+    )
+    pools = session._get_connection_manager("https://node0.test:8043/", proxy_url)
+    current = {
+        host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
+    }
+    disposed: list[Any] = []
+    pools.pools.dispose_func = disposed.append
+    ready = Barrier(12, timeout=10)
+
+    def visit(index: int) -> None:
+        ready.wait()
+        for attempt in range(4):
+            pools.connection_from_url(f"https://retired{index}-{attempt}.test:8043/")
+            host = nodes[index % len(nodes)]
+            assert pools.connection_from_url(f"https://{host}:8043/") is current[host]
+
+    try:
+        with ThreadPoolExecutor(max_workers=12) as executor:
+            list(executor.map(visit, range(12)))
+        for host, pool in current.items():
+            assert pools.connection_from_url(f"https://{host}:8043/") is pool
+        assert len(pools.pools) == len(nodes) + 1
+        assert disposed
+        assert not any(pool in current.values() for pool in disposed)
+    finally:
+        ready.abort()
         close_client(owner)
 
 
