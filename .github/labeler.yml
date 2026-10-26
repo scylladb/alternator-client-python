@@ -65,4 +65,4 @@ enhancement:
 omit-from-release-notes:
   - changed-files:
       - all-globs-to-all-files:
-          - "{tests/**,native/tests/**,docs/**,.github/**,README.md,native/README.md,native/INTERFACE.md,scripts/native/README.md,scripts/release/SIGNING.md,.gitignore,.editorconfig,.pre-commit-config.yaml,.ruff.toml,ruff.toml,.mypy.ini,mypy.ini,docker-compose.yml}"
+          - "{tests/**,native/tests/**,docs/**,.github/tests/**,.github/ISSUE_TEMPLATE/**,.github/RELEASE_NOTES.md,.github/workflows/call_jira_sync.yml,.github/workflows/sync-from-jira-test.yml,README.md,native/README.md,native/INTERFACE.md,scripts/native/README.md,scripts/release/SIGNING.md,.gitignore,.editorconfig,.pre-commit-config.yaml,.ruff.toml,ruff.toml,.mypy.ini,mypy.ini,docker-compose.yml}"

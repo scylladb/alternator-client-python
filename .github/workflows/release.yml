@@ -394,7 +394,7 @@ jobs:
         run: |
           set -euo pipefail
           git fetch --force origin "refs/tags/v${RELEASE_VERSION}:refs/tags/v${RELEASE_VERSION}"
-          test "$(git rev-parse "refs/tags/v${RELEASE_VERSION}^{commit}")" = "$RELEASE_COMMIT"
+          python3 scripts/release/signing.py verify-tag "v${RELEASE_VERSION}" "$RELEASE_COMMIT"
 
       - name: Build release body
         env:
