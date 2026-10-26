@@ -183,3 +183,6 @@ CLAUDE.md%
 
 # Sanitized release command logs
 release-logs/
+
+# Release automation test dependencies
+.github/node_modules/

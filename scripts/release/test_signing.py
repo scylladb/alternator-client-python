@@ -237,6 +237,36 @@ class SigningTests(unittest.TestCase):
             with self.assertRaisesRegex(signing.SigningError, "unexpected commit"):
                 signing.verify_tag("v1.0.0", signing.run(["git", "rev-parse", "HEAD"]).strip())
 
+    def test_fetched_release_tag_replacement_is_authenticated(self):
+        with self.repository() as directory:
+            with self.session():
+                self.release()
+            commit = signing.run(["git", "rev-parse", "HEAD"]).strip()
+            signed = signing.run(["git", "rev-parse", "refs/tags/v1.0.0"]).strip()
+            remote = directory / "remote.git"
+            signing.run(["git", "clone", "--bare", "--quiet", str(Path.cwd()), str(remote)])
+            signing.run(["git", "remote", "add", "origin", str(remote)])
+            for kind, expected in [("signed", 0), ("lightweight", 1), ("unsigned", 1)]:
+                with self.subTest(kind=kind):
+                    signing.run(["git", "update-ref", "refs/tags/v1.0.0", signed])
+                    if kind == "lightweight":
+                        signing.run(["git", "update-ref", "refs/tags/v1.0.0", commit])
+                    elif kind == "unsigned":
+                        signing.run(["git", "-c", "user.name=Fixture", "-c",
+                                     "user.email=fixture@example.invalid", "-c", "tag.gpgsign=false",
+                                     "tag", "-f", "-a", "-m", "Unsigned replacement", "v1.0.0", commit])
+                    signing.run(["git", "push", "--force", "origin", "refs/tags/v1.0.0"])
+                    # Start with a previously verified signed local tag. The fetch must
+                    # replace it, and verification must inspect the newly fetched object.
+                    signing.run(["git", "update-ref", "refs/tags/v1.0.0", signed])
+                    signing.run(["git", "fetch", "--force", "origin",
+                                 "refs/tags/v1.0.0:refs/tags/v1.0.0"])
+                    self.assertEqual(signing.run(["git", "rev-parse",
+                                                 "refs/tags/v1.0.0^{commit}"]).strip(), commit)
+                    with patch.object(sys, "argv", ["signing.py", "verify-tag", "v1.0.0", commit]), \
+                            redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                        self.assertEqual(signing.dispatch(), expected)
+
     def test_batch_signing_reuse_and_tamper_rejection(self):
         with self.repository(), self.session():
             files = [Path("package.whl"), Path("package.tar.gz"), Path("SHA256SUMS")]

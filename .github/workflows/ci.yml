@@ -32,6 +32,12 @@ jobs:
       - name: Install dependencies
         run: make install
 
+      - name: Install release automation test dependencies
+        run: npm ci --ignore-scripts --prefix .github
+
+      - name: Test release automation
+        run: node --test .github/tests/*.test.cjs
+
       - name: Lint
         run: make lint
 
