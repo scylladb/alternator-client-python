@@ -42,7 +42,7 @@ pub struct NativeConfig {
     pub user_agent: Option<String>,
     pub max_attempts: u32,
     pub connect_seconds: f64,
-    pub read_seconds: f64,
+    pub operation_timeout_seconds: f64,
     pub discovery_seconds: f64,
     pub system_roots: bool,
     pub ca_pem: Vec<Vec<u8>>,
@@ -58,7 +58,7 @@ fn require(valid: bool, message: &str) -> Result<(), String> {
     }
 }
 
-fn string(value: &str) -> bool {
+fn is_valid_config_string(value: &str) -> bool {
     !value.is_empty() && !value.chars().any(char::is_control)
 }
 
@@ -88,7 +88,7 @@ impl NativeConfig {
         )?;
         for host in &self.seed_hosts {
             require(
-                string(host)
+                is_valid_config_string(host)
                     && !host
                         .chars()
                         .any(|c| c.is_whitespace() || "/\\?#@[]".contains(c)),
@@ -117,17 +117,22 @@ impl NativeConfig {
         require(
             self.table_pk_attributes
                 .iter()
-                .all(|(table, pk)| string(table) && !pk.is_empty()),
+                .all(|(table, pk)| is_valid_config_string(table) && !pk.is_empty()),
             "table/partition key names must be nonempty strings",
         )?;
-        require(string(&self.region), "region must be nonempty")?;
+        require(
+            is_valid_config_string(&self.region),
+            "region must be nonempty",
+        )?;
         match (
             &self.access_key_id,
             &self.secret_access_key,
             &self.session_token,
         ) {
             (Some(key), Some(secret), token) => require(
-                string(key) && string(secret) && token.as_deref().is_none_or(string),
+                is_valid_config_string(key)
+                    && is_valid_config_string(secret)
+                    && token.as_deref().is_none_or(is_valid_config_string),
                 "invalid static credentials",
             )?,
             (None, None, None) => {}
@@ -148,7 +153,7 @@ impl NativeConfig {
         require(
             self.user_agent
                 .as_deref()
-                .is_none_or(|value| string(value) && value.is_ascii()),
+                .is_none_or(|value| is_valid_config_string(value) && value.is_ascii()),
             "invalid user agent",
         )?;
         require(
@@ -156,7 +161,7 @@ impl NativeConfig {
             "max_attempts must include the initial request and be a positive u32 integer",
         )?;
         seconds(self.connect_seconds)?;
-        seconds(self.read_seconds)?;
+        seconds(self.operation_timeout_seconds)?;
         seconds(self.discovery_seconds)?;
         require(
             self.client_key_pem.is_none() || self.client_cert_pem.is_some(),
@@ -174,10 +179,12 @@ impl NativeConfig {
         for (kind, dc, rack) in self.scopes.iter().rev() {
             let next = match (kind.as_str(), dc.as_deref(), rack.as_deref()) {
                 ("cluster", None, None) => RoutingScope::from_cluster(),
-                ("datacenter", Some(dc), None) if string(dc) => {
+                ("datacenter", Some(dc), None) if is_valid_config_string(dc) => {
                     RoutingScope::from_datacenter(dc.to_owned())
                 }
-                ("rack", Some(dc), Some(rack)) if string(dc) && string(rack) => {
+                ("rack", Some(dc), Some(rack))
+                    if is_valid_config_string(dc) && is_valid_config_string(rack) =>
+                {
                     RoutingScope::from_rack(dc.to_owned(), rack.to_owned())
                 }
                 _ => return Err("invalid scope tuple".to_owned()),
@@ -245,7 +252,7 @@ impl NativeConfig {
         }
     }
 
-    pub fn upstream(&self, transport: Transport) -> Result<AlternatorConfig, String> {
+    pub fn to_driver_config(&self, transport: Transport) -> Result<AlternatorConfig, String> {
         self.validate()?;
         let affinity_type = match self.key_affinity.as_str() {
             "RMW" => KeyRouteAffinityType::Rmw,
@@ -292,9 +299,9 @@ impl NativeConfig {
             .timeout_config(
                 TimeoutConfig::builder()
                     .connect_timeout(seconds(self.connect_seconds)?)
-                    .read_timeout(seconds(self.read_seconds)?)
-                    .operation_timeout(seconds(self.read_seconds)?)
-                    .operation_attempt_timeout(seconds(self.read_seconds)?)
+                    .read_timeout(seconds(self.operation_timeout_seconds)?)
+                    .operation_timeout(seconds(self.operation_timeout_seconds)?)
+                    .operation_attempt_timeout(seconds(self.operation_timeout_seconds)?)
                     .build(),
             )
             .http_client(transport)

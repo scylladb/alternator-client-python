@@ -158,7 +158,7 @@ fn extract_config(mapping: &Bound<'_, PyDict>) -> PyResult<NativeConfig> {
         user_agent: field!(user_agent),
         max_attempts: field!(max_attempts),
         connect_seconds: field!(connect_seconds),
-        read_seconds: field!(read_seconds),
+        operation_timeout_seconds: field!(read_seconds),
         discovery_seconds: field!(discovery_seconds),
         system_roots: field!(system_roots),
         ca_pem: field!(ca_pem),

@@ -59,7 +59,7 @@ fields and values fail before discovery or data network activity. Allowed
 callbacks are resolved once by the facade before construction and the results
 are frozen for both native and lazy Python admin clients.
 
-Each native client owns its pools, request registry and discovery tasks on the
+Each native client owns its pools, operation registry and discovery tasks on the
 shared runtime. Calls after close fail with `RuntimeError`. Close is idempotent,
 cancels and drains outstanding requests and discovery, and leaves other clients
 working. The facade also closes any lazy Python delegate. Async facade clients
@@ -128,7 +128,8 @@ arbitrarily large configurations. Deadline representability is checked by Rust
 before discovery so an overflowing timeout cannot silently disable its timer.
 
 Native HTTP uses owned HTTP/1.1 connection pools; at most 200 idle connections
-are retained per authority, with no Python pool tuning. read_seconds bounds the
+are retained per authority, with no Python pool tuning. The Python `read_seconds`
+setting maps to Rust `NativeConfig::operation_timeout_seconds` and bounds the
 complete SDK operation, including attempts and retry waits, and each response
 read. connect_seconds bounds DNS/TCP/TLS/HTTP handshake. discovery_seconds maps
 to upstream's bounded topology/PK discovery API. There is no promise of exact

@@ -61,7 +61,7 @@ dependencies = ["tokio", "pyo3"]
 
 
 def provenance_fixture(root: Path, install: dict, build: dict) -> dict:
-    source = ci.source_provenance(root)
+    source = ci.read_build_pins(root)
     python, platform = install["slot"].split("/")
     target, runner_os, runner_arch = ci.TARGETS[platform]
     repository = os.environ.get("GITHUB_REPOSITORY", "example/client")
@@ -105,7 +105,7 @@ class ProvenanceTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         source_fixture(self.root)
-        self.source = ci.source_provenance(self.root)
+        self.source = ci.read_build_pins(self.root)
         self.build = {
             "filename": "wheel.whl",
             "sha256": "a" * 64,

@@ -433,7 +433,7 @@ def require(condition: bool, message: str) -> None:
         raise ValueError(f"Invalid provenance: {message}")
 
 
-def source_provenance(root: Path) -> dict[str, Any]:
+def read_build_pins(root: Path) -> dict[str, Any]:
     """Read build pins; Cargo owns dependency and feature resolution."""
     import tomllib
 
@@ -836,7 +836,7 @@ def aggregate(
     if not SHA.fullmatch(commit):
         raise ValueError("Expected full source SHA")
     core = verify_core_evidence(core_evidence, commit, run_id, root)
-    source = source_provenance(root)
+    source = read_build_pins(root)
     bases = list(base.glob("*.whl"))
     if len(bases) != 1:
         raise ValueError("Expected exactly one retained base wheel")

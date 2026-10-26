@@ -184,7 +184,7 @@ impl Transport {
             return Err(format!("topology discovery returned HTTP {}", parts.status).into());
         }
         let bytes = body.collect().await?.to_bytes();
-        if let Some(capture) = metadata::current() {
+        if let Some(capture) = metadata::current_capture() {
             capture.lock().unwrap().responses.push(AttemptResponse {
                 status: parts.status.as_u16(),
                 attempt,

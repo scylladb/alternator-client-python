@@ -15,7 +15,7 @@ struct State {
 }
 
 #[derive(Debug, Default)]
-pub struct RequestRegistry {
+pub struct OperationRegistry {
     state: Mutex<State>,
     drained: Notify,
     cancellation: CancellationToken,
@@ -32,7 +32,7 @@ impl std::fmt::Display for Closed {
 
 impl std::error::Error for Closed {}
 
-struct Registration(Arc<RequestRegistry>);
+struct Registration(Arc<OperationRegistry>);
 
 impl Drop for Registration {
     fn drop(&mut self) {
@@ -44,7 +44,7 @@ impl Drop for Registration {
     }
 }
 
-impl RequestRegistry {
+impl OperationRegistry {
     pub fn begin_close(&self) {
         self.state.lock().unwrap().closed = true;
         self.cancellation.cancel();
@@ -73,7 +73,7 @@ impl RequestRegistry {
         result
     }
 
-    pub async fn drained(&self) {
+    pub async fn wait_until_drained(&self) {
         loop {
             let notified = self.drained.notified();
             tokio::pin!(notified);
@@ -99,7 +99,7 @@ mod tests {
 
     #[tokio::test]
     async fn close_cancels_registered_work_and_rejects_new_work() {
-        let registry = Arc::new(RequestRegistry::default());
+        let registry = Arc::new(OperationRegistry::default());
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let worker = tokio::spawn({
             let registry = registry.clone();
@@ -116,13 +116,13 @@ mod tests {
         registry.begin_close();
         registry.begin_close();
         assert_eq!(bounded(worker).await.unwrap(), Err(Closed));
-        bounded(registry.drained()).await;
+        bounded(registry.wait_until_drained()).await;
         assert_eq!(registry.run(async { 7 }).await, Err(Closed));
     }
 
     #[tokio::test]
     async fn dropping_a_waiter_unregisters_without_closing_the_client() {
-        let registry = Arc::new(RequestRegistry::default());
+        let registry = Arc::new(OperationRegistry::default());
         let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
         let worker = tokio::spawn({
             let registry = registry.clone();
@@ -138,7 +138,7 @@ mod tests {
         bounded(entered_rx).await.unwrap();
         worker.abort();
         let _ = bounded(worker).await;
-        bounded(registry.drained()).await;
+        bounded(registry.wait_until_drained()).await;
         assert_eq!(registry.run(async { 7 }).await, Ok(7));
     }
 }

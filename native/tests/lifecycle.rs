@@ -287,7 +287,7 @@ fn config(port: u16) -> NativeConfig {
         user_agent: Some("contract-agent".into()),
         max_attempts: 3,
         connect_seconds: 2.,
-        read_seconds: 3.,
+        operation_timeout_seconds: 3.,
         discovery_seconds: 2.,
         system_roots: true,
         ca_pem: Vec::new(),
@@ -491,23 +491,23 @@ fn configuration_accepts_native_widths_and_rejects_invalid_values() {
     cfg.compression_min_bytes = usize::MAX;
     cfg.max_attempts = u32::MAX;
     cfg.connect_seconds = (1_u64 << 32) as f64;
-    cfg.read_seconds = cfg.connect_seconds;
+    cfg.operation_timeout_seconds = cfg.connect_seconds;
     cfg.discovery_seconds = cfg.connect_seconds;
     cfg.validate().unwrap();
 
     for value in [f64::NAN, f64::INFINITY, 0., 1e-20, u64::MAX as f64] {
-        cfg.read_seconds = value;
+        cfg.operation_timeout_seconds = value;
         assert!(cfg.validate().is_err(), "accepted timeout {value}");
     }
     // Duration can hold this value, but some platform Instants cannot. Such
     // values must fail rather than reaching Tokio's timer-less timeout path.
-    cfg.read_seconds = (1_u64 << 63) as f64;
-    let duration = Duration::try_from_secs_f64(cfg.read_seconds).unwrap();
+    cfg.operation_timeout_seconds = (1_u64 << 63) as f64;
+    let duration = Duration::try_from_secs_f64(cfg.operation_timeout_seconds).unwrap();
     assert_eq!(
         cfg.validate().is_ok(),
         std::time::Instant::now().checked_add(duration).is_some()
     );
-    cfg.read_seconds = 3.;
+    cfg.operation_timeout_seconds = 3.;
     cfg.max_attempts = 0;
     assert!(cfg.validate().is_err());
     cfg.max_attempts = 3;
@@ -585,7 +585,7 @@ fn discovery_deadline_cancels_held_socket_and_recovers_through_seed() {
         cfg.scopes = vec![("datacenter".into(), Some("dc 1".into()), None)];
         cfg.active_interval_ms = 10;
         cfg.discovery_seconds = 0.1;
-        cfg.read_seconds = 30.;
+        cfg.operation_timeout_seconds = 30.;
         let client = Client::create(cfg).await.unwrap();
         let (held_connection, headers) = match bounded(server.events.recv()).await.unwrap() {
             Event::Discovery(connection, headers) => (connection, headers),
@@ -807,7 +807,7 @@ fn native_request_deadline_cancels_held_read_and_keeps_client_open() {
             ..Reply::json(200, "{}")
         });
         let mut cfg = config(server.port);
-        cfg.read_seconds = 0.05;
+        cfg.operation_timeout_seconds = 0.05;
         cfg.max_attempts = 1;
         let client = Client::create(cfg).await.unwrap();
         let request = tokio::spawn({
@@ -836,7 +836,7 @@ fn connector_reuses_idle_connection_without_untracked_background_drivers() {
         // Disable discovery only for this focused pool assertion: concurrent
         // topology I/O legitimately borrows the same per-client idle pool.
         let sdk = AlternatorClient::try_from_conf(
-            cfg.upstream(transport.clone())
+            cfg.to_driver_config(transport.clone())
                 .unwrap()
                 .to_builder()
                 .without_discovery()
@@ -893,7 +893,7 @@ fn retries_keep_actual_attempt_count_with_optimized_headers() {
 
 #[test]
 fn cancelling_during_tls_connect_drops_the_socket() {
-    use _alternator_rust::{registry::RequestRegistry, transport::Transport};
+    use _alternator_rust::{registry::OperationRegistry, transport::Transport};
     use alternator_driver::AlternatorClient;
     shared_runtime().unwrap().block_on(async {
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
@@ -910,14 +910,14 @@ fn cancelling_during_tls_connect_drops_the_socket() {
         });
         let transport = Transport::new(cfg.tls_config().unwrap());
         let sdk = AlternatorClient::try_from_conf(
-            cfg.upstream(transport.clone())
+            cfg.to_driver_config(transport.clone())
                 .unwrap()
                 .to_builder()
                 .without_discovery()
                 .build(),
         )
         .unwrap();
-        let registry = Arc::new(RequestRegistry::default());
+        let registry = Arc::new(OperationRegistry::default());
         let request = tokio::spawn({
             let registry = registry.clone();
             let sdk = sdk.clone();
@@ -935,7 +935,7 @@ fn cancelling_during_tls_connect_drops_the_socket() {
         bounded(entered_rx).await.unwrap();
         request.abort();
         let _ = bounded(request).await;
-        bounded(registry.drained()).await;
+        bounded(registry.wait_until_drained()).await;
         bounded(peer).await.unwrap();
         assert!(!registry.is_closed());
         sdk.shutdown().await;

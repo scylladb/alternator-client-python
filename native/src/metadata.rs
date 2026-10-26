@@ -44,21 +44,21 @@ impl std::ops::Deref for OperationMetadata {
     }
 }
 
-pub type Capture = Arc<Mutex<OperationMetadata>>;
+pub type MetadataCapture = Arc<Mutex<OperationMetadata>>;
 
 tokio::task_local! {
-    static RESPONSES: Capture;
+    static OPERATION_METADATA: MetadataCapture;
 }
 
-pub fn current() -> Option<Capture> {
-    RESPONSES.try_with(Clone::clone).ok()
+pub fn current_capture() -> Option<MetadataCapture> {
+    OPERATION_METADATA.try_with(Clone::clone).ok()
 }
 
 pub async fn capture<F: Future>(future: F) -> (F::Output, OperationMetadata) {
-    let responses = Capture::default();
-    let output = RESPONSES.scope(responses.clone(), future).await;
-    let responses = std::mem::take(&mut *responses.lock().unwrap());
-    (output, responses)
+    let metadata = MetadataCapture::default();
+    let output = OPERATION_METADATA.scope(metadata.clone(), future).await;
+    let metadata = std::mem::take(&mut *metadata.lock().unwrap());
+    (output, metadata)
 }
 
 /// Carry the SDK's actual attempt count outside headers, which may be stripped
@@ -83,7 +83,7 @@ impl aws_smithy_runtime_api::client::interceptors::Intercept for AttemptIntercep
         let attempt = cfg
             .load::<aws_smithy_runtime_api::client::retries::RequestAttempts>()
             .map_or(1, |attempt| attempt.attempts());
-        if let Some(capture) = current() {
+        if let Some(capture) = current_capture() {
             let mut capture = capture.lock().unwrap();
             capture.attempts = capture.attempts.max(attempt);
         }

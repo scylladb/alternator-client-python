@@ -118,7 +118,7 @@ these JSON receipts alone are not cryptographic proof of provenance.
 
 ## Provenance validation contract
 
-`source_provenance()` reads the verified checkout's native project, lock hash
+`read_build_pins()` reads the verified checkout's native project, lock hash
 and toolchain, plus base dependencies, using standard-library TOML.
 Aggregation therefore needs Python 3.11+, as pinned in the reusable workflow.
 The source/build/install commands still support Python 3.10+. Validation does
