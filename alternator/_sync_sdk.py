@@ -5,8 +5,11 @@
 
 from __future__ import annotations
 
+from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import urlsplit
 
+from botocore.awsrequest import AWSPreparedRequest
 from botocore.httpsession import URLLib3Session
 
 if TYPE_CHECKING:
@@ -32,15 +35,23 @@ def configure_sync_connection_pools(
     if not isinstance(session, URLLib3Session):
         return
     transport = cast(Any, session)
+    lock = Lock()
 
-    def grow_pools(**kwargs: object) -> None:
-        hosts = set(config.seed_hosts)
-        hosts.update(manager.nodes.nodes)
-        hosts.update(manager.affinity_nodes.nodes)
-        # Proxy managers are created lazily by botocore. The first request
-        # creates only one pool; subsequent sends resize the new manager too.
-        pool_managers = [transport._manager, *transport._proxy_managers.values()]
-        for pool_manager in pool_managers:
+    def grow_pools(request: AWSPreparedRequest | None = None, **kwargs: object) -> None:
+        # Serialize lazy proxy creation before send() can use the manager.
+        # Network I/O runs after this callback, outside the lock.
+        with lock:
+            hosts = set(config.seed_hosts)
+            hosts.update(manager.nodes.nodes)
+            hosts.update(manager.affinity_nodes.nodes)
+            pool_manager = transport._manager
+            if request is not None:
+                # A captured query plan can outlive its topology snapshot.
+                host = urlsplit(request.url).hostname
+                if host is not None:
+                    hosts.add(host)
+                proxy_url = transport._proxy_config.proxy_url_for(request.url)
+                pool_manager = transport._get_connection_manager(request.url, proxy_url)
             pools = pool_manager.pools
             # urllib3 has no public resize API. Use its own cache lock so
             # concurrent requests cannot race with eviction or another resize.

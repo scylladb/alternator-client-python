@@ -5,12 +5,19 @@
 
 from __future__ import annotations
 
+import json
 import socket
+from concurrent.futures import ThreadPoolExecutor
+from io import BytesIO
+from threading import Barrier
 from typing import Any
 from urllib.parse import urlsplit
 
 import pytest
 from botocore.awsrequest import AWSRequest
+from botocore.httpsession import ProxyConfiguration
+from urllib3.connectionpool import HTTPSConnectionPool
+from urllib3.response import HTTPResponse
 
 from alternator.client import (
     _create_client_with_manager,
@@ -20,7 +27,7 @@ from alternator.client import (
 from alternator.config import Config
 from alternator.core.live_nodes import SyncLiveNodesManager
 from alternator.core.routing_scope import ClusterScope
-from tests.fake_server import FakeAlternatorServer
+from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
 
 
 @pytest.mark.parametrize("resource", [False, True])
@@ -34,6 +41,9 @@ def test_host_pools_survive_topology_growth(resource: bool, proxy: bool) -> None
     owner: Any = factory(config, manager, owns_manager=False)
     client = owner.meta.client if resource else owner
     session = client._endpoint.http_session
+    session._proxy_config = ProxyConfiguration(
+        {"https": "http://proxy.test:8080"} if proxy else {}
+    )
     pool_manager = (
         session._get_proxy_manager("http://proxy.test:8080")
         if proxy
@@ -49,7 +59,7 @@ def test_host_pools_survive_topology_growth(resource: bool, proxy: bool) -> None
             client.meta.events.emit(
                 "before-send.dynamodb.ListTables",
                 request=AWSRequest(
-                    method="POST", url="http://node0.test:8043/"
+                    method="POST", url="https://node0.test:8043/"
                 ).prepare(),
             )
             for host in ["seed.test", *nodes]:
@@ -62,6 +72,136 @@ def test_host_pools_survive_topology_growth(resource: bool, proxy: bool) -> None
                 assert pool_manager.connection_from_url(f"https://{host}:8043") is pool
     finally:
         close_client(owner)
+
+
+@pytest.mark.parametrize("resource", [False, True])
+def test_selected_destination_survives_topology_handoff(
+    monkeypatch: pytest.MonkeyPatch, resource: bool
+) -> None:
+    """Discovery can replace a snapshot after a request selects its endpoint."""
+    nodes = [f"node{n}.test" for n in range(11)]
+    config = Config(seed_hosts=[nodes[0]], port=8043, scheme="https")
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(nodes, ClusterScope())
+    factory = _create_resource_with_manager if resource else _create_client_with_manager
+    owner: Any = factory(config, manager, owns_manager=False)
+    client = owner.meta.client if resource else owner
+    session = client._endpoint.http_session
+    session._proxy_config = ProxyConfiguration({})
+    pools = session._manager
+    known_pools = {
+        host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
+    }
+    manager.set_fallback_nodes(["retired.test"], ClusterScope())
+
+    def replace_topology(request: AWSRequest, **kwargs: object) -> None:
+        assert urlsplit(request.url).hostname == "retired.test"
+        manager.set_fallback_nodes(nodes, ClusterScope())
+
+    def respond(
+        self: HTTPSConnectionPool, method: str, url: str, **kwargs: object
+    ) -> HTTPResponse:
+        assert self.host == "retired.test"
+        return HTTPResponse(
+            body=BytesIO(b'{"TableNames": []}'), status=200, preload_content=False
+        )
+
+    client.meta.events.register_last("request-created.dynamodb.*", replace_topology)
+    monkeypatch.setattr(HTTPSConnectionPool, "urlopen", respond)
+    try:
+        assert client.list_tables()["TableNames"] == []
+        for host, pool in known_pools.items():
+            assert pools.connection_from_url(f"https://{host}:8043/") is pool
+    finally:
+        close_client(owner)
+
+
+@pytest.mark.parametrize("resource", [False, True])
+def test_concurrent_first_proxy_requests_size_pools_before_use(
+    monkeypatch: pytest.MonkeyPatch, resource: bool
+) -> None:
+    """Initial overlapping sends use one fully sized lazy proxy manager."""
+    nodes = [f"node{n}.test" for n in range(11)]
+    config = Config(seed_hosts=nodes, port=8043, scheme="https", max_pool_connections=3)
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(nodes, ClusterScope())
+    factory = _create_resource_with_manager if resource else _create_client_with_manager
+    owner: Any = factory(config, manager, owns_manager=False)
+    client = owner.meta.client if resource else owner
+    session = client._endpoint.http_session
+    proxy_url = "http://proxy.test:8080"
+    session._proxy_config = ProxyConfiguration({"https": proxy_url})
+    ready = Barrier(len(nodes), timeout=10)
+    observed: dict[str, HTTPSConnectionPool] = {}
+
+    def route(request: AWSRequest, **kwargs: object) -> None:
+        host = json.loads(request.body)["ExclusiveStartTableName"]
+        request.url = f"https://{host}:8043/"
+
+    def before_send(**kwargs: object) -> None:
+        ready.wait()
+
+    def respond(
+        self: HTTPSConnectionPool, method: str, url: str, **kwargs: object
+    ) -> HTTPResponse:
+        observed[self.host] = self
+        assert self.pool is not None
+        assert self.pool.maxsize == 3
+        return HTTPResponse(
+            body=BytesIO(b'{"TableNames": []}'), status=200, preload_content=False
+        )
+
+    client.meta.events.register_last("request-created.dynamodb.*", route)
+    client.meta.events.register_last("before-send.dynamodb.*", before_send)
+    monkeypatch.setattr(HTTPSConnectionPool, "urlopen", respond)
+    try:
+        assert session._proxy_managers == {}
+        with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
+            results = list(
+                executor.map(
+                    lambda host: client.list_tables(ExclusiveStartTableName=host), nodes
+                )
+            )
+        assert all(result["TableNames"] == [] for result in results)
+        proxy_manager = session._proxy_managers[proxy_url]
+        for host in nodes:
+            assert (
+                proxy_manager.connection_from_url(f"https://{host}:8043/")
+                is observed[host]
+            )
+    finally:
+        ready.abort()
+        close_client(owner)
+
+
+def test_configured_client_reconnects_after_server_close(
+    monkeypatch: pytest.MonkeyPatch,
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    """Sizing the selected manager leaves normal SDK retries and reconnects intact."""
+    server = fake_alternator_server
+    server.script(
+        "ListTables",
+        [FakeAlternatorResponse(200, b"", {}, disconnect=True)],
+        fallback=FakeAlternatorResponse.json({"TableNames": []}),
+    )
+    port = urlsplit(server.url()).port
+    assert port is not None
+    monkeypatch.setenv("NO_PROXY", "*")
+    monkeypatch.setenv("no_proxy", "*")
+    config = Config(seed_hosts=["127.0.0.1"], port=port)
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(["127.0.0.1"], ClusterScope())
+    owner = _create_client_with_manager(config, manager, owns_manager=False)
+    try:
+        assert owner.list_tables()["TableNames"] == []
+        assert owner.list_tables()["TableNames"] == []
+    finally:
+        close_client(owner)
+    requests = server.captured_requests(operation="ListTables")
+    assert len(requests) == 3
+    assert requests[0].connection_id != requests[1].connection_id
+    assert requests[1].connection_id == requests[2].connection_id
 
 
 @pytest.mark.parametrize("resource", [False, True])
