@@ -368,6 +368,26 @@ test('trusted PR-event confirmation survives later reads and helper failures wit
   assert.deepEqual([...f.labels], ['unrelated']);
 });
 
+test('actual finalizer environment binds persisted PR confirmation and rejects missing or misbound wiring', async () => {
+  const binding = steps.at(-1).env.CONFIRMED_PR;
+  assert.equal(binding, '${{ steps.target.outputs.confirmed-pr }}');
+  const fromConfirmation = target => ({
+    // The structural assertion above ties this lookup to the real YAML.
+    CONFIRMED_PR: target.outputs['confirmed-pr'] ?? ''
+  });
+  for (const options of [{}, {failGetAt: 1}, {revisions: [{number: 21}]}]) {
+    const f = fixture({...options, labels: [label, 'unrelated']});
+    const target = await confirm(f);
+    const result = await adapter(f, '', {...fromConfirmation(target),
+      TARGET_OUTCOME: target.error ? 'failure' : 'success', CHECKOUT_OUTCOME: 'failure'},
+      () => {throw new Error('No installed helper needed');});
+    assert.ok(result.error);
+    assert.equal(f.calls.includes('remove'), !target.error);
+    assert.equal(f.labels.has(label), Boolean(target.error));
+    assert.equal(f.labels.has('unrelated'), true);
+  }
+});
+
 test('workflow adapters use environment input and emit bounded verified snapshot outputs', async () => {
   const run = new AsyncFunction('github', 'context', 'core', 'require', 'process', collectScript);
   const outputs = {};
