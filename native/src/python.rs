@@ -63,6 +63,7 @@ fn _alternator_rust(module: &Bound<'_, PyModule>) -> PyResult<()> {
         ));
     }
     crate::python_client::register(module)?;
+    crate::errors::register(module)?;
     module.add("INTERFACE_VERSION", INTERFACE_VERSION)?;
     module.add("__version__", PYTHON_VERSION)?;
     module.add_function(wrap_pyfunction!(_runtime_id, module)?)?;

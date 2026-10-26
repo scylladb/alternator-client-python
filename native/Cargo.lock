@@ -51,6 +51,7 @@ dependencies = [
  "aws-smithy-async",
  "aws-smithy-runtime-api",
  "aws-smithy-types",
+ "base64 0.22.1",
  "bytes",
  "flate2",
  "http",

@@ -13,7 +13,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpSocket};
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
+use tokio_util::task::{AbortOnDropHandle, TaskTracker};
 
 async fn bounded<F: Future>(future: F) -> F::Output {
     tokio::time::timeout(Duration::from_secs(5), future)
@@ -471,6 +471,44 @@ fn cancelled_read_closes_only_its_connection_and_metadata_stays_isolated() {
             attempts[0].body,
             br#"{"__type":"UnknownError","message":"full error","extra":"retained"}"#
         );
+        #[cfg(feature = "conversion-tests")]
+        pyo3::Python::attach(|py| {
+            use pyo3::prelude::*;
+            let error = _alternator_rust::errors::sdk_error(
+                py,
+                "GetItem",
+                "unused",
+                output.as_ref().unwrap_err(),
+                &attempts,
+            )
+            .unwrap();
+            let response = error.value(py).getattr("response").unwrap();
+            assert_eq!(
+                response
+                    .get_item("extra")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "retained"
+            );
+            let metadata = response.get_item("ResponseMetadata").unwrap();
+            assert_eq!(
+                metadata
+                    .get_item("RequestId")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                format!("request-{second}")
+            );
+            assert_eq!(
+                metadata
+                    .get_item("RetryAttempts")
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                0
+            );
+        });
         pending.abort();
         let _ = bounded(pending).await;
         server.disconnected(first).await;
@@ -785,6 +823,14 @@ fn custom_ca_hostname_verification_and_mtls_are_enforced() {
         let (output, metadata) = bounded(get(&client)).await.unwrap();
         assert!(output.is_err());
         assert_eq!(metadata.attempts, 1, "hostname failures must not retry");
+        assert_eq!(
+            _alternator_rust::transport_failure::TransportFailure::find(
+                output.as_ref().unwrap_err()
+            )
+            .unwrap()
+            .category,
+            _alternator_rust::transport_failure::Category::Tls
+        );
         bounded(client.close()).await;
 
         let wrong_ca = certificates(false);
@@ -793,6 +839,14 @@ fn custom_ca_hostname_verification_and_mtls_are_enforced() {
         let (output, metadata) = bounded(get(&client)).await.unwrap();
         assert!(output.is_err());
         assert_eq!(metadata.attempts, 1, "certificate failures must not retry");
+        assert_eq!(
+            _alternator_rust::transport_failure::TransportFailure::find(
+                output.as_ref().unwrap_err()
+            )
+            .unwrap()
+            .category,
+            _alternator_rust::transport_failure::Category::Tls
+        );
         bounded(client.close()).await;
         server.stop().await;
     });
@@ -815,7 +869,30 @@ fn native_request_deadline_cancels_held_read_and_keeps_client_open() {
             async move { get(&client).await }
         });
         let (connection, _, _) = server.request().await;
-        assert!(bounded(request).await.unwrap().unwrap().0.is_err());
+        let (output, metadata) = bounded(request).await.unwrap().unwrap();
+        assert!(output.is_err());
+        #[cfg(feature = "conversion-tests")]
+        pyo3::Python::attach(|py| {
+            use pyo3::prelude::*;
+            let error = _alternator_rust::errors::sdk_error(
+                py,
+                "GetItem",
+                "http://node",
+                output.as_ref().unwrap_err(),
+                &metadata,
+            )
+            .unwrap();
+            assert_eq!(
+                error
+                    .value(py)
+                    .getattr("category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "read_timeout"
+            );
+        });
+        let _ = metadata;
         server.disconnected(connection).await;
         assert!(!client.is_closed());
         bounded(client.close()).await;
@@ -1065,6 +1142,11 @@ fn metadata_counts_connection_refusal_then_success_and_final_dispatch_failure() 
                             .customize()
                             .config_override(
                                 aws_sdk_dynamodb::config::Builder::new()
+                                    // Keep the retry barrier separate from the
+                                    // upload observer's periodic sleep timers.
+                                    .stalled_stream_protection(
+                                        aws_sdk_dynamodb::config::StalledStreamProtectionConfig::disabled(),
+                                    )
                                     .timeout_config(
                                         aws_smithy_types::timeout::TimeoutConfig::disabled(),
                                     )
@@ -1092,6 +1174,25 @@ fn metadata_counts_connection_refusal_then_success_and_final_dispatch_failure() 
         assert_eq!(metadata.attempts, 2);
         assert_eq!(metadata.len(), 1);
         assert_eq!(metadata[0].attempt, 2);
+        #[cfg(feature = "conversion-tests")]
+        pyo3::Python::attach(|py| {
+            use pyo3::prelude::*;
+            let output = _alternator_rust::conversion::Output::GetItem(Box::new(
+                output.as_ref().unwrap().clone(),
+            ));
+            let result = _alternator_rust::response::success(py, &output, &metadata).unwrap();
+            assert_eq!(
+                result
+                    .get_item("ResponseMetadata")
+                    .unwrap()
+                    .unwrap()
+                    .get_item("RetryAttempts")
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                1
+            );
+        });
         server.request().await;
         bounded(client.close()).await;
 
@@ -1103,6 +1204,14 @@ fn metadata_counts_connection_refusal_then_success_and_final_dispatch_failure() 
         assert!(output.is_err());
         assert_eq!(metadata.attempts, 1);
         assert!(metadata.is_empty());
+        assert_eq!(
+            _alternator_rust::transport_failure::TransportFailure::find(
+                output.as_ref().unwrap_err()
+            )
+            .unwrap()
+            .category,
+            _alternator_rust::transport_failure::Category::ConnectionClosed
+        );
         bounded(client.close()).await;
         server.stop().await;
     });
@@ -1129,4 +1238,589 @@ impl aws_smithy_runtime_api::client::interceptors::Intercept for ArmOnServerErro
         }
         Ok(())
     }
+}
+
+// These checks execute only in the explicitly Python-linked converter test
+// configuration. The ordinary core suite remains entirely independent of Python.
+#[cfg(feature = "conversion-tests")]
+#[test]
+fn parsed_sdk_scalars_preserve_final_response_presence_and_retry_metadata() {
+    use _alternator_rust::{conversion::Output, response};
+    use pyo3::prelude::*;
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        let mut cfg = config(server.port);
+        cfg.response_compression = vec!["gzip".into()];
+        let client = Client::create(cfg).await.unwrap();
+        for operation in ["Query", "Scan"] {
+            for (body, encoding) in [
+                ("{}", "x-gzip"),
+                (r#"{"Count":0}"#, "GzIp ; q=1.0"),
+                (
+                    r#"{"ScannedCount":0,"Items":[],"LastEvaluatedKey":{}}"#,
+                    "gzip",
+                ),
+            ] {
+                server.push(Reply::json(500, r#"{"__type":"InternalServerError"}"#));
+                let mut compressed =
+                    flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+                compressed.write_all(body.as_bytes()).unwrap();
+                server.push(Reply {
+                    // The SDK ignores a second gzip member and arbitrary trailer.
+                    // Presence projection must consume the same first member.
+                    body: {
+                        let mut bytes = compressed.finish().unwrap();
+                        let mut trailer = flate2::write::GzEncoder::new(
+                            Vec::new(),
+                            flate2::Compression::default(),
+                        );
+                        trailer.write_all(b"ignored member").unwrap();
+                        bytes.extend(trailer.finish().unwrap());
+                        bytes.extend(b"ignored trailer");
+                        bytes
+                    },
+                    encoding: Some(encoding),
+                    ..Reply::json(200, "")
+                });
+                let (output, metadata) = client
+                    .run(|sdk| async move {
+                        if operation == "Query" {
+                            Output::Query(Box::new(
+                                sdk.query().table_name("contract").send().await.unwrap(),
+                            ))
+                        } else {
+                            Output::Scan(Box::new(
+                                sdk.scan().table_name("contract").send().await.unwrap(),
+                            ))
+                        }
+                    })
+                    .await
+                    .unwrap();
+                Python::attach(|py| {
+                    let result = response::success(py, &output, &metadata).unwrap();
+                    assert_eq!(
+                        result.contains("Count").unwrap(),
+                        body.contains("\"Count\"")
+                    );
+                    assert_eq!(
+                        result.contains("ScannedCount").unwrap(),
+                        body.contains("\"ScannedCount\"")
+                    );
+                    assert_eq!(
+                        result.contains("Items").unwrap(),
+                        body.contains("\"Items\"")
+                    );
+                    assert_eq!(
+                        result
+                            .get_item("ResponseMetadata")
+                            .unwrap()
+                            .unwrap()
+                            .get_item("RetryAttempts")
+                            .unwrap()
+                            .extract::<u32>()
+                            .unwrap(),
+                        1
+                    );
+                });
+                server.request().await;
+                server.request().await;
+            }
+        }
+        bounded(client.close()).await;
+        server.stop().await;
+    });
+}
+
+#[test]
+fn connection_and_connect_timeout_have_structured_categories() {
+    use _alternator_rust::{
+        transport::Transport,
+        transport_failure::{Category, TransportFailure},
+    };
+    use alternator_driver::AlternatorClient;
+    shared_runtime().unwrap().block_on(async {
+        let reserved = TcpSocket::new_v4().unwrap();
+        reserved.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = reserved.local_addr().unwrap().port();
+        let mut cfg = config(port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        let (output, metadata) = bounded(get(&client)).await.unwrap();
+        let error = output.unwrap_err();
+        let failure = TransportFailure::find(&error).unwrap();
+        assert_eq!(failure.category, Category::EndpointConnection);
+        assert_eq!(failure.endpoint_url, format!("http://127.0.0.1:{port}/"));
+        assert!(metadata.responses.is_empty());
+        bounded(client.close()).await;
+
+        // Complete TCP but hold the TLS handshake until the connect deadline.
+        let listener = reserved.listen(128).unwrap();
+        let held = AbortOnDropHandle::new(tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut byte = [0];
+            assert_eq!(socket.read(&mut byte).await.unwrap(), 1);
+            let mut rest = Vec::new();
+            socket.read_to_end(&mut rest).await.unwrap();
+        }));
+        let mut cfg = config(port);
+        cfg.scheme = "https".into();
+        cfg.connect_seconds = 0.03;
+        cfg.max_attempts = 1;
+        let transport = Transport::new(cfg.tls_config().unwrap());
+        let sdk = AlternatorClient::try_from_conf(
+            cfg.to_driver_config(transport.clone())
+                .unwrap()
+                .to_builder()
+                .without_discovery()
+                .build(),
+        )
+        .unwrap();
+        let error = bounded(
+            sdk.get_item()
+                .table_name("contract")
+                .key("pk", AttributeValue::S("x".into()))
+                .customize()
+                .mutate_request(move |request| {
+                    request
+                        .set_uri(format!("https://127.0.0.1:{port}/connect/path?key=value"))
+                        .unwrap();
+                })
+                .send(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(
+            TransportFailure::find(&error).unwrap().category,
+            Category::ConnectTimeout
+        );
+        assert_eq!(
+            TransportFailure::find(&error).unwrap().endpoint_url,
+            format!("https://127.0.0.1:{port}/connect/path?key=value")
+        );
+        bounded(held).await.unwrap();
+        sdk.shutdown().await;
+        bounded(transport.finish_close()).await;
+    });
+}
+
+#[test]
+fn tls_handshake_io_and_protocol_failures_preserve_categories_and_retries() {
+    use _alternator_rust::{
+        transport::Transport,
+        transport_failure::{Category, TransportFailure},
+    };
+    use alternator_driver::AlternatorClient;
+    shared_runtime().unwrap().block_on(async {
+        for alert in [false, true] {
+            let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let peer = AbortOnDropHandle::new(tokio::spawn(async move {
+                for _ in 0..2 {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut hello = [0; 4096];
+                    assert!(socket.read(&mut hello).await.unwrap() > 0);
+                    if alert {
+                        // TLS fatal handshake_failure alert, distinct from plain EOF.
+                        socket
+                            .write_all(b"\x15\x03\x03\x00\x02\x02\x28")
+                            .await
+                            .unwrap();
+                    }
+                    socket.shutdown().await.unwrap();
+                }
+            }));
+            let mut cfg = config(port);
+            cfg.scheme = "https".into();
+            cfg.max_attempts = 2;
+            let transport = Transport::new(cfg.tls_config().unwrap());
+            let sdk = AlternatorClient::try_from_conf(
+                cfg.to_driver_config(transport.clone())
+                    .unwrap()
+                    .to_builder()
+                    .without_discovery()
+                    .build(),
+            )
+            .unwrap();
+            let endpoint_url = if alert {
+                format!("https://127.0.0.1:{port}/retry/path?key=value")
+            } else {
+                format!("https://127.0.0.1:{port}")
+            };
+            let wire_endpoint = endpoint_url.clone();
+            let error = bounded(
+                sdk.get_item()
+                    .table_name("contract")
+                    .key("pk", AttributeValue::S("x".into()))
+                    .customize()
+                    .mutate_request(move |request| {
+                        request.set_uri(wire_endpoint.clone()).unwrap();
+                    })
+                    .send(),
+            )
+            .await
+            .unwrap_err();
+            let expected_category = if alert {
+                Category::Tls
+            } else {
+                Category::EndpointConnection
+            };
+            let failure = TransportFailure::find(&error).unwrap();
+            assert_eq!(failure.category, expected_category);
+            assert_eq!(failure.endpoint_url, endpoint_url);
+            if alert {
+                assert!(failure.to_string().contains("HandshakeFailure"));
+            }
+            // Both accepts are required: the actual SDK must retry the EOF.
+            bounded(peer).await.unwrap();
+            #[cfg(feature = "conversion-tests")]
+            pyo3::Python::attach(|py| {
+                use pyo3::prelude::*;
+                let mapped = _alternator_rust::errors::sdk_error(
+                    py,
+                    "GetItem",
+                    "unused",
+                    &error,
+                    &_alternator_rust::metadata::OperationMetadata::default(),
+                )
+                .unwrap();
+                assert_eq!(
+                    mapped
+                        .value(py)
+                        .getattr("category")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    expected_category.as_str()
+                );
+                assert_eq!(
+                    mapped
+                        .value(py)
+                        .getattr("endpoint_url")
+                        .unwrap()
+                        .extract::<String>()
+                        .unwrap(),
+                    endpoint_url
+                );
+            });
+            sdk.shutdown().await;
+            bounded(transport.finish_close()).await;
+        }
+    });
+}
+
+#[cfg(feature = "conversion-tests")]
+#[test]
+fn final_http_errors_and_protocol_failures_keep_distinct_python_categories() {
+    use _alternator_rust::{conversion::Output, errors, response};
+    use aws_smithy_runtime_api::client::result::SdkError;
+    use pyo3::exceptions::PyRuntimeError;
+    use pyo3::prelude::*;
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        let mut cfg = config(server.port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        for reply in [
+            Reply::json(503, ""),
+            Reply::json(502, "<html>proxy failure</html>"),
+            Reply::json(500, " \t\r\n\x0b\x0c"),
+            Reply {
+                body: b" \r\n<html>caf\xe9</html>".to_vec(),
+                extra_headers: b"x-amzn-errortype: ProxyError:http\r\n".to_vec(),
+                ..Reply::json(503, "")
+            },
+            Reply::json(
+                400,
+                r#"{"__type":"ResourceNotFoundException","message":null,"future":[1e400,-1e400]}"#,
+            ),
+            Reply::json(200, r#"{"Count":"oops"}"#),
+            Reply::json(200, ""),
+            Reply {
+                extra_headers: b"invalid header\r\n".to_vec(),
+                ..Reply::json(200, "{}")
+            },
+            Reply::json(0, ""),
+        ] {
+            let status = reply.status;
+            let expected_message = if status >= 500 {
+                http::StatusCode::from_u16(status)
+                    .unwrap()
+                    .canonical_reason()
+                    .unwrap()
+                    .to_owned()
+            } else {
+                String::from_utf8(reply.body.clone()).unwrap()
+            };
+            let malformed_header = reply.extra_headers == b"invalid header\r\n";
+            let expected_success = status == 200 && reply.body.is_empty() && !malformed_header;
+            server.push(reply);
+            let (result, metadata) = client
+                .run(|sdk| async move { sdk.query().table_name("contract").send().await })
+                .await
+                .unwrap();
+            assert_eq!(result.is_ok(), expected_success);
+            Python::attach(|py| match result {
+                Ok(output) => {
+                    assert_eq!(status, 200);
+                    let result =
+                        response::success(py, &Output::Query(Box::new(output)), &metadata).unwrap();
+                    assert_eq!(result.len(), 1);
+                    assert!(result.contains("ResponseMetadata").unwrap());
+                }
+                Err(error) => {
+                    let mapped =
+                        errors::sdk_error(py, "Query", "http://node", &error, &metadata).unwrap();
+                    if status >= 400 {
+                        assert!(matches!(error, SdkError::ServiceError(_)));
+                        assert!(mapped.is_instance_of::<errors::ServiceError>(py));
+                        assert_eq!(
+                            mapped
+                                .value(py)
+                                .getattr("response")
+                                .unwrap()
+                                .get_item("Error")
+                                .unwrap()
+                                .get_item("Code")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            if status == 400 {
+                                "ResourceNotFoundException".into()
+                            } else {
+                                status.to_string()
+                            }
+                        );
+                        let response = mapped.value(py).getattr("response").unwrap();
+                        let message = response
+                            .get_item("Error")
+                            .unwrap()
+                            .get_item("Message")
+                            .unwrap();
+                        if status == 400 {
+                            assert!(message.is_none());
+                            assert_eq!(
+                                response
+                                    .get_item("future")
+                                    .unwrap()
+                                    .extract::<Vec<f64>>()
+                                    .unwrap(),
+                                vec![f64::INFINITY, f64::NEG_INFINITY]
+                            );
+                        } else {
+                            assert_eq!(response.len().unwrap(), 2);
+                            assert_eq!(message.extract::<String>().unwrap(), expected_message);
+                        }
+                        assert_eq!(
+                            mapped
+                                .value(py)
+                                .getattr("operation_name")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "Query"
+                        );
+                    } else if status == 0 {
+                        assert!(mapped.is_instance_of::<errors::TransportError>(py));
+                        assert_eq!(
+                            mapped
+                                .value(py)
+                                .getattr("category")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            "connection_closed"
+                        );
+                        assert_eq!(
+                            mapped
+                                .value(py)
+                                .getattr("endpoint_url")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            format!("http://127.0.0.1:{}/", server.port)
+                        );
+                    } else {
+                        if !malformed_header {
+                            assert!(matches!(error, SdkError::ServiceError(_)));
+                        }
+                        assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+                        assert!(!mapped.to_string().is_empty());
+                    }
+                }
+            });
+            server.request().await;
+        }
+        bounded(client.close()).await;
+        server.stop().await;
+    });
+}
+
+#[cfg(feature = "conversion-tests")]
+#[test]
+fn modeled_error_projection_retains_sdk_parsing_categories() {
+    use _alternator_rust::errors;
+    use aws_smithy_types::error::metadata::ProvideErrorMetadata;
+    use pyo3::exceptions::PyRuntimeError;
+    use pyo3::prelude::*;
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        let mut cfg = config(server.port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        // Expected service code, SDK code, and typed ErrorMetadata source.
+        for (body, expected, sdk_code, metadata_source) in [
+            (
+                r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{"S":7}}}"#.to_owned(),
+                None,
+                None,
+                false,
+            ),
+            (
+                r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{}}}"#.to_owned(),
+                None,
+                None,
+                false,
+            ),
+            (
+                format!(
+                    r#"{{"__type":"ResourceNotFoundException","future":{}0{}}}"#,
+                    "[".repeat(512),
+                    "]".repeat(512)
+                ),
+                Some("ResourceNotFoundException"),
+                Some("ResourceNotFoundException"),
+                false,
+            ),
+            (
+                format!(
+                    r#"{{"__type":"ResourceNotFoundException","future":{}0{}}}"#,
+                    "[".repeat(513),
+                    "]".repeat(513)
+                ),
+                None,
+                None,
+                false,
+            ),
+            (
+                r#"{"message":"no code"}"#.to_owned(),
+                Some("400"),
+                None,
+                true,
+            ),
+            (
+                r#"{"__type":"FutureError","message":"unknown code"}"#.to_owned(),
+                Some("FutureError"),
+                Some("FutureError"),
+                true,
+            ),
+            (r#"{"broken":"#.to_owned(), Some("400"), None, false),
+            ("proxy failure".to_owned(), Some("400"), None, false),
+        ] {
+            server.push(Reply::json(400, &body));
+            let (result, metadata) = bounded(client.run(|sdk| async move {
+                sdk.put_item()
+                    .table_name("contract")
+                    .item("a", AttributeValue::S("x".into()))
+                    .send()
+                    .await
+            }))
+            .await
+            .unwrap();
+            let error = result.unwrap_err();
+            let service = error.as_service_error().unwrap();
+            assert_eq!(service.code(), sdk_code);
+            assert_eq!(
+                std::error::Error::source(service)
+                    .is_some_and(|source| source.is::<aws_smithy_types::error::ErrorMetadata>()),
+                metadata_source
+            );
+            Python::attach(|py| {
+                let mapped =
+                    errors::sdk_error(py, "PutItem", "http://node", &error, &metadata).unwrap();
+                if let Some(expected) = expected {
+                    assert!(mapped.is_instance_of::<errors::ServiceError>(py));
+                    let value = mapped.value(py);
+                    let response = value.getattr("response").unwrap();
+                    assert_eq!(
+                        response
+                            .get_item("Error")
+                            .unwrap()
+                            .get_item("Code")
+                            .unwrap()
+                            .extract::<String>()
+                            .unwrap(),
+                        expected
+                    );
+                    assert_eq!(
+                        value.getattr("body").unwrap().extract::<Vec<u8>>().unwrap(),
+                        body.as_bytes()
+                    );
+                    if expected == "ResourceNotFoundException" {
+                        let mut value = response.get_item("future").unwrap();
+                        for _ in 0..512 {
+                            value = value.get_item(0).unwrap();
+                        }
+                        assert_eq!(value.extract::<i32>().unwrap(), 0);
+                    }
+                    if body == "proxy failure" || body == r#"{"broken":"# {
+                        assert_eq!(
+                            response
+                                .get_item("Error")
+                                .unwrap()
+                                .get_item("Message")
+                                .unwrap()
+                                .extract::<String>()
+                                .unwrap(),
+                            body
+                        );
+                    }
+                } else {
+                    assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+                    assert!(!mapped.is_instance_of::<errors::ServiceError>(py));
+                    // Retain the original structured SDK cause in the report.
+                    let report = mapped.to_string();
+                    assert!(
+                        report.contains("expected ValueString")
+                            || report.contains("valid variant")
+                            || report.contains("max recursion depth"),
+                        "{report}"
+                    );
+                }
+            });
+            server.request().await;
+        }
+        bounded(client.close()).await;
+        server.stop().await;
+    });
+}
+
+#[cfg(feature = "conversion-tests")]
+#[test]
+fn unknown_success_attributes_match_python_empty_structures() {
+    use _alternator_rust::{conversion::Output, response};
+    use pyo3::prelude::*;
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        server.push(Reply::json(200, r#"{"Item":{"known":{"S":"kept"},"future":{"FUTURE":{"x":7}},"nested":{"M":{"list":{"L":[{"FUTURE":7},{"N":"1.00"}]}}}}}"#));
+        let client = Client::create(config(server.port)).await.unwrap();
+        let (output, metadata) = bounded(get(&client)).await.unwrap();
+        let output = output.unwrap();
+        assert!(output.item.as_ref().unwrap()["future"].is_unknown());
+        Python::attach(|py| {
+            let first = response::success(py, &Output::GetItem(Box::new(output.clone())), &metadata).unwrap();
+            let second = response::success(py, &Output::GetItem(Box::new(output)), &metadata).unwrap();
+            let item = first.get_item("Item").unwrap().unwrap();
+            let unknown = item.get_item("future").unwrap();
+            assert!(unknown.is_empty().unwrap());
+            assert_eq!(item.get_item("known").unwrap().get_item("S").unwrap().extract::<String>().unwrap(), "kept");
+            let nested = item.get_item("nested").unwrap().get_item("M").unwrap().get_item("list").unwrap().get_item("L").unwrap();
+            assert!(nested.get_item(0).unwrap().is_empty().unwrap());
+            assert_eq!(nested.get_item(1).unwrap().get_item("N").unwrap().extract::<String>().unwrap(), "1.00");
+            unknown.set_item("changed", true).unwrap();
+            assert!(second.get_item("Item").unwrap().unwrap().get_item("future").unwrap().is_empty().unwrap());
+        });
+        server.request().await;
+        bounded(client.close()).await;
+        server.stop().await;
+    });
 }

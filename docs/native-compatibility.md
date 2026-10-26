@@ -2,12 +2,14 @@
 
 This is the executable scope for issues [#131](https://github.com/scylladb/alternator-client-python/issues/131)
 and [#132](https://github.com/scylladb/alternator-client-python/issues/132). The
-native backend is planned; this change supplies the shared fixtures and checks
-the existing Python clients. The independent `alternator-client-rust-backend`
-distribution will provide `_alternator_rust` wheels. The base package stays pure
-Python. Public `native` and `async-native` extras will require that distribution
-at the exact same Python release version; `async-native` also includes async
-Python dependencies. Base and `async` installation remain independent of Rust.
+native backend is staged: shared fixtures check the Python clients, and the
+native wheel supplies configuration, lifecycle, typed conversion and error
+interfaces. Native operation execution and Python facades remain follow-up
+work. The independent `alternator-client-rust-backend` distribution will
+provide `_alternator_rust` wheels. The base package stays pure Python. Public
+`native` and `async-native` extras will require that distribution at the exact
+same Python release version; `async-native` also includes async Python
+dependencies. Base and `async` installation remain independent of Rust.
 
 The native surface is explicit and private: sync `create_client`, `close_client`
 and `client` under `alternator._experimental.rust`, with equivalents under
@@ -73,9 +75,15 @@ exception classes where available, Error.Code/Message, operation_name and
 ResponseMetadata (HTTPStatusCode, original HTTPHeaders, RequestId and
 RetryAttempts). Metadata belongs to its individual response. Python error
 dictionaries retain only body members declared by their service-model error
-shape. Native error dictionaries retain every body member except protocol
-`__type`, which is normalized into Error.Code. This includes unknown fields and
-both lowercase and uppercase message members. Modeled binary Item and
+shape. Native error dictionaries retain body members and message casing except
+protocol `__type`, which is normalized into Error.Code, and reserved envelope
+collisions. Dictionary-valued `Error` and `ResponseMetadata` retain unrelated
+nested keys through a shallow merge. Generated Error.Code/Message take
+precedence; metadata reserves HTTPStatusCode, HTTPHeaders, RequestId,
+RetryAttempts and MaxAttemptsReached, even when genuine optional values are
+absent. Body HTTPHeaders are never merged with genuine headers. Non-dictionary
+values at the two envelope names are replaced by generated dictionaries;
+overwritten originals remain in raw `.body`. Modeled binary Item and
 CancellationReasons values remain decoded Python values. Native exception
 context also preserves the original wire body and headers for the facade.
 Header lookup is case-insensitive; retain server header values even when HTTP
@@ -176,3 +184,23 @@ certificate enforcement. Later native tests must prove Python validation,
 serialization and transports are bypassed, exercise GIL/event-loop progress,
 wrong-loop use, cancellation/close races, retry/deadline handling and repeated
 creation/cleanup, in addition to passing these initial semantic contracts.
+
+## Conversion implementation status (#134)
+
+All ten input/output model graphs, including legacy forms, have native typed
+converters. Rust validates request structure before GIL release and preserves
+binary values, numeric string spelling, ordered list sets and empty
+containers. Unknown parameters and malformed unions include a parameter path.
+SDK optional members preserve response absence; compact markers from the final
+wire body supply presence for SDK-defaulted scalars and required nested batch
+members. Bulk attribute contents are skipped during presence parsing; JSON
+scanning and a second decompression of compressed responses remain. Modeled
+maximums are left to the service while client minimum/type/native-width checks
+remain. Rust response decoding supports gzip and both deflate forms while
+retaining original metadata and wire context. The Python error adapter uses
+cached models and creates no admin client.
+
+This is conversion/error qualification only. It does not expose execute methods
+or claim end-to-end native support. The existing exact-head core qualification
+and all 20 interpreter/platform wheel cells remain required before PR readiness;
+final dependency-pin qualification stays in #133.

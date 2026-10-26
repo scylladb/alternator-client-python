@@ -1,13 +1,14 @@
 # Experimental native backend
 
-`alternator-client-rust-backend` is an independent wheel distribution. It exports
-`_alternator_rust` and does not replace the pure `alternator-client` distribution.
-Its static Python release version matches `alternator/_version.py`; the internal
-Cargo crate version is independent. This package supplies interface version 1,
-the shared runtime, validated private native constructors and per-client HTTP
-transport/lifecycle. Data execution remains staged for the converter/operation
-changes. See [INTERFACE.md](INTERFACE.md) for the frozen configuration and client
-contract.
+`alternator-client-rust-backend` is an independent wheel distribution. It
+exports `_alternator_rust` and does not replace the pure `alternator-client`
+distribution. Its static Python release version matches
+`alternator/_version.py`; the internal Cargo crate version is independent.
+This package supplies interface version 1, the shared runtime, validated
+private native constructors and per-client HTTP transport/lifecycle. Typed
+request/response conversion and reserved error interfaces are available; data
+execution remains staged for the operation changes. See
+[INTERFACE.md](INTERFACE.md) for the frozen configuration and client contract.
 
 Only GIL-enabled CPython 3.10–3.14 is supported. Release wheels target
 manylinux_2_28 x86_64, macOS Intel/ARM64 and Windows MSVC x64. Wheels are specific
@@ -82,6 +83,25 @@ manifest anchor has been renewed. The fresh ordinary host wheel/context artifact
 are recorded in [tests/STARTUP.md](tests/STARTUP.md). Before the dependent Python
 PR becomes ready, require exact-head CI, including the existing 20-cell wheel
 matrix and aggregate gate; host qualification alone does not satisfy that gate.
-Receipts remain at `stage: interface` with `release_qualified: false`; data
-operations and error conversion belong to later issues. Python APIs, native
+Merged-pin qualification receipts remain at `stage: interface` with
+`release_qualified: false`. This change adds conversion and error mapping; data
+operations remain staged for later issues. Python APIs, native
 interface/configuration schema 1 and all package versions remain unchanged.
+
+## Converter checks
+
+The converter uses checked-in Rust generated from the compatibility manifest and
+the locked SDK source. Regenerate after an intentionally reviewed model change:
+
+```sh
+python3 native/scripts/generate_converters.py
+python3 native/scripts/generate_converters.py --check
+(cd native && cargo clippy --locked --all-targets --features conversion-tests -- -D warnings)
+(cd native && cargo test --locked --features conversion-tests --test conversion --test lifecycle)
+```
+
+The `conversion-tests` feature links embedded Python with extension-module
+linking disabled. It exercises the shared fixtures and every reachable model
+member without Python SDK serialization or transport. Default Rust core tests
+still exclude PyO3. Maturin continues to build only the `extension` feature;
+converter tests do not change the normal-wheel Tokio feature fingerprint.

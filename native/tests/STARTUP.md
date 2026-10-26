@@ -111,7 +111,7 @@ A host Linux wheel pass does not qualify the manylinux_2_28 floor or the complet
 20-cell interpreter/platform matrix; require exact-head CI and its aggregate.
 The existing `stage: interface` and `release_qualified: false` remain unchanged.
 
-## Local qualification artifacts
+## Merged-pin host qualification artifacts (before conversion)
 
 The 2026-10-27 Linux x86_64 CPython 3.13.5 build uses Rust 1.94.1 and maturin
 1.15.0, with a fresh target used only for the normal release wheel. Its compiled
@@ -155,3 +155,24 @@ Build a fresh ordinary wheel/context and rerun positive probes, all provenance/F
 negative controls and exact-head CI before marking the dependent Python PR ready.
 Context schema 1, extension interface 1, Python release 2.0.1 and internal Cargo
 version 0.1.0 are unchanged. No release publication is part of this update.
+
+## Conversion manifest renewal (#134)
+
+The P4 native-manifest anchor is renewed for the conversion/error layer:
+existing serde_json/flate2 test dependencies are now used by production
+response decoding, base64 0.22.1 is a direct dependency, and Python-linked
+converter tests have a separate feature from extension-module builds. The
+existing serde_json dependency also enables arbitrary precision to preserve
+unknown service-error integers exactly, plus borrowed raw JSON values for
+compact success-presence parsing. These features do not alter Tokio features.
+The root lock entry adds the already resolved base64 identity; no dependency
+version changes beyond the separately landed merged Rust pin described above.
+The upstream manifest still enables Tokio full. The audited 581-file vendor
+source, independent signal ownership anchors and expected single global socket
+pair are unchanged. Build a fresh normal-wheel context and repeat the
+installed-wheel startup controls for this manifest/source. The combined native
+manifest SHA256 is
+`29143cc288cdabd766ba085498d0643ab97bedf4566e2a5f40f92339932718f5`. This
+conversion renewal requires its own combined-source wheel evidence; the
+merged-pin host artifacts above do not qualify the combined source or complete
+platform matrix.

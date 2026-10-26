@@ -26,6 +26,7 @@ use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use crate::metadata::{self, AttemptResponse};
+use crate::transport_failure::{Category, TransportFailure};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 trait Socket: AsyncRead + AsyncWrite + Unpin + Send {}
@@ -149,6 +150,9 @@ impl Transport {
         let attempt = request
             .extension::<metadata::AttemptNumber>()
             .map_or(1, |attempt| attempt.0);
+        // Retain Smithy's original spelling; http::Uri formatting can add a
+        // root slash before we rewrite the request to origin-form.
+        let endpoint_url = request.uri().to_string();
         let mut request = request.try_into_http1x()?;
         let uri = request.uri().clone();
         let discovery = request.method() == http::Method::GET && uri.path() == "/localnodes";
@@ -160,7 +164,10 @@ impl Transport {
         let pooled = self.0.idle.lock().unwrap().get_mut(&key).and_then(Vec::pop);
         let mut connection = match pooled {
             Some(connection) if !connection.sender.is_closed() => connection,
-            _ => self.connect(&uri, settings.connect_timeout()).await?,
+            _ => self
+                .connect(&uri, settings.connect_timeout())
+                .await
+                .map_err(|error| connect_failure(error, &endpoint_url))?,
         };
         // HTTP/1 direct connections require origin-form, and Hyper supplies Host
         // only for higher-level clients. Preserve the exact signing authority.
@@ -173,8 +180,16 @@ impl Transport {
             .path_and_query()
             .map_or("/", |value| value.as_str())
             .parse()?;
-        connection.sender.ready().await?;
-        let response = connection.sender.send_request(request).await?;
+        connection
+            .sender
+            .ready()
+            .await
+            .map_err(|error| connection_failure(error, &endpoint_url))?;
+        let response = connection
+            .sender
+            .send_request(request)
+            .await
+            .map_err(|error| connection_failure(error, &endpoint_url))?;
         let (parts, body) = response.into_parts();
         // The pinned discovery deserializer accepts node arrays regardless of
         // status. Return a request failure so upstream retains its snapshot and
@@ -183,7 +198,11 @@ impl Transport {
         if discovery && !parts.status.is_success() {
             return Err(format!("topology discovery returned HTTP {}", parts.status).into());
         }
-        let bytes = body.collect().await?.to_bytes();
+        let bytes = body
+            .collect()
+            .await
+            .map_err(|error| connection_failure(error, &endpoint_url))?
+            .to_bytes();
         if let Some(capture) = metadata::current_capture() {
             capture.lock().unwrap().responses.push(AttemptResponse {
                 status: parts.status.as_u16(),
@@ -221,6 +240,7 @@ impl HttpConnector for Connector {
     fn call(&self, request: HttpRequest) -> HttpConnectorFuture {
         let connector = self.clone();
         HttpConnectorFuture::new(async move {
+            let endpoint_url = request.uri().to_string();
             let work = connector
                 .transport
                 .request(request, connector.settings.clone());
@@ -231,7 +251,9 @@ impl HttpConnector for Connector {
                     match connector.settings.read_timeout() {
                         Some(duration) => match tokio::time::timeout(duration, work).await {
                             Ok(result) => result.map_err(connector_error),
-                            Err(error) => Err(ConnectorError::timeout(Box::new(error))),
+                            Err(error) => Err(ConnectorError::timeout(Box::new(TransportFailure::new(
+                                Category::ReadTimeout, endpoint_url, Box::new(error),
+                            )))),
                         },
                         None => work.await.map_err(connector_error),
                     }
@@ -241,17 +263,78 @@ impl HttpConnector for Connector {
     }
 }
 
+fn connect_failure(error: BoxError, endpoint: &str) -> BoxError {
+    if TransportFailure::find(error.as_ref()).is_some() {
+        return error;
+    }
+    let category = if tls_error_retryable(error.as_ref()).is_some() {
+        Category::Tls
+    } else if error
+        .downcast_ref::<io::Error>()
+        .is_some_and(|e| e.kind() == io::ErrorKind::TimedOut)
+    {
+        Category::ConnectTimeout
+    } else {
+        Category::EndpointConnection
+    };
+    Box::new(TransportFailure::new(category, endpoint, error))
+}
+
+fn connection_failure(error: hyper::Error, endpoint: &str) -> BoxError {
+    if error.is_parse() {
+        return Box::new(error);
+    }
+    let category = if tls_error_retryable(&error).is_some() {
+        Category::Tls
+    } else {
+        Category::ConnectionClosed
+    };
+    Box::new(TransportFailure::new(category, endpoint, Box::new(error)))
+}
+
+// Classification and retry policy are separate: certificate/hostname failures
+// do not retry, while other TLS protocol I/O retains the baseline retry policy.
+fn tls_error_retryable(mut error: &(dyn std::error::Error + 'static)) -> Option<bool> {
+    loop {
+        let tls = error.downcast_ref::<rustls::Error>().or_else(|| {
+            error
+                .downcast_ref::<io::Error>()
+                .and_then(io::Error::get_ref)
+                .and_then(|inner| inner.downcast_ref::<rustls::Error>())
+        });
+        if let Some(tls) = tls {
+            return Some(!matches!(tls, rustls::Error::InvalidCertificate(_)));
+        }
+        if error
+            .downcast_ref::<rustls::pki_types::InvalidDnsNameError>()
+            .is_some()
+        {
+            return Some(false);
+        }
+        error = error.source()?;
+    }
+}
+
 fn connector_error(error: BoxError) -> ConnectorError {
+    if let Some(failure) = TransportFailure::find(error.as_ref()) {
+        return match failure.category {
+            Category::Tls if tls_error_retryable(error.as_ref()) == Some(true) => {
+                ConnectorError::io(error)
+            }
+            Category::Tls => ConnectorError::user(error),
+            Category::ConnectTimeout | Category::ReadTimeout => ConnectorError::timeout(error),
+            Category::EndpointConnection | Category::ConnectionClosed => ConnectorError::io(error),
+        };
+    }
+    if error
+        .downcast_ref::<hyper::Error>()
+        .is_some_and(|error| error.is_parse())
+    {
+        return ConnectorError::user(error);
+    }
     // tokio-rustls wraps certificate/hostname verification failures in an
     // InvalidData io::Error. Other I/O failures remain retryable.
-    if error.downcast_ref::<io::Error>().is_some_and(|error| {
-        matches!(
-            error
-                .get_ref()
-                .and_then(|inner| inner.downcast_ref::<rustls::Error>()),
-            Some(rustls::Error::InvalidCertificate(_))
-        )
-    }) {
+    if tls_error_retryable(error.as_ref()) == Some(false) {
         ConnectorError::user(error)
     } else if error
         .downcast_ref::<io::Error>()
@@ -284,6 +367,44 @@ impl HttpClient for Transport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connect_classification_preserves_categories_and_wraps_once() {
+        let endpoint = "https://node:8043";
+        for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::UnexpectedEof] {
+            let error = connect_failure(Box::new(io::Error::new(kind, "handshake I/O")), endpoint);
+            assert_eq!(
+                TransportFailure::find(error.as_ref()).unwrap().category,
+                Category::EndpointConnection
+            );
+            assert!(connector_error(error).is_io());
+        }
+        for tls in [
+            rustls::Error::InvalidCertificate(rustls::CertificateError::UnknownIssuer),
+            rustls::Error::General("protocol failure".into()),
+        ] {
+            let certificate = matches!(tls, rustls::Error::InvalidCertificate(_));
+            let error = connect_failure(
+                Box::new(io::Error::new(io::ErrorKind::InvalidData, tls)),
+                endpoint,
+            );
+            assert_eq!(
+                TransportFailure::find(error.as_ref()).unwrap().category,
+                Category::Tls
+            );
+            let text = error.to_string();
+            let error = connect_failure(error, "unused");
+            assert_eq!(error.to_string(), text);
+            assert_eq!(error.to_string().matches("tls:").count(), 1);
+            assert_eq!(
+                TransportFailure::find(error.as_ref()).unwrap().endpoint_url,
+                endpoint
+            );
+            let error = connector_error(error);
+            assert_eq!(error.is_user(), certificate);
+            assert_eq!(error.is_io(), !certificate);
+        }
+    }
 
     #[test]
     fn certificate_classification_preserves_network_io_and_timeout_retries() {
