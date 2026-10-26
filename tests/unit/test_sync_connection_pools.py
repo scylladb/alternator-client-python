@@ -9,14 +9,17 @@ import json
 import socket
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
-from threading import Barrier
+from threading import Barrier, Event, get_ident
 from typing import Any
+from unittest.mock import MagicMock
 from urllib.parse import urlsplit
 
 import pytest
 from botocore.awsrequest import AWSRequest
+from botocore.exceptions import HTTPClientError
 from botocore.httpsession import ProxyConfiguration
 from urllib3.connectionpool import HTTPSConnectionPool
+from urllib3.exceptions import LocationParseError
 from urllib3.response import HTTPResponse
 
 from alternator.client import (
@@ -24,7 +27,7 @@ from alternator.client import (
     _create_resource_with_manager,
     close_client,
 )
-from alternator.config import Config
+from alternator.config import Config, RetryConfig, RetryMode
 from alternator.core.live_nodes import SyncLiveNodesManager
 from alternator.core.routing_scope import ClusterScope
 from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
@@ -70,6 +73,38 @@ def test_host_pools_survive_topology_growth(resource: bool, proxy: bool) -> None
                 assert pool.pool.maxsize == 3
             for host, pool in known_pools.items():
                 assert pool_manager.connection_from_url(f"https://{host}:8043") is pool
+    finally:
+        close_client(owner)
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_unselected_malformed_host_preserves_valid_pools(proxy: bool) -> None:
+    """An invalid affinity host cannot break a valid destination's cache miss."""
+    nodes = [f"node{n}.test" for n in range(11)]
+    config = Config(seed_hosts=[nodes[0]], port=8043, scheme="https")
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(nodes[:5], ClusterScope())
+    manager._core.update_affinity_nodes([*nodes[5:], "[broken"], ClusterScope())
+    owner: Any = _create_client_with_manager(config, manager, owns_manager=False)
+    session = owner._endpoint.http_session
+    proxy_url = "http://proxy.test:8080" if proxy else None
+    session._proxy_config = ProxyConfiguration(
+        {"https": proxy_url} if proxy_url else {}
+    )
+    try:
+        owner.meta.events.emit(
+            "before-send.dynamodb.ListTables",
+            request=AWSRequest(method="POST", url="https://node0.test:8043/").prepare(),
+        )
+        pools = session._get_connection_manager("https://node0.test:8043/", proxy_url)
+        current = {
+            host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
+        }
+        pools.connection_from_url("https://retired.test:8043/")
+        for host, pool in current.items():
+            assert pools.connection_from_url(f"https://{host}:8043/") is pool
+        with pytest.raises(LocationParseError):
+            pools.connection_from_url("https://[broken:8043/")
     finally:
         close_client(owner)
 
@@ -162,6 +197,111 @@ def test_current_pools_survive_concurrent_retired_destinations(proxy: bool) -> N
         assert not any(pool in current.values() for pool in disposed)
     finally:
         ready.abort()
+        close_client(owner)
+
+
+@pytest.mark.parametrize("proxy", [False, True])
+def test_waiting_lookup_preserves_replacement_topology_pools(
+    monkeypatch: pytest.MonkeyPatch, proxy: bool
+) -> None:
+    """A waiting miss uses snapshots published before it acquires the cache lock."""
+    old_nodes = [f"old{n}.test" for n in range(11)]
+    new_nodes = [f"new{n}.test" for n in range(11)]
+    config = Config(seed_hosts=[old_nodes[0]], port=8043, scheme="https")
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(old_nodes[:5], ClusterScope())
+    manager._core.update_affinity_nodes(old_nodes[5:], ClusterScope())
+    owner: Any = _create_client_with_manager(config, manager, owns_manager=False)
+    session = owner._endpoint.http_session
+    proxy_url = "http://proxy.test:8080" if proxy else None
+    session._proxy_config = ProxyConfiguration(
+        {"https": proxy_url} if proxy_url else {}
+    )
+    owner.meta.events.emit(
+        "before-send.dynamodb.ListTables",
+        request=AWSRequest(method="POST", url="https://old10.test:8043/").prepare(),
+    )
+    pool_manager = session._get_connection_manager(
+        "https://old10.test:8043/", proxy_url
+    )
+    cache = pool_manager.pools
+    original_lock = cache.lock
+    waiting = Event()
+    resume = Event()
+    worker_id: int | None = None
+
+    def acquire() -> None:
+        if get_ident() == worker_id and not waiting.is_set():
+            waiting.set()
+            assert resume.wait(10)
+        original_lock.__enter__()
+
+    controlled_lock = MagicMock()
+    controlled_lock.__enter__.side_effect = acquire
+    controlled_lock.__exit__.side_effect = original_lock.__exit__
+    monkeypatch.setattr(cache, "lock", controlled_lock)
+
+    def visit_old_destination() -> None:
+        nonlocal worker_id
+        worker_id = get_ident()
+        pool_manager.connection_from_url("https://old10.test:8043/")
+
+    try:
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            pending = executor.submit(visit_old_destination)
+            try:
+                assert waiting.wait(10)
+                manager.set_fallback_nodes(new_nodes[:5], ClusterScope())
+                manager._core.update_affinity_nodes(new_nodes[5:], ClusterScope())
+                current = {
+                    host: pool_manager.connection_from_url(f"https://{host}:8043/")
+                    for host in [*new_nodes, old_nodes[0]]
+                }
+            finally:
+                resume.set()
+            pending.result(timeout=10)
+        for host, pool in current.items():
+            assert pool_manager.connection_from_url(f"https://{host}:8043/") is pool
+    finally:
+        resume.set()
+        close_client(owner)
+
+
+def test_proxy_setup_errors_preserve_sdk_mapping_and_standard_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Proxy construction stays inside the SDK's error handling and retry loop."""
+    config = Config(
+        seed_hosts=["node.test"],
+        port=8043,
+        scheme="https",
+        retries=RetryConfig(max_attempts=2, mode=RetryMode.STANDARD),
+    )
+    manager = SyncLiveNodesManager(config, lambda _: [])
+    manager.set_fallback_nodes(["node.test"], ClusterScope())
+    owner: Any = _create_client_with_manager(config, manager, owns_manager=False)
+    session = owner._endpoint.http_session
+    session._proxy_config = ProxyConfiguration({"https": "http://proxy.test:99999"})
+    observed: list[tuple[int, Exception | None]] = []
+
+    def observe_retry(
+        attempts: int, caught_exception: Exception | None, **kwargs: object
+    ) -> None:
+        observed.append((attempts, caught_exception))
+
+    owner.meta.events.register_last("needs-retry.dynamodb.ListTables", observe_retry)
+    sleep = MagicMock()
+    monkeypatch.setattr("botocore.endpoint.time.sleep", sleep)
+    try:
+        with pytest.raises(HTTPClientError) as error:
+            owner.list_tables()
+        assert isinstance(error.value.kwargs["error"], LocationParseError)
+        assert [attempt for attempt, _ in observed] == list(
+            range(1, config.retries.max_attempts + 1)
+        )
+        assert all(isinstance(error, HTTPClientError) for _, error in observed)
+        assert sleep.call_count == config.retries.max_attempts - 1
+    finally:
         close_client(owner)
 
 

@@ -8,7 +8,6 @@ from __future__ import annotations
 from threading import Lock
 from typing import TYPE_CHECKING, Any, cast
 
-from botocore.awsrequest import AWSPreparedRequest
 from botocore.httpsession import URLLib3Session
 from urllib3 import PoolManager
 from urllib3.connectionpool import HTTPConnectionPool
@@ -41,6 +40,7 @@ def configure_sync_connection_pools(
     if not isinstance(session, URLLib3Session):
         return
     transport = cast(Any, session)
+    original_proxy_manager = transport._get_proxy_manager
     lock = Lock()
     configured: set[PoolManager] = set()
 
@@ -53,12 +53,13 @@ def configure_sync_connection_pools(
         def lookup(
             pool_key: PoolKey, request_context: dict[str, Any]
         ) -> HTTPConnectionPool:
-            # Capture snapshots before taking the SDK lock; topology updates
-            # need no dependency on the transport's cache.
-            ordinary = manager.nodes.nodes
-            affinity = manager.affinity_nodes.nodes
             with pools.lock:
                 if pools.get(pool_key) is None:
+                    # Read snapshots after acquiring the cache lock so a
+                    # waiting lookup cannot promote an obsolete topology over
+                    # current pools inserted while it waited.
+                    ordinary = manager.nodes.nodes
+                    affinity = manager.affinity_nodes.nodes
                     hosts = set(config.seed_hosts)
                     hosts.update(ordinary)
                     hosts.update(affinity)
@@ -84,18 +85,20 @@ def configure_sync_connection_pools(
                     # and insertion share its reentrant cache lock.
                     for key in pools.keys():  # noqa: SIM118 -- urllib3's cache disallows iteration
                         if key.key_host in normalized:
-                            pools[key]
+                            pools.get(key)
                 return original_lookup(pool_key, request_context)
 
         cast(Any, pool_manager).connection_from_pool_key = lookup
         configured.add(pool_manager)
 
-    def prepare_manager(request: AWSPreparedRequest, **kwargs: object) -> None:
-        # Serialize lazy proxy creation before send() can use the manager.
-        # Network I/O runs after this callback, outside the lock.
+    def get_proxy_manager(proxy_url: str) -> PoolManager:
+        # Serialize lazy proxy creation inside the SDK send path so its
+        # exception mapping and retry handling still apply. Network I/O
+        # runs after this getter, outside the lock.
         with lock:
-            proxy_url = transport._proxy_config.proxy_url_for(request.url)
-            configure_manager(transport._get_connection_manager(request.url, proxy_url))
+            pool_manager: PoolManager = original_proxy_manager(proxy_url)
+            configure_manager(pool_manager)
+            return pool_manager
 
     configure_manager(transport._manager)
-    client.meta.events.register_first("before-send.dynamodb.*", prepare_manager)
+    transport._get_proxy_manager = get_proxy_manager
