@@ -30,6 +30,7 @@ from botocore.config import Config as BotoConfig
 
 from alternator._constants import MANAGER_ATTR, MANAGER_OWNS_ATTR, PK_CACHE_ATTR
 from alternator._http import create_ssl_context, create_sync_http_fetcher
+from alternator._sync_sdk import configure_sync_connection_pools
 from alternator.config import Config, KeyRouteAffinityMode, build_sdk_config_kwargs
 from alternator.core.auth import apply_auth
 from alternator.core.handlers import _register_alternator_handlers
@@ -257,6 +258,7 @@ def _create_client_with_manager(
         **boto_kwargs,
     )
 
+    configure_sync_connection_pools(client, manager, config)
     skip_sdk_header_hooks(client, user_agent)
 
     # Register all handlers
@@ -446,6 +448,7 @@ def _create_resource_with_manager(
         **boto_kwargs,
     )
 
+    configure_sync_connection_pools(resource.meta.client, manager, config)
     skip_sdk_header_hooks(resource.meta.client, user_agent)
 
     # Register all handlers
