@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -30,6 +32,28 @@ def core_evidence(directory: Path, source: Path) -> None:
     provenance.write_bytes(b'{"synthetic_vendor_source": true}\n')
     artifact = directory / "core.whl"
     artifact.write_bytes(b"synthetic core test artifact")
+    if not (source / "native/Cargo.toml").exists():
+        source_fixture(source)
+    (source / "native/build.rs").write_text("// synthetic build fixture")
+    context_path = directory / "startup-context.json"
+    context_path.write_bytes(
+        ci.canonical(
+            {
+                "schema": 1,
+                "kind": "normal-linux-wheel-startup",
+                "wheel_sha256": ci.digest(artifact),
+                "source_files": {
+                    name: ci.digest(source / "native" / name)
+                    for name in (
+                        "Cargo.toml",
+                        "Cargo.lock",
+                        "build.rs",
+                        "pyproject.toml",
+                    )
+                },
+            }
+        )
+    )
     reports = {}
     root = ElementTree.Element("testsuites")
     for suite, (_, count) in ci.CORE_SUITES.items():
@@ -60,6 +84,7 @@ def core_evidence(directory: Path, source: Path) -> None:
         "vendor_provenance_sha256": ci.digest(provenance),
         "tests": reports,
         "native_tests": ci.pytest_report(path),
+        "startup_context_sha256": ci.digest(context_path),
     }
     (directory / "core.json").write_bytes(ci.canonical(receipt))
 
@@ -105,7 +130,7 @@ def cell(directory: Path, python: str, platform: str, source: Path) -> Path:
         "slot": f"cp{python.replace('.', '')}/{platform}",
         **build,
         "version": VERSION,
-        "base_sha256": "b" * 64,
+        "base_sha256": hashlib.sha256(b"base fixture").hexdigest(),
         **dict.fromkeys(ci.CHECKS, True),
     }
     (path / "build.json").write_bytes(ci.canonical(build))
@@ -130,6 +155,9 @@ class EvidenceTests(unittest.TestCase):
         self.source = Path(source.name)
         core_evidence(self.core, self.source)
         source_fixture(self.source)
+        self.base = self.source / "base"
+        self.base.mkdir()
+        (self.base / "base.whl").write_bytes(b"base fixture")
         self.cells = [
             cell(self.directory, python, platform, self.source)
             for python in ci.PYTHONS
@@ -138,7 +166,7 @@ class EvidenceTests(unittest.TestCase):
 
     def aggregate(self) -> dict:
         return ci.aggregate(
-            self.directory, COMMIT, RUN_ID, NEEDS, self.core, self.source
+            self.directory, COMMIT, RUN_ID, NEEDS, self.core, self.source, self.base
         )
 
     def edit(self, file: str, **changes: object) -> None:
@@ -192,6 +220,7 @@ class EvidenceTests(unittest.TestCase):
                             needs,
                             self.core,
                             self.source,
+                            self.base,
                         )
 
     def test_missing_job_fails(self) -> None:
@@ -203,12 +232,21 @@ class EvidenceTests(unittest.TestCase):
                 {"core": NEEDS["core"]},
                 self.core,
                 self.source,
+                self.base,
             )
 
     def test_wrong_head_or_run_fails(self) -> None:
         for commit, run in (("c" * 40, RUN_ID), (COMMIT, "different-run")):
             with self.assertRaisesRegex(ValueError, "source/run"):
-                ci.aggregate(self.directory, commit, run, NEEDS, self.core, self.source)
+                ci.aggregate(
+                    self.directory,
+                    commit,
+                    run,
+                    NEEDS,
+                    self.core,
+                    self.source,
+                    self.base,
+                )
 
     def test_incomplete_smoke_fails(self) -> None:
         for check in ci.CHECKS:
@@ -231,6 +269,11 @@ class EvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "digest mismatch"):
             self.aggregate()
 
+    def test_changed_retained_base_wheel_fails_even_when_receipts_agree(self) -> None:
+        (self.base / "base.whl").write_bytes(b"substituted base wheel")
+        with self.assertRaisesRegex(ValueError, "different base"):
+            self.aggregate()
+
     def test_inconsistent_base_wheel_fails(self) -> None:
         self.edit("install.json", base_sha256="c" * 64)
         self.edit("provenance.json", base_sha256="c" * 64)
@@ -246,13 +289,12 @@ class EvidenceTests(unittest.TestCase):
             base_sha256="c" * 64,
             cargo_lock_sha256="d" * 64,
             native_pyproject_sha256="e" * 64,
-            cargo_metadata={},
             installed_environment={},
         )
         with self.assertRaisesRegex(ValueError, "provenance"):
             self.aggregate()
 
-    def test_cells_must_agree_on_workflow_identity_and_portable_features(self) -> None:
+    def test_cells_must_agree_on_workflow_identity(self) -> None:
         path = self.cells[0] / "provenance.json"
         original = path.read_bytes()
         value = json.loads(original)
@@ -260,22 +302,84 @@ class EvidenceTests(unittest.TestCase):
         path.write_bytes(ci.canonical(value))
         with self.assertRaises(ValueError):
             self.aggregate()
-        value = json.loads(original)
-        metadata = value["cargo_metadata"]
-        package = next(item for item in metadata["packages"] if item["name"] == "tokio")
-        package["features"]["different"] = []
-        node = next(
-            item for item in metadata["resolve"]["nodes"] if item["id"] == package["id"]
-        )
-        node["features"].append("different")
-        path.write_bytes(ci.canonical(value))
-        with self.assertRaisesRegex(ValueError, "features"):
-            self.aggregate()
 
     def test_mismatched_provenance_fails(self) -> None:
         self.edit("provenance.json", build={})
         with self.assertRaisesRegex(ValueError, "provenance digest"):
             self.aggregate()
+
+
+class RecordTests(unittest.TestCase):
+    def test_receipts_bind_unchanged_tested_wheels_and_keep_diagnostic_metadata(
+        self,
+    ) -> None:
+        self.record()
+
+    def test_replacing_either_wheel_during_tests_cannot_receive_a_receipt(self) -> None:
+        for changed in ("native", "base"):
+            with self.subTest(changed=changed):
+                self.record(changed)
+
+    def record(self, changed: str | None = None) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_fixture(root)
+            wheels = root / "wheels"
+            wheels.mkdir()
+            artifact = wheel(wheels, "3.10", "manylinux_2_28_x86_64")
+            base = root / "base"
+            base.mkdir()
+            base_wheel = base / "base.whl"
+            base_wheel.write_bytes(b"base fixture")
+            info = root / "info"
+            info.mkdir()
+            (info / "rustc.txt").write_text("test compiler")
+            (info / "maturin.txt").write_text("maturin 1.15.0")
+            metadata = b'{"diagnostic": "retained without a graph contract"}'
+            (info / "cargo-metadata.json").write_bytes(metadata)
+            output = root / "output"
+            args = argparse.Namespace(
+                root=root,
+                commit=COMMIT,
+                run_id=RUN_ID,
+                wheels=wheels,
+                base=base,
+                python="3.10",
+                platform="manylinux_2_28_x86_64",
+                target="x86_64-unknown-linux-gnu",
+                build_info=info,
+                output=output,
+            )
+            expected = ci.digest(artifact), ci.digest(base_wheel)
+
+            def smoke(*args: object) -> dict:
+                if changed:
+                    path = artifact if changed == "native" else base_wheel
+                    with path.open("ab") as stream:
+                        stream.write(b"substituted during test execution")
+                return {"checks": dict.fromkeys(ci.CHECKS, True), "environment": {}}
+
+            with (
+                patch.object(ci, "check_source"),
+                patch.object(ci, "smoke", side_effect=smoke),
+            ):
+                if changed:
+                    with self.assertRaisesRegex(ValueError, "changed during"):
+                        ci.record(args)
+                    self.assertFalse((output / "build.json").exists())
+                else:
+                    ci.record(args)
+                    build = json.loads((output / "build.json").read_bytes())
+                    install = json.loads((output / "install.json").read_bytes())
+                    self.assertEqual(
+                        (build["sha256"], install["base_sha256"]), expected
+                    )
+                    self.assertEqual(
+                        (output / "cargo-metadata.json").read_bytes(), metadata
+                    )
+                    provenance = json.loads((output / "provenance.json").read_bytes())
+                    self.assertEqual(provenance["schema"], 2)
+                    self.assertNotIn("cargo_metadata", provenance)
 
 
 class WheelAndIsolationTests(unittest.TestCase):

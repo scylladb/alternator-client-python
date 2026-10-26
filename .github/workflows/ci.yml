@@ -16,6 +16,7 @@ jobs:
       attestations: write
     with:
       source-commit: ${{ github.event.pull_request.head.sha || github.sha }}
+      attest: ${{ github.event_name == 'push' }}
 
   lint:
     name: Lint

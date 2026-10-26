@@ -62,6 +62,16 @@ mod linux {
             .unwrap_or("4".into())
             .parse()
             .unwrap();
+        // Upstream's full Tokio features enable process-wide signal globals.
+        // Warm only a local current-thread driver before the resource baseline;
+        // no worker is spawned and the first multi-thread build remains faulted.
+        drop(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+        assert_eq!(threads(), 1, "local driver prewarm must not spawn workers");
         let initial_fds = fds();
         let builds = AtomicUsize::new(0);
         let cache = OnceLock::new();

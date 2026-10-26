@@ -36,10 +36,11 @@ builds and inspects it before core qualification. The environment installs that
 base wheel with async dependencies, the exact native wheel, pytest and the async
 plugin. It copies only the shared `tests` fixture package into the environment;
 production base/extension imports must resolve under that environment, with no
-checkout production path. This lets later operation/facade cases join the 53
-required baseline probes without collection errors or skipped async cases. This
-developer check retains Rust and requires `cc`, `cargo`, `rustc`, and Linux `/proc`
-before it can start. The C compiler builds a child-local thread-creation fault
+checkout production path. It collects the complete native suite, including
+client lifecycle cases, so later operation/facade cases can join without
+collection errors or skipped async cases. This developer check retains Rust and
+requires `cc`, `cargo`, `rustc`, and Linux `/proc` before it can start. The C
+compiler builds a child-local thread-creation fault
 interposer; package installation itself does not invoke or require that compiler.
 The installed-wheel probes fail startup at the first, middle and last worker,
 check stable cached sync/async failures and absence of leaked threads/file
@@ -52,9 +53,10 @@ Tokio source and one Cargo Tokio identity using the native toolchain directory.
 Every collected native test must pass: missing cases, skips, duplicate cases,
 errors and failures invalidate the JUnit proof even if pytest exits zero. Future
 native test files are included by directory collection. The core job retains
-`core.json`, the original core wheel and the complete `native.xml` report, bound
-to the source SHA, original run, wheel hash and vendor provenance hash. This is
-separate from all 20 package cells, which still install with Rust absent on PATH.
+`core.json`, `startup-context.json`, the original core wheel and the complete
+`native.xml` report, bound to the source SHA, original run, wheel/context hashes
+and vendor provenance hash. This is separate from all 20 package cells, which
+still install with Rust absent on PATH.
 
 ## Reusable workflow inputs
 
@@ -70,13 +72,12 @@ separate from all 20 package cells, which still install with Rust absent on PATH
   The release caller must first authenticate the publisher signature and verify
   the deterministic prepared history against its pinned baseline using reviewed
   release tooling. There is no arbitrary run or repository download input.
-- `attest` defaults to false for pull requests. A trusted caller can enable
-  GitHub build attestations for each wheel and its JSON/checksum evidence. It
-  also attests the core qualification wheel, `core.json` and `native.xml` so
-  release callers can authenticate core proof against its source/original run.
-  The caller must grant `contents: read`, `id-token: write` and `attestations: write` to the
-  workflow call. There are no signing secrets, publishing credentials or
-  protected signing environments in any native build/install job.
+- `attest` defaults to false for pull requests. Ordinary CI enables it for
+  pushes to main/master. The final matrix job signs only after the core and all
+  20 wheel cells succeed and their retained bytes pass aggregation. Build and
+  test jobs have no OIDC signing permission. The caller must grant
+  `contents: read`, `id-token: write` and `attestations: write` to the workflow
+  call. No native job has publishing credentials or long-lived signing secrets.
 
 The `${artifact-prefix}-core` artifact and required aggregate argument
 `--core-evidence DIRECTORY` are part of the P10/P11 integration seam. Those
@@ -89,13 +90,12 @@ twenty-first native release wheel.
 ## Evidence and qualification stages
 
 Each cell artifact contains its original wheel, `SHA256SUMS`, `build.json`,
-`install.json`, and `provenance.json`. Build receipts use the coordinated release
-shape: `filename`, `sha256`, `commit`, and original Actions `run_id` (all strings).
-Provenance also records the Rust compiler, maturin, Rust target, complete enabled
-Cargo dependency metadata/revisions, lock and project metadata hashes, base wheel
-hash, installed Python/dependency versions, workflow identity, run attempt, runner
-architecture and OS. Mac deployment
-targets are preserved in the wheel filename and WHEEL metadata.
+`install.json`, `provenance.json`, and diagnostic `cargo-metadata.json`. Build
+receipts use the coordinated release shape: `filename`, `sha256`, `commit`, and original Actions `run_id` (all strings).
+Provenance also records the Rust compiler, maturin, Rust target, lock and project
+metadata hashes, base wheel hash, installed Python/dependency versions, workflow
+identity, run attempt, runner architecture and OS. Mac deployment targets are
+preserved in the wheel filename and WHEEL metadata.
 
 The `Native matrix complete` gate runs with `always()` and requires successful
 core and matrix job conclusions, core wheel/report proof for this source/run, and
@@ -118,13 +118,13 @@ these JSON receipts alone are not cryptographic proof of provenance.
 
 ## Provenance validation contract
 
-`source_provenance()` reads the verified checkout's native project, Cargo
-manifest/lock and toolchain, plus base dependencies, using standard-library TOML.
+`read_build_pins()` reads the verified checkout's native project, lock hash
+and toolchain, plus base dependencies, using standard-library TOML.
 Aggregation therefore needs Python 3.11+, as pinned in the reusable workflow.
 The source/build/install commands still support Python 3.10+. Validation does
 not compile code, run Cargo, import installed packages or fetch dependencies.
 
-`validate_provenance()` requires exactly the version-1 fields emitted by
+`validate_provenance()` requires exactly the version-2 fields emitted by
 `record()`. Schema, interface stage, build receipt, slot and version must match
 the installation and pinned source; target/runner must match that cell. Compiler
 release/host and maturin must match source pins. The lock and project hashes
@@ -132,14 +132,12 @@ must match exact source-derived bytes: LF on Linux/macOS, or LF/checkout-CRLF on
 Windows. Other hashes are rejected. Windows newline conversion is not permission
 to accept a regenerated lock or edited project metadata.
 
-Cargo metadata must contain every locked package identity (name/version/source),
-the complete locked dependency edges, one native root and workspace, and all
-enabled maturin/native/direct dependency features. Collect full
-`cargo metadata --locked --features extension --format-version 1`, without
-`--no-deps` or platform filtering. Opaque Cargo IDs join references only within
-their own document; absolute paths and target directories are never compared
-across OSes. Portable enabled features and workflow/repository identity must
-agree across cells. Each receipt retains a positive attempt number; successful
+Cargo performs dependency and feature resolution using the committed manifest,
+lockfile and pinned dependencies. CI retains the actual `cargo metadata --locked
+--features extension --format-version 1` output as a diagnostic artifact; it does
+not maintain a second expected dependency graph or compare feature unions across
+platforms. There is no committed dependency-graph JSON or graph-contract generator
+or validator. Each receipt retains a positive attempt number; successful
 prior-attempt cells remain valid during unchanged-head failed-job reruns because
 the original source/run is bound through the build receipt.
 
@@ -149,17 +147,29 @@ dependencies satisfying the source's numeric `>=` bounds. Empty, duplicate or
 contradictory evidence fails. This captures additional installed dependency
 versions without pretending those versions are locked by the native Cargo lock.
 
-Later installation/release adapters must keep `source_provenance()`,
-`validate_provenance()` and the aggregate cross-cell checks authoritative when
-extending `record()` or the installation schema. A new stage/schema or field
-requires an explicit validator update and complete negative/positive evidence;
-do not bypass validation or discard contradictory fields. If future Cargo lock
-files include inactive optional graph branches, derive the expected enabled
-graph explicitly from the verified source rather than silently accepting an
-arbitrary subset. New base requirement forms likewise need deliberate support.
-Recovery callers must bind original workflow identity using authenticated
-attestations, not substitute an unrelated current workflow. The core proof,
-all 20 cell checks and cryptographic provenance requirements still apply.
+The `record` command hashes native and base wheels before installing them and
+rejects changes during testing. Aggregation additionally requires `--base DIRECTORY`
+and hashes the retained base wheel, rather than merely comparing receipts with
+each other. It rehashes every retained native wheel and binds the successful
+installation evidence to its original source/run and digest.
+
+After aggregation succeeds, trusted builds attest the original native and base
+wheels, receipts, core proof, diagnostic metadata and `native-summary.json`
+together. The summary records the successful matrix, source commit, original run
+and wheel hashes. The final job uses `gh attestation verify` with the action's
+returned bundle, expected repository, signer workflow, workflow source SHA/ref
+and hosted-runner requirement. The completion artifact retains both the summary
+and `native-attestation.sigstore.json` for later verification.
+
+Release consumers must download the same wheel artifacts and verify the bundle
+again before publication, checking the trusted workflow/repository/source and the
+intended build commit/run in the signed summary. Prepared source bundles can have
+a build commit different from the workflow's commit; authenticate both rather
+than treating one as the other. Never rebuild or repackage the tested wheel for
+publication. A changed wheel requires fresh testing and signing. A build signature
+alone is not test evidence: require the signed successful summary and original
+core/install evidence. This interface stage remains `release_qualified: false`
+until the later native-request, extras and integration requirements are met.
 
 Run credential-free utility checks with:
 
@@ -173,3 +183,16 @@ tags, metadata inconsistencies, wrong source/run/base, bundle identity and actua
 subprocess PATH/import isolation. They also reject missing core prerequisites,
 skipped or altered test reports, absent startup cases and mismatched core wheel,
 source/run or vendor proof. Synthetic test wheels are never build evidence.
+
+## Source-bound Linux startup context
+
+The core job uses `native/tests/startup_context.py build` for its actual normal
+wheel and passes required `--startup-context` to `core-checks`. Collection passes
+that exact context/wheel to the installed native tests, keeps all native cases
+(including client lifecycle cases), and rejects every skip/error/failure. Core
+proof now retains `startup-context.json`, its SHA256 in `core.json`, and verifies
+its source-file/wheel binding during aggregation. Context is covered by the
+existing `core-evidence/*` artifact/attestation boundary. All 20 matrix cells,
+Rust-free install checks, source/run identity and final aggregate remain required.
+See `native/tests/STARTUP.md` for the independent signal ownership boundary,
+negative controls, controlled manifest-anchor update and qualification limits.
