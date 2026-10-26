@@ -59,12 +59,6 @@ def test_host_pools_survive_topology_growth(resource: bool, proxy: bool) -> None
             # Ordinary routing and affinity may use different snapshots.
             manager.set_fallback_nodes(nodes[:5], ClusterScope())
             manager._core.update_affinity_nodes(nodes[5:], ClusterScope())
-            client.meta.events.emit(
-                "before-send.dynamodb.ListTables",
-                request=AWSRequest(
-                    method="POST", url="https://node0.test:8043/"
-                ).prepare(),
-            )
             for host in ["seed.test", *nodes]:
                 pool = pool_manager.connection_from_url(f"https://{host}:8043")
                 if host in known_pools:
@@ -92,10 +86,6 @@ def test_unselected_malformed_host_preserves_valid_pools(proxy: bool) -> None:
         {"https": proxy_url} if proxy_url else {}
     )
     try:
-        owner.meta.events.emit(
-            "before-send.dynamodb.ListTables",
-            request=AWSRequest(method="POST", url="https://node0.test:8043/").prepare(),
-        )
         pools = session._get_connection_manager("https://node0.test:8043/", proxy_url)
         current = {
             host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
@@ -156,8 +146,8 @@ def test_selected_destination_survives_topology_handoff(
 @pytest.mark.parametrize("proxy", [False, True])
 def test_current_pools_survive_concurrent_retired_destinations(proxy: bool) -> None:
     """Retired plans cannot evict normalized ordinary/affinity host pools."""
-    nodes = ["Node0.test", "[2001:DB8::1]", "bücher.test"]
-    nodes.extend(f"node{n}.test" for n in range(3, 11))
+    nodes = ["[fe80::1%Eth0]", "Node0.test", "[2001:DB8::1]", "bücher.test"]
+    nodes.extend(f"node{n}.test" for n in range(4, 11))
     config = Config(seed_hosts=[nodes[0]], port=8043, scheme="https")
     manager = SyncLiveNodesManager(config, lambda _: [])
     manager.set_fallback_nodes(nodes[:5], ClusterScope())
@@ -167,10 +157,6 @@ def test_current_pools_survive_concurrent_retired_destinations(proxy: bool) -> N
     proxy_url = "http://proxy.test:8080" if proxy else None
     session._proxy_config = ProxyConfiguration(
         {"https": proxy_url} if proxy_url else {}
-    )
-    owner.meta.events.emit(
-        "before-send.dynamodb.ListTables",
-        request=AWSRequest(method="POST", url="https://node0.test:8043/").prepare(),
     )
     pools = session._get_connection_manager("https://node0.test:8043/", proxy_url)
     current = {
@@ -216,10 +202,6 @@ def test_waiting_lookup_preserves_replacement_topology_pools(
     proxy_url = "http://proxy.test:8080" if proxy else None
     session._proxy_config = ProxyConfiguration(
         {"https": proxy_url} if proxy_url else {}
-    )
-    owner.meta.events.emit(
-        "before-send.dynamodb.ListTables",
-        request=AWSRequest(method="POST", url="https://old10.test:8043/").prepare(),
     )
     pool_manager = session._get_connection_manager(
         "https://old10.test:8043/", proxy_url

@@ -66,11 +66,12 @@ def configure_sync_connection_pools(
                     normalized = set()
                     for host in hosts:
                         try:
-                            normalized.add(
-                                parse_url(
-                                    f"{config.scheme}://{_format_host_port(host, config.port)}"
-                                ).host
-                            )
+                            parsed_host = parse_url(
+                                f"{config.scheme}://{_format_host_port(host, config.port)}"
+                            ).host
+                            if parsed_host is not None:
+                                # Pool keys lowercase even IPv6 zone identifiers.
+                                normalized.add(parsed_host.lower())
                         except LocationParseError:
                             # An unrelated malformed discovery host must not
                             # make a valid request fail. The SDK validates the
