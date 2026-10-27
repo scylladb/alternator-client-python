@@ -140,8 +140,10 @@ checks passed. This update replaces target main's Rust baseline
 range integrates awaitable discovery shutdown, separates discovery ownership
 from node views, and updates rack-affinity/query-plan routing. It retains the
 separate discovery deadlines and classifies invalid discovery timeouts as
-discovery configuration errors. Qualification covers this complete change in
-discovery, cancellation and routing behavior.
+discovery configuration errors. Qualification here covers configuration,
+discovery deadlines, cancellation and shutdown. It does not establish the full
+affinity/query-plan request-routing contract, which remains part of later
+data-operation qualification.
 
 For future pin updates, verify the actual Rust merge and successful main CI,
 then update both the dependency revision and baseline metadata plus the final
