@@ -135,11 +135,13 @@ or release qualification.
 ## Controlled merged pin update
 
 Rust #158 merged at `d2044849bd3b0c100d18541b01df4a1a1eac3139`; its main
-checks passed. This update replaces the provisional
-`ba67c57790053e44be59796374f5cc1763869883` pin. The merged production delta
-classifies invalid discovery timeouts as discovery configuration errors; its
-remaining changes document the timeout and correct paused-time test scheduling.
-Discovery ownership, cancellation and routing paths remain unchanged.
+checks passed. This update replaces target main's Rust baseline
+`549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1` with that merged revision. The full
+range integrates awaitable discovery shutdown, separates discovery ownership
+from node views, and updates rack-affinity/query-plan routing. It retains the
+separate discovery deadlines and classifies invalid discovery timeouts as
+discovery configuration errors. Qualification covers this complete change in
+discovery, cancellation and routing behavior.
 
 For future pin updates, verify the actual Rust merge and successful main CI,
 then update both the dependency revision and baseline metadata plus the final
