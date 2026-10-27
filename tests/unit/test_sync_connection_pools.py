@@ -110,30 +110,30 @@ def test_selected_destination_survives_topology_handoff(
     manager.set_fallback_nodes(nodes, ClusterScope())
     factory = _create_resource_with_manager if resource else _create_client_with_manager
     owner: Any = factory(config, manager, owns_manager=False)
-    client = owner.meta.client if resource else owner
-    session = client._endpoint.http_session
-    session._proxy_config = ProxyConfiguration({})
-    pools = session._manager
-    known_pools = {
-        host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
-    }
-    retired = "retired0.test"
-
-    def replace_topology(request: AWSRequest, **kwargs: object) -> None:
-        assert urlsplit(request.url).hostname == retired
-        manager.set_fallback_nodes(nodes, ClusterScope())
-
-    def respond(
-        self: HTTPSConnectionPool, method: str, url: str, **kwargs: object
-    ) -> HTTPResponse:
-        assert self.host == retired
-        return HTTPResponse(
-            body=BytesIO(b'{"TableNames": []}'), status=200, preload_content=False
-        )
-
-    client.meta.events.register_last("request-created.dynamodb.*", replace_topology)
-    monkeypatch.setattr(HTTPSConnectionPool, "urlopen", respond)
     try:
+        client = owner.meta.client if resource else owner
+        session = client._endpoint.http_session
+        session._proxy_config = ProxyConfiguration({})
+        pools = session._manager
+        known_pools = {
+            host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
+        }
+        retired = "retired0.test"
+
+        def replace_topology(request: AWSRequest, **kwargs: object) -> None:
+            assert urlsplit(request.url).hostname == retired
+            manager.set_fallback_nodes(nodes, ClusterScope())
+
+        def respond(
+            self: HTTPSConnectionPool, method: str, url: str, **kwargs: object
+        ) -> HTTPResponse:
+            assert self.host == retired
+            return HTTPResponse(
+                body=BytesIO(b'{"TableNames": []}'), status=200, preload_content=False
+            )
+
+        client.meta.events.register_last("request-created.dynamodb.*", replace_topology)
+        monkeypatch.setattr(HTTPSConnectionPool, "urlopen", respond)
         for retired in ("retired0.test", "retired1.test", "retired2.test"):
             manager.set_fallback_nodes([retired], ClusterScope())
             assert client.list_tables()["TableNames"] == []
@@ -153,36 +153,42 @@ def test_current_pools_survive_concurrent_retired_destinations(proxy: bool) -> N
     manager.set_fallback_nodes(nodes[:5], ClusterScope())
     manager._core.update_affinity_nodes(nodes[5:], ClusterScope())
     owner: Any = _create_client_with_manager(config, manager, owns_manager=False)
-    session = owner._endpoint.http_session
-    proxy_url = "http://proxy.test:8080" if proxy else None
-    session._proxy_config = ProxyConfiguration(
-        {"https": proxy_url} if proxy_url else {}
-    )
-    pools = session._get_connection_manager("https://node0.test:8043/", proxy_url)
-    current = {
-        host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
-    }
-    disposed: list[Any] = []
-    pools.pools.dispose_func = disposed.append
-    ready = Barrier(12, timeout=10)
-
-    def visit(index: int) -> None:
-        ready.wait()
-        for attempt in range(4):
-            pools.connection_from_url(f"https://retired{index}-{attempt}.test:8043/")
-            host = nodes[index % len(nodes)]
-            assert pools.connection_from_url(f"https://{host}:8043/") is current[host]
-
     try:
-        with ThreadPoolExecutor(max_workers=12) as executor:
-            list(executor.map(visit, range(12)))
-        for host, pool in current.items():
-            assert pools.connection_from_url(f"https://{host}:8043/") is pool
-        assert len(pools.pools) == len(nodes) + 1
-        assert disposed
-        assert not any(pool in current.values() for pool in disposed)
+        session = owner._endpoint.http_session
+        proxy_url = "http://proxy.test:8080" if proxy else None
+        session._proxy_config = ProxyConfiguration(
+            {"https": proxy_url} if proxy_url else {}
+        )
+        pools = session._get_connection_manager("https://node0.test:8043/", proxy_url)
+        current = {
+            host: pools.connection_from_url(f"https://{host}:8043/") for host in nodes
+        }
+        disposed: list[Any] = []
+        pools.pools.dispose_func = disposed.append
+        ready = Barrier(12, timeout=10)
+
+        def visit(index: int) -> None:
+            ready.wait()
+            for attempt in range(4):
+                pools.connection_from_url(
+                    f"https://retired{index}-{attempt}.test:8043/"
+                )
+                host = nodes[index % len(nodes)]
+                assert (
+                    pools.connection_from_url(f"https://{host}:8043/") is current[host]
+                )
+
+        try:
+            with ThreadPoolExecutor(max_workers=12) as executor:
+                list(executor.map(visit, range(12)))
+            for host, pool in current.items():
+                assert pools.connection_from_url(f"https://{host}:8043/") is pool
+            assert len(pools.pools) == len(nodes) + 1
+            assert disposed
+            assert not any(pool in current.values() for pool in disposed)
+        finally:
+            ready.abort()
     finally:
-        ready.abort()
         close_client(owner)
 
 
@@ -198,54 +204,56 @@ def test_waiting_lookup_preserves_replacement_topology_pools(
     manager.set_fallback_nodes(old_nodes[:5], ClusterScope())
     manager._core.update_affinity_nodes(old_nodes[5:], ClusterScope())
     owner: Any = _create_client_with_manager(config, manager, owns_manager=False)
-    session = owner._endpoint.http_session
-    proxy_url = "http://proxy.test:8080" if proxy else None
-    session._proxy_config = ProxyConfiguration(
-        {"https": proxy_url} if proxy_url else {}
-    )
-    pool_manager = session._get_connection_manager(
-        "https://old10.test:8043/", proxy_url
-    )
-    cache = pool_manager.pools
-    original_lock = cache.lock
-    waiting = Event()
-    resume = Event()
-    worker_id: int | None = None
-
-    def acquire() -> None:
-        if get_ident() == worker_id and not waiting.is_set():
-            waiting.set()
-            assert resume.wait(10)
-        original_lock.__enter__()
-
-    controlled_lock = MagicMock()
-    controlled_lock.__enter__.side_effect = acquire
-    controlled_lock.__exit__.side_effect = original_lock.__exit__
-    monkeypatch.setattr(cache, "lock", controlled_lock)
-
-    def visit_old_destination() -> None:
-        nonlocal worker_id
-        worker_id = get_ident()
-        pool_manager.connection_from_url("https://old10.test:8043/")
-
     try:
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            pending = executor.submit(visit_old_destination)
-            try:
-                assert waiting.wait(10)
-                manager.set_fallback_nodes(new_nodes[:5], ClusterScope())
-                manager._core.update_affinity_nodes(new_nodes[5:], ClusterScope())
-                current = {
-                    host: pool_manager.connection_from_url(f"https://{host}:8043/")
-                    for host in [*new_nodes, old_nodes[0]]
-                }
-            finally:
-                resume.set()
-            pending.result(timeout=10)
-        for host, pool in current.items():
-            assert pool_manager.connection_from_url(f"https://{host}:8043/") is pool
+        session = owner._endpoint.http_session
+        proxy_url = "http://proxy.test:8080" if proxy else None
+        session._proxy_config = ProxyConfiguration(
+            {"https": proxy_url} if proxy_url else {}
+        )
+        pool_manager = session._get_connection_manager(
+            "https://old10.test:8043/", proxy_url
+        )
+        cache = pool_manager.pools
+        original_lock = cache.lock
+        waiting = Event()
+        resume = Event()
+        worker_id: int | None = None
+
+        def acquire() -> None:
+            if get_ident() == worker_id and not waiting.is_set():
+                waiting.set()
+                assert resume.wait(10)
+            original_lock.__enter__()
+
+        controlled_lock = MagicMock()
+        controlled_lock.__enter__.side_effect = acquire
+        controlled_lock.__exit__.side_effect = original_lock.__exit__
+        monkeypatch.setattr(cache, "lock", controlled_lock)
+
+        def visit_old_destination() -> None:
+            nonlocal worker_id
+            worker_id = get_ident()
+            pool_manager.connection_from_url("https://old10.test:8043/")
+
+        try:
+            with ThreadPoolExecutor(max_workers=1) as executor:
+                pending = executor.submit(visit_old_destination)
+                try:
+                    assert waiting.wait(10)
+                    manager.set_fallback_nodes(new_nodes[:5], ClusterScope())
+                    manager._core.update_affinity_nodes(new_nodes[5:], ClusterScope())
+                    current = {
+                        host: pool_manager.connection_from_url(f"https://{host}:8043/")
+                        for host in [*new_nodes, old_nodes[0]]
+                    }
+                finally:
+                    resume.set()
+                pending.result(timeout=10)
+            for host, pool in current.items():
+                assert pool_manager.connection_from_url(f"https://{host}:8043/") is pool
+        finally:
+            resume.set()
     finally:
-        resume.set()
         close_client(owner)
 
 
