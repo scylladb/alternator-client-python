@@ -88,6 +88,16 @@ Merged-pin qualification receipts remain at `stage: interface` with
 operations remain staged for later issues. Python APIs, native
 interface/configuration schema 1 and all package versions remain unchanged.
 
+Service-error JSON projection uses the already-locked SDK tokenizer and a small
+Serde byte-string adapter, declared directly as `aws-smithy-json` 0.63.1 and
+`serde_core` 1.0.229. Validated bodies are traversed once with container state
+proportional to active depth; the selected canonical message may be projected
+once more for independent ownership. Exact numeric tokens and native Python
+Unicode construction retain unknown payload values, including lone surrogates.
+This manifest renewal changes no resolved package versions, dependency features
+or audited signal ownership. Its renewed P4 anchor requires fresh normal-wheel
+startup qualification as described in [tests/STARTUP.md](tests/STARTUP.md).
+
 ## Converter checks
 
 The converter uses checked-in Rust generated from the compatibility manifest and

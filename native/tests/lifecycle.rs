@@ -1713,6 +1713,24 @@ fn modeled_error_projection_retains_sdk_parsing_categories() {
                 Some("FutureError"),
                 true,
             ),
+            (
+                r#"{"__type":"ResourceNotFoundException","future":"\ud800"}"#.to_owned(),
+                Some("ResourceNotFoundException"),
+                Some("ResourceNotFoundException"),
+                false,
+            ),
+            (
+                r#"{"__type":"ResourceNotFoundException","future":"\udc00"}"#.to_owned(),
+                Some("ResourceNotFoundException"),
+                Some("ResourceNotFoundException"),
+                false,
+            ),
+            (
+                r#"{"__type":"ResourceNotFoundException","future":{"\ud800":"\udc00"}}"#.to_owned(),
+                Some("ResourceNotFoundException"),
+                Some("ResourceNotFoundException"),
+                false,
+            ),
             (r#"{"broken":"#.to_owned(), Some("400"), None, false),
             ("proxy failure".to_owned(), Some("400"), None, false),
         ] {
@@ -1755,12 +1773,21 @@ fn modeled_error_projection_retains_sdk_parsing_categories() {
                         value.getattr("body").unwrap().extract::<Vec<u8>>().unwrap(),
                         body.as_bytes()
                     );
-                    if expected == "ResourceNotFoundException" {
+                    if expected == "ResourceNotFoundException" && body.contains("[[[") {
                         let mut value = response.get_item("future").unwrap();
                         for _ in 0..512 {
                             value = value.get_item(0).unwrap();
                         }
                         assert_eq!(value.extract::<i32>().unwrap(), 0);
+                    } else if expected == "ResourceNotFoundException" {
+                        let expected = py
+                            .import("json")
+                            .unwrap()
+                            .call_method1("loads", (&body,))
+                            .unwrap()
+                            .get_item("future")
+                            .unwrap();
+                        assert!(response.get_item("future").unwrap().eq(expected).unwrap());
                     }
                     if body == "proxy failure" || body == r#"{"broken":"# {
                         assert_eq!(

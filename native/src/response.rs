@@ -217,40 +217,140 @@ fn scalar_to_python<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, P
     })
 }
 
-fn json_to_python<'py>(py: Python<'py>, raw: &RawValue) -> PyResult<Bound<'py, PyAny>> {
-    let root = PyList::new(py, [py.None()])?;
-    let mut pending = vec![(
-        raw,
-        root.clone().into_any(),
-        0usize.into_pyobject(py)?.into_any(),
-    )];
-    // RawValue validates/skips nested JSON iteratively. Parse one shallow
-    // container at a time and build Python containers without recursive Rust
-    // parsing, projection or Value destruction. Nested branches are rescanned.
-    while let Some((raw, parent, key)) = pending.pop() {
-        let value = match raw.get().as_bytes()[0] {
-            b'{' => {
-                let values: std::collections::BTreeMap<String, &RawValue> =
-                    serde_json::from_str(raw.get()).map_err(failure)?;
-                let result = PyDict::new(py).into_any();
-                for (key, value) in values.into_iter().rev() {
-                    pending.push((value, result.clone(), key.into_pyobject(py)?.into_any()));
-                }
-                result
-            }
-            b'[' => {
-                let values: Vec<&RawValue> = serde_json::from_str(raw.get()).map_err(failure)?;
-                let result = PyList::new(py, (0..values.len()).map(|_| py.None()))?.into_any();
-                for (index, value) in values.into_iter().enumerate() {
-                    pending.push((value, result.clone(), index.into_pyobject(py)?.into_any()));
-                }
-                result
-            }
-            _ => scalar_to_python(py, serde_json::from_str(raw.get()).map_err(failure)?)?,
-        };
-        parent.set_item(key, value)?;
+// Serde's byte-string visitor preserves escaped lone UTF-16 surrogates as
+// WTF-8. Construct Python Unicode without a Rust String or Python JSON call.
+fn json_string<'py>(py: Python<'py>, quoted: &[u8]) -> PyResult<Bound<'py, PyString>> {
+    struct StringVisitor<'py>(Python<'py>);
+    impl<'de, 'py> serde_core::de::Visitor<'de> for StringVisitor<'py> {
+        type Value = PyResult<Bound<'py, PyString>>;
+        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            formatter.write_str("a JSON string")
+        }
+        fn visit_bytes<E: serde_core::de::Error>(self, value: &[u8]) -> Result<Self::Value, E> {
+            Ok(PyString::from_encoded_object(
+                PyBytes::new(self.0, value).as_any(),
+                Some(c"utf-8"),
+                Some(c"surrogatepass"),
+            ))
+        }
     }
-    root.get_item(0)
+    use serde_core::de::Deserializer;
+    serde_json::Deserializer::from_slice(quoted)
+        .deserialize_bytes(StringVisitor(py))
+        .map_err(failure)?
+}
+
+fn json_to_python<'py, 'body>(
+    py: Python<'py>,
+    body: &'body [u8],
+) -> PyResult<(Bound<'py, PyAny>, Option<&'body [u8]>)> {
+    use aws_smithy_json::deserialize::{
+        json_token_iter, token::expect_number_as_string_or_null, Token,
+    };
+    enum Frame<'py> {
+        Object(Bound<'py, PyDict>, Option<Bound<'py, PyString>>),
+        Array(Bound<'py, PyList>),
+    }
+    let mut frames = Vec::new();
+    let mut root = None;
+    let mut message_start = None;
+    let mut message_spans = [None, None];
+    // The caller validated the root RawValue. SDK tokens advance once through
+    // its bytes; frames retain only active containers and one pending key.
+    for token in json_token_iter(body) {
+        let token = token.map_err(failure)?;
+        let start = token.offset().0;
+        let (value, frame, end) = match token {
+            Token::ObjectKey { key, .. } => {
+                let quoted = &body[start..start + key.as_escaped_str().len() + 2];
+                if let Some(Frame::Object(_, pending)) = frames.last_mut() {
+                    *pending = Some(json_string(py, quoted)?);
+                }
+                continue;
+            }
+            Token::EndObject { .. } | Token::EndArray { .. } => {
+                if frames.len() == 2 {
+                    if let Some((index, begin)) = message_start.take() {
+                        message_spans[index] = Some((begin, start + 1));
+                    }
+                }
+                frames
+                    .pop()
+                    .ok_or_else(|| failure("unmatched JSON container"))?;
+                continue;
+            }
+            Token::StartObject { .. } => {
+                let value = PyDict::new(py);
+                (
+                    value.clone().into_any(),
+                    Some(Frame::Object(value, None)),
+                    start + 1,
+                )
+            }
+            Token::StartArray { .. } => {
+                let value = PyList::empty(py);
+                (
+                    value.clone().into_any(),
+                    Some(Frame::Array(value)),
+                    start + 1,
+                )
+            }
+            Token::ValueString { value, .. } => {
+                let end = start + value.as_escaped_str().len() + 2;
+                (json_string(py, &body[start..end])?.into_any(), None, end)
+            }
+            token @ Token::ValueNumber { .. } => {
+                let raw = expect_number_as_string_or_null(Some(Ok(token)), body)
+                    .map_err(failure)?
+                    .ok_or_else(|| failure("expected a JSON number"))?;
+                (
+                    scalar_to_python(py, serde_json::from_str(raw).map_err(failure)?)?,
+                    None,
+                    start + raw.len(),
+                )
+            }
+            Token::ValueBool { value, .. } => (
+                value.into_pyobject(py)?.to_owned().into_any(),
+                None,
+                start + if value { 4 } else { 5 },
+            ),
+            Token::ValueNull { .. } => (py.None().into_bound(py), None, start + 4),
+        };
+        let top_level = frames.len() == 1;
+        match frames.last_mut() {
+            Some(Frame::Object(object, pending)) => {
+                let key = pending
+                    .take()
+                    .ok_or_else(|| failure("missing JSON object key"))?;
+                if top_level {
+                    let index = if key.as_any().eq("message")? {
+                        Some(0)
+                    } else if key.as_any().eq("Message")? {
+                        Some(1)
+                    } else {
+                        None
+                    };
+                    if let Some(index) = index {
+                        if frame.is_some() {
+                            message_start = Some((index, start));
+                        } else {
+                            message_spans[index] = Some((start, end));
+                        }
+                    }
+                }
+                object.set_item(key, &value)?;
+            }
+            Some(Frame::Array(array)) => array.append(&value)?,
+            None => root = Some(value),
+        }
+        if let Some(frame) = frame {
+            frames.push(frame);
+        }
+    }
+    let message = message_spans[0]
+        .or(message_spans[1])
+        .map(|(start, end)| &body[start..end]);
+    Ok((root.ok_or_else(|| failure("missing JSON value"))?, message))
 }
 
 fn decode_attribute(value: &Bound<'_, PyAny>, depth: usize) -> PyResult<()> {
@@ -352,9 +452,8 @@ pub(crate) fn service_error_with_protocol_failure(
         .unwrap_or(decoded.len());
     let generic = attempt.status >= 500
         && (start == decoded.len() || decoded[start..].starts_with(b"<html>"));
-    let mut body_message = None;
-    let result = if generic {
-        PyDict::new(py)
+    let (result, body_message) = if generic {
+        (PyDict::new(py), None)
     } else {
         match serde_json::from_slice::<&RawValue>(&decoded) {
             Ok(body) if body.get().starts_with('{') => {
@@ -363,20 +462,15 @@ pub(crate) fn service_error_with_protocol_failure(
                 if let Some(message) = protocol_failure {
                     return Ok(failure(message));
                 }
-                let fields: HashMap<String, &RawValue> =
-                    serde_json::from_str(body.get()).map_err(failure)?;
-                body_message = fields
-                    .get("message")
-                    .or_else(|| fields.get("Message"))
-                    .copied();
-                json_to_python(py, body)?.cast_into::<PyDict>()?
+                let (result, message) = json_to_python(py, body.get().as_bytes())?;
+                (result.cast_into::<PyDict>()?, message)
             }
             Err(_) if !decoded.is_empty() => {
                 let result = PyDict::new(py);
                 result.set_item("message", std::str::from_utf8(&decoded).map_err(failure)?)?;
-                result
+                (result, None)
             }
-            _ => PyDict::new(py),
+            _ => (PyDict::new(py), None),
         }
     };
     let header_code = attempt
@@ -424,7 +518,7 @@ pub(crate) fn service_error_with_protocol_failure(
         } else if let Some(message) = body_message {
             // Preserve the separate owned projection of the canonical message,
             // including container-valued messages on unknown service errors.
-            json_to_python(py, message)?
+            json_to_python(py, message)?.0
         } else {
             match result.get_item("message")?.or(result.get_item("Message")?) {
                 Some(message) => message,
@@ -463,14 +557,12 @@ pub(crate) fn service_error_with_protocol_failure(
         for (key, value) in payload.iter() {
             // Reserve optional genuine fields even when absent. HTTPHeaders
             // always comes from the transport and is never merged with the body.
-            if !matches!(
-                key.extract::<String>()?.as_str(),
-                "HTTPStatusCode"
-                    | "HTTPHeaders"
-                    | "RequestId"
-                    | "RetryAttempts"
-                    | "MaxAttemptsReached"
-            ) {
+            if !(key.eq("HTTPStatusCode")?
+                || key.eq("HTTPHeaders")?
+                || key.eq("RequestId")?
+                || key.eq("RetryAttempts")?
+                || key.eq("MaxAttemptsReached")?)
+            {
                 response_metadata.set_item(key, value)?;
             }
         }

@@ -172,7 +172,23 @@ source, independent signal ownership anchors and expected single global socket
 pair are unchanged. Build a fresh normal-wheel context and repeat the
 installed-wheel startup controls for this manifest/source. The combined native
 manifest SHA256 is
-`29143cc288cdabd766ba085498d0643ab97bedf4566e2a5f40f92339932718f5`. This
+`0996b3f4a5fdf0899fc85a848e36d959013dd3e37e4bd1b1c15a7e553bdb7732`. This
 conversion renewal requires its own combined-source wheel evidence; the
 merged-pin host artifacts above do not qualify the combined source or complete
 platform matrix.
+
+## Selected error-reader manifest renewal
+
+Error projection now declares the already-locked `aws-smithy-json` 0.63.1 and
+`serde_core` 1.0.229 directly. Only the native root lock entry changes; package
+versions, dependency features, upstream Rust identity and the patched Tokio
+identity remain unchanged. The P4 anchor above binds this exact combined
+manifest. Separate minimal/upstream and signal ownership anchors remain intact.
+
+A validated error body is traversed through the SDK tokenizer with temporary
+container state proportional to active depth. Exact numeric spans and the
+shared Serde byte-string visitor preserve numeric and Python Unicode semantics,
+including lone surrogates. Root message selection retains raw spans; at most
+one additional projection makes its canonical containers independently owned.
+This requires fresh ordinary-wheel/context and installed startup qualification;
+the earlier conversion and merged-pin artifacts do not qualify this source.

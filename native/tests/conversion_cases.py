@@ -474,6 +474,60 @@ for depth, opening, closing in ((128, b"[", b"]"), (511, b'{"x":', b"}")):
         assert value == {"integer": 2**64 + 1, "float": float("inf")}
     assert error.body == body
 
+# Shared native string decoding retains Python JSON Unicode semantics for
+# escaped keys and values, including isolated UTF-16 code units.
+for text in ("\ud800", "\udc00", "\ud800x", "\ud83d\ude00", "😀é", '\\"/\b\f\n\r\t\x00'):
+    body = json.dumps({
+        "__type": "ResourceNotFoundException", "future": {text: [text]},
+        "Error": {text: [text]}, "ResponseMetadata": {text: [text]},
+    }).encode()
+    decoded = json.loads(body)
+    expected = decoded["future"]
+    error = native.service("GetItem", 400, body, [], 1)
+    assert error.response["future"] == expected
+    for key, value in expected.items():
+        assert error.response["Error"][key] == value
+        assert error.response["ResponseMetadata"][key] == value
+    assert error.body == body
+
+body = json.dumps(
+    {"__type": "ResourceNotFoundException", "future": {"é": ["😀", "é"]}},
+    ensure_ascii=False,
+).encode()
+error = native.service("GetItem", 400, body, [], 1)
+assert error.response["future"] == {"é": ["😀", "é"]}
+assert error.body == body
+
+# Duplicate keys retain their last value. Lowercase message still wins over
+# uppercase Message, even when the selected value is null or uses escaped keys.
+for body, expected in (
+    (b'{"__type":"Old","code":"A","code":"B","__type":"Final","message":{"x":[1]},"message":null,"Message":{"x":[2]}}', None),
+    (b'{"__type":"Final","Message":{"old":[1]},"Message":{"last":[2]}}', {"last": [2]}),
+    (br'{"__type":"Final","m\u0065ssage":{"lower":[3]},"Message":{"upper":[4]}}', {"lower": [3]}),
+):
+    error = native.service("GetItem", 400, body, [], 1)
+    assert error.response["Error"] == {"Code": "Final", "Message": expected}
+    if expected is not None:
+        source = error.response.get("message", error.response.get("Message"))
+        next(iter(source.values())).append(99)
+        assert error.response["Error"]["Message"] == expected
+
+# These bounded shapes distinguish order/last-key behavior without a wide
+# temporary sibling queue. The source proof checks depth-only traversal state.
+values = [None, False, 2**80, {"x": ["é", 1.25]}] * 1024
+payload = {"__type": "FutureError", "future": values, "wide": {str(i): i for i in range(4096)}}
+body = json.dumps(payload).encode()
+error = native.service("GetItem", 400, body, [], 1)
+assert error.response["future"] == values
+assert error.response["wide"] == payload["wide"]
+leaf = "x" * 4096
+body = b'{"__type":"FutureError","future":' + b'[' * 512 + json.dumps(leaf).encode() + b']' * 512 + b'}'
+error = native.service("GetItem", 400, body, [], 1)
+value = error.response["future"]
+for _ in range(512):
+    value = value[0]
+assert value == leaf
+
 # Reserved envelopes preserve unrelated dictionary fields shallowly while
 # genuine identity, HTTP and retry fields (including absences) stay authoritative.
 payload = {
