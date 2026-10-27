@@ -27,9 +27,11 @@ import sys
 import threading
 import time
 import urllib.request
-from collections.abc import Awaitable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Protocol, cast, runtime_checkable
 from urllib.parse import urlsplit
+
+from alternator._sync_http_pool import SyncConnectionPool
 
 if TYPE_CHECKING:
     import aiohttp
@@ -63,6 +65,7 @@ def _parse_localnodes(data: str) -> list[str]:
 
 
 def _create_connection_with_deadline(
+    owner: http.client.HTTPConnection,
     address: tuple[str, int],
     deadline: float,
     source_address: tuple[str, int] | None = None,
@@ -70,11 +73,13 @@ def _create_connection_with_deadline(
     """Connect to one resolved address within a shared request deadline."""
     host, port = address
     addresses = socket.getaddrinfo(host, port, 0, socket.SOCK_STREAM)
+    _check_sync_request_cancelled()
     last_error: OSError | None = None
 
     for index, (family, socktype, proto, _, sockaddr) in enumerate(addresses):
         connection: socket.socket | None = None
         try:
+            _check_sync_request_cancelled()
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 raise TimeoutError("discovery request timed out")
@@ -84,6 +89,9 @@ def _create_connection_with_deadline(
             # the time needed to try all later DNS answers.
             candidates_left = len(addresses) - index
             connection = socket.socket(family, socktype, proto)
+            # Let the active pool lease interrupt this candidate during connect.
+            owner.sock = connection
+            _check_sync_request_cancelled()
             connection.settimeout(remaining / candidates_left)
             if source_address is not None:
                 connection.bind(source_address)
@@ -93,15 +101,23 @@ def _create_connection_with_deadline(
             if remaining <= 0:
                 raise TimeoutError("discovery request timed out")
             connection.settimeout(remaining)
+            _check_sync_request_cancelled()
             return connection
         except OSError as error:
             last_error = error
             if connection is not None:
                 connection.close()
+                owner.sock = None
 
     if last_error is not None:
         raise last_error
     raise OSError("getaddrinfo returns an empty list")
+
+
+def _check_sync_request_cancelled() -> None:
+    cancelled = getattr(_sync_request_state, "cancelled", None)
+    if cancelled is not None and cancelled.is_set():
+        raise OSError("discovery request was closed")
 
 
 class _DeadlineHTTPConnection(http.client.HTTPConnection):
@@ -111,10 +127,16 @@ class _DeadlineHTTPConnection(http.client.HTTPConnection):
         deadline = cast(float, _sync_request_state.__dict__["deadline"])
         sys.audit("http.client.connect", self, self.host, self.port)
         self.sock = _create_connection_with_deadline(
+            self,
             (self.host, self.port),
             deadline,
             self.source_address,  # type: ignore[attr-defined]
         )
+        try:
+            _check_sync_request_cancelled()
+        except OSError:
+            self.close()
+            raise
         if self._tunnel_host:  # type: ignore[attr-defined]
             self._tunnel()  # type: ignore[attr-defined]
 
@@ -127,21 +149,48 @@ class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
         server_hostname = self._tunnel_host or self.host  # type: ignore[attr-defined]
         sys.audit("http.client.connect", self, self.host, self.port)
         self.sock = _create_connection_with_deadline(
+            self,
             (self.host, self.port),
             deadline,
             self.source_address,  # type: ignore[attr-defined]
         )
+        try:
+            _check_sync_request_cancelled()
+        except OSError:
+            self.close()
+            raise
         if self._tunnel_host:  # type: ignore[attr-defined]
             self._tunnel()  # type: ignore[attr-defined]
         context = cast(ssl.SSLContext, self.__dict__["_context"])
-        self.sock = context.wrap_socket(self.sock, server_hostname=server_hostname)
+        try:
+            self.sock = context.wrap_socket(
+                self.sock,
+                server_hostname=server_hostname,
+                do_handshake_on_connect=False,
+            )
+            _check_sync_request_cancelled()
+            self.sock.do_handshake()
+            _check_sync_request_cancelled()
+        except OSError:
+            self.close()
+            raise
 
 
 class _DeadlineHTTPHandler(urllib.request.HTTPHandler):
     """urllib HTTP handler whose connections share one request deadline."""
 
+    def __init__(self, pool: SyncConnectionPool) -> None:
+        super().__init__()
+        self._pool = pool
+
     def http_open(self, request: urllib.request.Request) -> http.client.HTTPResponse:
-        return self.do_open(_DeadlineHTTPConnection, request)
+        return self._pool.open(
+            "http",
+            request,
+            lambda timeout: _DeadlineHTTPConnection(request.host, timeout=timeout),
+            _sync_request_state.deadline,
+            _sync_request_state.cancelled,
+        )
 
 
 class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
@@ -150,15 +199,21 @@ class _DeadlineHTTPSHandler(urllib.request.HTTPSHandler):
     def __init__(
         self,
         ssl_context: ssl.SSLContext | None,
+        pool: SyncConnectionPool,
     ) -> None:
         super().__init__(context=ssl_context)
         self._ssl_context = ssl_context
+        self._pool = pool
 
     def https_open(self, request: urllib.request.Request) -> http.client.HTTPResponse:
-        return self.do_open(
-            _DeadlineHTTPSConnection,
+        return self._pool.open(
+            "https",
             request,
-            context=self._ssl_context,
+            lambda timeout: _DeadlineHTTPSConnection(
+                request.host, timeout=timeout, context=self._ssl_context
+            ),
+            _sync_request_state.deadline,
+            _sync_request_state.cancelled,
         )
 
 
@@ -196,10 +251,31 @@ class AsyncHttpFetcher(Protocol):
         ...
 
 
+class SyncNodeFetcher:
+    """Callable discovery fetcher with explicit ownership of pooled connections."""
+
+    def __init__(
+        self, fetch: Callable[[str], Sequence[str]], pool: SyncConnectionPool
+    ) -> None:
+        self._fetch = fetch
+        self._pool = pool
+
+    def __call__(self, url: str) -> Sequence[str]:
+        return self._fetch(url)
+
+    def close(self) -> None:
+        """Cancel outstanding fetches and close active and idle connections."""
+        self._pool.close()
+
+    def reopen(self) -> None:
+        """Allow a stopped manager to start a fresh discovery lifecycle."""
+        self._pool.reopen()
+
+
 def create_sync_http_fetcher(
     ssl_context: ssl.SSLContext | None = None,
     timeout_seconds: float = 5.0,
-) -> SyncHttpFetcher:
+) -> SyncNodeFetcher:
     """
     Create a synchronous HTTP fetcher for /localnodes endpoint.
 
@@ -213,24 +289,29 @@ def create_sync_http_fetcher(
 
     timed_out_workers: dict[tuple[str, str | None, int | None], set[object]] = {}
     active_origins_lock = threading.Lock()
+    pool = SyncConnectionPool()
 
-    def fetch_nodes_unbounded(url: str, deadline: float) -> Sequence[str]:
+    def fetch_nodes_unbounded(
+        url: str, deadline: float, cancelled: threading.Event
+    ) -> Sequence[str]:
         """Fetch nodes while the caller enforces the total timeout."""
         try:
             request = urllib.request.Request(url)
             request.add_header("Accept", "application/json")
             opener = urllib.request.build_opener(
-                _DeadlineHTTPHandler(),
-                _DeadlineHTTPSHandler(ssl_context),
+                _DeadlineHTTPHandler(pool),
+                _DeadlineHTTPSHandler(ssl_context, pool),
             )
 
             _sync_request_state.deadline = deadline
+            _sync_request_state.cancelled = cancelled
             try:
                 with opener.open(request, timeout=timeout_seconds) as response:
                     data = response.read().decode("utf-8")
                     return _parse_localnodes(data)
             finally:
                 del _sync_request_state.deadline
+                del _sync_request_state.cancelled
         except (urllib.error.URLError, json.JSONDecodeError, OSError, ValueError) as e:
             logger.debug(
                 "Failed to fetch nodes from %s: %s",
@@ -265,12 +346,10 @@ def create_sync_http_fetcher(
 
         done = threading.Event()
         result: list[Sequence[str]] = []
-        worker_token = object()
-        deadline = time.monotonic() + timeout_seconds
 
         def run_fetch() -> None:
             try:
-                result.append(fetch_nodes_unbounded(url, deadline))
+                result.append(fetch_nodes_unbounded(url, deadline, worker_token))
             except Exception as e:
                 logger.debug(
                     "Failed to fetch nodes from %s: %s",
@@ -284,6 +363,7 @@ def create_sync_http_fetcher(
                 )
                 result.append([])
             finally:
+                pool.finish(worker_token)
                 with active_origins_lock:
                     done.set()
                     workers = timed_out_workers.get(origin)
@@ -292,27 +372,46 @@ def create_sync_http_fetcher(
                         if not workers:
                             timed_out_workers.pop(origin, None)
 
-        worker = threading.Thread(
-            target=run_fetch,
-            daemon=True,
-            name="alternator-node-fetch",
-        )
+        worker_token = pool.begin()
+        worker_started = False
         try:
-            worker.start()
-        except RuntimeError as e:
-            logger.debug(
-                "Failed to start discovery request for %s: %s",
-                url,
-                e,
-                extra={"event": "sync_node_fetch_failed", "url": url, "error": str(e)},
+            if worker_token.is_set():
+                return []
+            deadline = time.monotonic() + timeout_seconds
+            worker = threading.Thread(
+                target=run_fetch,
+                daemon=True,
+                name="alternator-node-fetch",
             )
-            return []
+            try:
+                worker.start()
+            except RuntimeError as e:
+                logger.debug(
+                    "Failed to start discovery request for %s: %s",
+                    url,
+                    e,
+                    extra={
+                        "event": "sync_node_fetch_failed",
+                        "url": url,
+                        "error": str(e),
+                    },
+                )
+                return []
+            worker_started = True
+        finally:
+            if not worker_started:
+                try:
+                    # start() can raise after creating the underlying thread.
+                    pool.cancel(worker_token)
+                finally:
+                    pool.finish(worker_token)
 
         if not done.wait(timeout=max(0.0, deadline - time.monotonic())):
             with active_origins_lock:
                 if done.is_set():
                     return result[0] if result else []
                 timed_out_workers.setdefault(origin, set()).add(worker_token)
+            pool.cancel(worker_token)
             logger.debug(
                 "Timed out fetching nodes from %s",
                 url,
@@ -321,7 +420,7 @@ def create_sync_http_fetcher(
             return []
         return result[0] if result else []
 
-    return fetch_nodes
+    return SyncNodeFetcher(fetch_nodes, pool)
 
 
 def create_ssl_context(tls_config: TLS) -> ssl.SSLContext:

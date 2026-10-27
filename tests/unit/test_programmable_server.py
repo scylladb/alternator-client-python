@@ -33,7 +33,8 @@ from urllib.parse import urlsplit
 import pytest
 
 from alternator import Config
-from alternator._http import create_sync_http_fetcher
+from alternator._http import create_ssl_context, create_sync_http_fetcher
+from alternator.config import TLS
 from alternator.core.live_nodes import SyncLiveNodesManager
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
@@ -648,6 +649,45 @@ def test_mutual_tls_requires_client_certificate(
             assert post(connection, "GetItem", {}) == (200, {})
         assert len(server.captured_requests()) == 1
     finally:
+        server.stop()
+
+
+@pytest.mark.parametrize("mutual", [False, True])
+def test_sync_discovery_reuses_verified_tls_connection(
+    tls_material: tuple[Path, Path], mutual: bool
+) -> None:
+    cert, key = tls_material
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    context.load_cert_chain(cert, key)
+    if mutual:
+        context.load_verify_locations(cafile=str(cert))
+        context.verify_mode = ssl.CERT_REQUIRED
+    server = FakeAlternatorServer()
+    server.set_localnodes(["127.0.0.1"])
+    server.start(ssl_context=context)
+    tls = TLS(
+        custom_ca_cert_paths=[cert],
+        trust_system_ca_certs=False,
+        client_cert_path=cert if mutual else None,
+        client_key_path=key if mutual else None,
+    )
+    fetcher = create_sync_http_fetcher(create_ssl_context(tls), timeout_seconds=2)
+    port = urlsplit(server.url()).port
+    try:
+        # A trusted CA must not permit the wrong hostname, even with pooling.
+        assert list(fetcher(server.url("/localnodes"))) == []
+        for _ in range(2):
+            assert list(fetcher(f"https://localhost:{port}/localnodes")) == [
+                "127.0.0.1"
+            ]
+        requests = server.captured_requests()
+        assert len(requests) == 2
+        assert len({request.connection_id for request in requests}) == 1
+        fetcher.close()
+        with server._condition:
+            assert server._condition.wait_for(lambda: not server._sockets, timeout=2)
+    finally:
+        fetcher.close()
         server.stop()
 
 
