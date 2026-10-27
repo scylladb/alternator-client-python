@@ -141,19 +141,26 @@ def _create_manager(
         ssl_context, timeout_seconds=config.timeouts.discovery_seconds
     )
 
-    # Create and start live nodes manager
-    manager = SyncLiveNodesManager(config, http_fetcher)
+    try:
+        manager = SyncLiveNodesManager(config, http_fetcher)
 
-    # Perform initial node fetch (blocking)
-    if initial_refresh and not manager.refresh_nodes():
-        from alternator.core.routing_scope import (
-            ClusterScope,
-            scope_chain_includes_cluster,
-        )
+        # Perform initial node fetch (blocking)
+        if initial_refresh and not manager.refresh_nodes():
+            from alternator.core.routing_scope import (
+                ClusterScope,
+                scope_chain_includes_cluster,
+            )
 
-        if scope_chain_includes_cluster(config.routing_scope):
-            logger.warning("Initial node discovery failed, using seed hosts")
-            manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
+            if scope_chain_includes_cluster(config.routing_scope):
+                logger.warning("Initial node discovery failed, using seed hosts")
+                manager.set_fallback_nodes(list(config.seed_hosts), ClusterScope())
+    except BaseException:
+        # Initial discovery can already have populated the connection pool.
+        from alternator._http import SyncNodeFetcher
+
+        if isinstance(http_fetcher, SyncNodeFetcher):
+            http_fetcher.close()
+        raise
 
     return manager
 
@@ -161,7 +168,11 @@ def _create_manager(
 def _create_and_start_manager(config: Config) -> SyncLiveNodesManager:
     """Create a manager and start its background refresh thread."""
     manager = _create_manager(config)
-    manager.start()
+    try:
+        manager.start()
+    except BaseException:
+        manager.stop()
+        raise
     return manager
 
 
@@ -328,7 +339,7 @@ def create_client(
             owns_manager=True,
             **boto_kwargs,
         )
-    except Exception:
+    except BaseException:
         manager.stop()
         _unregister_active_manager(manager)
         raise
@@ -413,7 +424,7 @@ def create_resource(
             owns_manager=True,
             **boto_kwargs,
         )
-    except Exception:
+    except BaseException:
         manager.stop()
         _unregister_active_manager(manager)
         raise

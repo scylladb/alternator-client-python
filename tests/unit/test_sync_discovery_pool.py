@@ -6,22 +6,29 @@
 from __future__ import annotations
 
 import http.client
+import importlib
 import io
 import socket
 import ssl
 import threading
 import time
+from collections.abc import Callable
 from email.message import Message
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 from unittest.mock import MagicMock, Mock
 from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import Request
 
 import pytest
 
-from alternator._http import create_sync_http_fetcher
+from alternator._http import SyncNodeFetcher, create_sync_http_fetcher
 from alternator._sync_http_pool import SyncConnectionPool
+from alternator.client import Helper, create_client
+from alternator.config import Config, KeyRouteAffinityConfig, KeyRouteAffinityMode
+from alternator.core.live_nodes import SyncLiveNodesManager
+from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
 
 
@@ -381,6 +388,414 @@ def test_sync_discovery_recovers_closed_connection(
         assert len({request.connection_id for request in requests}) == 2
     finally:
         fetcher.close()
+    assert_peer_closed(server)
+
+
+def test_sync_manager_closes_and_reopens_discovery_pool(
+    fake_alternator_server: FakeAlternatorServer,
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    fetcher = create_sync_http_fetcher(timeout_seconds=1)
+    manager = SyncLiveNodesManager(Config(seed_hosts=["127.0.0.1"], port=port), fetcher)
+    try:
+        assert manager.refresh_nodes()
+        assert manager.refresh_nodes()
+        assert (
+            len({request.connection_id for request in server.captured_requests()}) == 1
+        )
+        manager.stop()
+        assert_peer_closed(server)
+        assert list(fetcher(server.url("/localnodes"))) == []
+
+        manager.start()
+        server.wait_for_requests(3, path="/localnodes")
+    finally:
+        manager.stop()
+    assert_peer_closed(server)
+    assert len({request.connection_id for request in server.captured_requests()}) == 2
+
+
+@pytest.mark.parametrize("stage", ["initial", "thread", "sdk"])
+def test_sync_construction_failure_closes_discovery_pool(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    managers: list[SyncLiveNodesManager] = []
+    start_manager = SyncLiveNodesManager.start
+
+    def capture_start(manager: SyncLiveNodesManager) -> None:
+        managers.append(manager)
+        start_manager(manager)
+
+    monkeypatch.setattr(SyncLiveNodesManager, "start", capture_start)
+    if stage == "initial":
+        refresh = SyncLiveNodesManager.refresh_nodes
+
+        def fail_refresh(manager: SyncLiveNodesManager) -> bool:
+            assert refresh(manager)
+            raise RuntimeError("construction failed")
+
+        monkeypatch.setattr(SyncLiveNodesManager, "refresh_nodes", fail_refresh)
+    elif stage == "thread":
+        start = threading.Thread.start
+
+        def fail_start(thread: threading.Thread) -> None:
+            if thread.name == "alternator-node-refresh":
+                raise RuntimeError("construction failed")
+            start(thread)
+
+        monkeypatch.setattr(threading.Thread, "start", fail_start)
+    else:
+
+        def fail_sdk(*args: object, **kwargs: object) -> None:
+            raise RuntimeError("construction failed")
+
+        monkeypatch.setattr(
+            importlib.import_module("alternator.client").boto3, "client", fail_sdk
+        )
+    try:
+        with pytest.raises(RuntimeError, match="construction failed"):
+            create_client(Config(seed_hosts=["127.0.0.1"], port=port))
+        assert server.captured_requests(path="/localnodes")
+        assert_peer_closed(server)
+    finally:
+        for manager in managers:
+            manager.stop()
+
+
+@pytest.mark.parametrize("factory_name", ["client", "resource"])
+@pytest.mark.parametrize("interruption", [KeyboardInterrupt, SystemExit])
+def test_interrupted_sdk_factory_releases_owned_discovery(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_name: str,
+    interruption: type[BaseException],
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    module = importlib.import_module("alternator.client")
+    create_manager: Callable[[Config], SyncLiveNodesManager] = (
+        module._create_and_start_manager
+    )
+    managers: list[SyncLiveNodesManager] = []
+    threads: list[threading.Thread] = []
+
+    def capture_manager(config: Config) -> SyncLiveNodesManager:
+        manager = create_manager(config)
+        managers.append(manager)
+        assert manager._refresh_thread is not None
+        threads.append(manager._refresh_thread)
+        return manager
+
+    failure = interruption("SDK construction interrupted")
+    monkeypatch.setattr(module, "_create_and_start_manager", capture_manager)
+    monkeypatch.setattr(module.boto3, factory_name, Mock(side_effect=failure))
+    try:
+        with pytest.raises(interruption) as caught:
+            getattr(module, f"create_{factory_name}")(
+                Config(seed_hosts=["127.0.0.1"], port=port)
+            )
+        assert caught.value is failure
+        assert len(managers) == 1
+        manager = managers[0]
+        with server._condition:
+            peer_closed = server._condition.wait_for(
+                lambda: not server._sockets, timeout=2
+            )
+        thread_alive = threads[0].is_alive()
+        assert (peer_closed, thread_alive) == (True, False)
+        assert manager._refresh_thread is None
+        assert isinstance(manager._http_fetch, SyncNodeFetcher)
+        assert manager._http_fetch._pool._closed
+        assert not manager._http_fetch._pool._idle
+        assert id(manager) not in module._active_managers
+    finally:
+        for manager in managers:
+            manager.stop()
+
+
+@pytest.mark.parametrize("factory_name", ["client", "resource"])
+def test_interrupted_helper_sdk_creation_keeps_borrowed_manager(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+    factory_name: str,
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    helper = Helper(Config(seed_hosts=["127.0.0.1"], port=port))
+    try:
+        existing = helper.client()
+        manager = helper._manager
+        assert manager is not None
+        failure = KeyboardInterrupt("borrowed construction interrupted")
+        module = importlib.import_module("alternator.client")
+        monkeypatch.setattr(module.boto3, factory_name, Mock(side_effect=failure))
+        with pytest.raises(KeyboardInterrupt) as caught:
+            getattr(helper, factory_name)()
+        assert caught.value is failure
+        assert helper._manager is manager
+        assert helper._clients == [existing]
+        assert (
+            manager._refresh_thread is not None and manager._refresh_thread.is_alive()
+        )
+        assert helper.update_live_nodes()
+    finally:
+        helper.stop()
+    assert_peer_closed(server)
+
+
+@pytest.mark.parametrize("stage", ["construct", "start"])
+def test_helper_failed_start_closes_pool_and_allows_retry(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    helper = Helper(Config(seed_hosts=["127.0.0.1"], port=port))
+    try:
+        assert helper.update_live_nodes()
+        with monkeypatch.context() as fault:
+            target, name = (
+                (threading, "Thread")
+                if stage == "construct"
+                else (threading.Thread, "start")
+            )
+            fault.setattr(
+                target, name, Mock(side_effect=RuntimeError("startup failed"))
+            )
+            with pytest.raises(RuntimeError, match="startup failed"):
+                helper.start()
+        assert_peer_closed(server)
+        assert helper._manager is not None
+        assert helper._manager._refresh_thread is None
+        helper.start()
+        server.wait_for_requests(2, path="/localnodes")
+        assert helper.update_live_nodes()
+    finally:
+        helper.stop()
+    assert_peer_closed(server)
+
+
+@pytest.mark.parametrize("stage", ["ordinary", "affinity"])
+def test_stopping_background_discovery_preserves_snapshots_without_failure(
+    fake_alternator_server: FakeAlternatorServer,
+    caplog: pytest.LogCaptureFixture,
+    stage: str,
+) -> None:
+    server = fake_alternator_server
+    rack_path = "/localnodes?dc=dc1&rack=rack1"
+    dc_path = "/localnodes?dc=dc1"
+    server.set_json(rack_path, ["127.0.0.2"])
+    server.set_json(dc_path, ["127.0.0.2", "127.0.0.3"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    config = Config(
+        seed_hosts=["127.0.0.1"],
+        port=port,
+        routing_scope=RackScope(
+            "dc1", "rack1", fallback=DatacenterScope("dc2", fallback=ClusterScope())
+        ),
+        key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+    )
+    fetcher = create_sync_http_fetcher(timeout_seconds=2)
+    manager = SyncLiveNodesManager(config, fetcher)
+    entered, release = threading.Event(), threading.Event()
+    try:
+        assert manager.refresh_nodes()
+        ordinary, affinity = manager.nodes, manager.affinity_nodes
+        server.script_get(
+            rack_path if stage == "ordinary" else dc_path,
+            [
+                FakeAlternatorResponse.json(
+                    ["127.0.0.2"], entered=entered, release=release
+                )
+            ],
+        )
+        caplog.clear()
+        caplog.set_level("WARNING", logger="alternator")
+        manager.start()
+        assert entered.wait(timeout=1)
+        manager.stop()
+        assert manager._refresh_thread is None
+        assert manager.nodes == ordinary
+        assert manager.affinity_nodes == affinity
+        expected = [rack_path] if stage == "ordinary" else [rack_path, dc_path]
+        assert [r.path for r in server.captured_requests()][2:] == expected
+        assert not {
+            "scope_fallback",
+            "discovery_failed",
+            "affinity_discovery_failed",
+        }.intersection(getattr(record, "event", None) for record in caplog.records)
+    finally:
+        release.set()
+        manager.stop()
+    assert_peer_closed(server)
+
+
+def test_manual_failure_after_stop_keeps_failure_processing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    available = True
+    calls: list[str] = []
+
+    def fetch(url: str) -> list[str]:
+        calls.append(url)
+        if "rack=" in url:
+            return ["127.0.0.2"] if available else []
+        return ["127.0.0.2", "127.0.0.3"]
+
+    manager = SyncLiveNodesManager(
+        Config(
+            seed_hosts=["seed"],
+            port=8000,
+            routing_scope=RackScope("dc1", "rack1"),
+            key_affinity=KeyRouteAffinityConfig(mode=KeyRouteAffinityMode.RMW),
+        ),
+        fetch,
+    )
+    assert manager.refresh_nodes()
+    ordinary = manager.nodes
+    assert manager.affinity_nodes
+    manager.stop()
+    available = False
+    calls.clear()
+    caplog.clear()
+    assert manager.refresh_nodes() is False
+    assert manager.nodes == ordinary
+    assert not manager.affinity_nodes
+    assert calls == ["http://seed:8000/localnodes?dc=dc1&rack=rack1"]
+    events = {getattr(record, "event", None) for record in caplog.records}
+    assert {"scope_fallback", "discovery_failed"} <= events
+
+
+def test_older_stop_cannot_close_restarted_discovery_pool(
+    fake_alternator_server: FakeAlternatorServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    fetcher = create_sync_http_fetcher(timeout_seconds=1)
+    manager = SyncLiveNodesManager(Config(seed_hosts=["127.0.0.1"], port=port), fetcher)
+    closing, release, attempted = (
+        threading.Event(),
+        threading.Event(),
+        threading.Event(),
+    )
+    close = fetcher.close
+    lifecycle_lock = manager._lifecycle_lock
+    admissions: list[bool] = []
+
+    def delayed_close() -> None:
+        closing.set()
+        assert release.wait(timeout=2)
+        close()
+
+    monkeypatch.setattr(fetcher, "close", delayed_close)
+    stopping = threading.Thread(target=manager.stop)
+    starting = threading.Thread(target=manager.start)
+
+    class ObservedLock:
+        def __enter__(self) -> None:
+            acquired = lifecycle_lock.acquire(blocking=False)
+            if threading.current_thread() is starting:
+                admissions.append(acquired)
+                attempted.set()
+            if not acquired:
+                lifecycle_lock.acquire()
+
+        def __exit__(
+            self, exc_type: object, exc_value: object, traceback: object
+        ) -> None:
+            lifecycle_lock.release()
+
+    monkeypatch.setattr(manager, "_lifecycle_lock", ObservedLock())
+    try:
+        assert manager.refresh_nodes()
+        stopping.start()
+        assert closing.wait(timeout=1)
+        starting.start()
+        assert attempted.wait(timeout=1)
+        # Start must attempt admission while close still owns the lifecycle lock.
+        assert admissions == [False]
+        release.set()
+        stopping.join(timeout=2)
+        starting.join(timeout=2)
+        assert not stopping.is_alive() and not starting.is_alive()
+        assert manager.refresh_nodes()
+    finally:
+        release.set()
+        try:
+            if stopping.ident is not None:
+                stopping.join(timeout=2)
+            if starting.ident is not None:
+                starting.join(timeout=2)
+        finally:
+            manager.stop()
+    assert_peer_closed(server)
+
+
+def test_start_during_stop_join_restores_manual_discovery(
+    fake_alternator_server: FakeAlternatorServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    fetcher = create_sync_http_fetcher(timeout_seconds=1)
+    manager = SyncLiveNodesManager(Config(seed_hosts=["127.0.0.1"], port=port), fetcher)
+    joining, release = threading.Event(), threading.Event()
+    refresh_loop = manager._refresh_loop
+
+    def delayed_exit(stop: threading.Event, wake: threading.Event) -> None:
+        refresh_loop(stop, wake)
+        assert release.wait(timeout=2)
+
+    monkeypatch.setattr(manager, "_refresh_loop", delayed_exit)
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        manager.start()
+        server.wait_for_requests(1, path="/localnodes")
+        old_thread = manager._refresh_thread
+        assert old_thread is not None
+        join = old_thread.join
+
+        def observed_join(timeout: float | None = None) -> None:
+            joining.set()
+            join(timeout=timeout)
+
+        monkeypatch.setattr(old_thread, "join", observed_join)
+        stopping.start()
+        assert joining.wait(timeout=1)
+        manager.start()
+        assert manager._refresh_thread is old_thread and old_thread.is_alive()
+        release.set()
+        stopping.join(timeout=2)
+        assert not stopping.is_alive()
+        assert not old_thread.is_alive()
+        assert manager.refresh_nodes()
+    finally:
+        release.set()
+        try:
+            if stopping.ident is not None:
+                stopping.join(timeout=2)
+        finally:
+            manager.stop()
     assert_peer_closed(server)
 
 
