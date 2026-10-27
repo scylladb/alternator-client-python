@@ -20,10 +20,10 @@ observed descriptor delta or arbitrary environment flag cannot establish the
 expected pair count. The accepted P2 minimal manifest requires zero pairs; the
 accepted P4/upstream-full manifests require exactly one. Unknown contracts fail
 closed. Renew the source audit and manifest anchors after relevant dependency
-changes, including the final verified merged P0 Git pin. Regenerate context for
+changes, including verified merged P0 Git pins. Regenerate context for
 any source/lock/wheel change. The current manifest and lock name the exact
-declared P0 Git revision `ba67c57790053e44be59796374f5cc1763869883`; that source
-identity alone does not establish final merged-pin or release qualification.
+merged P0 Git revision `d2044849bd3b0c100d18541b01df4a1a1eac3139`; that source
+identity alone does not establish installed-wheel or release qualification.
 
 For local Linux qualification after preparing the ordinary Python environment:
 
@@ -87,9 +87,10 @@ The Linux core job implements the source-bound startup caller:
 
 ## Deadline integration source audit
 
-The dependency and baseline metadata now name the exact head of
+The dependency and baseline metadata now name the verified merged revision of
 [Rust #158](https://github.com/scylladb/alternator-client-rust/pull/158),
-`ba67c57790053e44be59796374f5cc1763869883`. Its manifest SHA256 is still
+`d2044849bd3b0c100d18541b01df4a1a1eac3139`, with successful upstream main CI.
+Its manifest SHA256 is still
 `9b0ddba41cf7851cf16696874b4aa8dfbaa8acfeb76bafd96e3b4fff507f5228`:
 Tokio `full` remains enabled. The lock diff changes only the upstream Git source;
 Tokio remains the single path-patched 1.54.1 identity.
@@ -112,29 +113,37 @@ The existing `stage: interface` and `release_qualified: false` remain unchanged.
 
 ## Local qualification artifacts
 
-The 2026-10-26 Linux x86_64 CPython 3.13 build uses Rust 1.94.1 and maturin
+The 2026-10-27 Linux x86_64 CPython 3.13.5 build uses Rust 1.94.1 and maturin
 1.15.0, with a fresh target used only for the normal release wheel. Its compiled
 Tokio fingerprint contains `full`, `signal` and `process`; the independent source
 contracts require exactly one process-global signal pair.
 
 - Wheel: `alternator_client_rust_backend-2.0.1-cp313-cp313-manylinux_2_38_x86_64.whl`
-- Wheel SHA256: `219e0b7c8aa830113d617f290352a863af3c65a4e47e7d645af667bc5865f77e`
-- Context SHA256: `5f3f548a74023cce6a19a53f089070ed90104f659178c7b10dac1f3b19e8ecc2`
-- Native manifest SHA256: `35b2c9b938d86df3a88e1aeb1cdf0afbc3697f205797f827dd3bfaa8e53a8c65`
-- Native lock SHA256: `d22787e99b34b13c713cee5b947b576bf488050baaf5709b23b08ef9c2c5737a`
+- Wheel SHA256: `26c70f525f770942983034226d4ceae3f9f97bb2d867df8d8bb8e7f90eaf143f`
+- Context SHA256: `1252a2c5c0e120d57d3f7731cd842f6996edb0ed9c178ee86232d92cb727b6e0`
+- Native manifest SHA256: `d7c10e71f2197612bddce04236e032ee284aa78382cb452db1859ca59cb91d7b`
+- Native lock SHA256: `c2697650147726000f30a417d5bb5bb02b3f244912a5926bae579f9eec3fae4c`
 
-The local artifact directory is `/tmp/alternator133-startup-pinned`; it contains
-the original wheel, `startup-context.json` and the fresh build log/fingerprint.
-Core qualification must install these exact bytes outside the checkout and retain
-`core.json` plus the complete `native.xml` report. CI creates its own fresh context
-and wheels for its source/run; the local hashes identify only this host build.
-The host wheel does not establish the manylinux_2_28 floor or release qualification.
+The local artifact directory is `/tmp/dk-pr158-finalization-evidence/normal-wheel`;
+it contains the original wheel, `startup-context.json` and the fresh build
+log/fingerprint. Core qualification must install these exact bytes outside the
+checkout and retain `core.json` plus the complete `native.xml` report. CI creates
+its own fresh context and wheels for its source/run; the local hashes identify
+only this host build. The host wheel does not establish the manylinux_2_28 floor
+or release qualification.
 
 ## Controlled merged pin update
 
-Rust #158 is a prerequisite, and this head pin is provisional until it merges.
-After verifying the actual Rust merge and successful main CI, update both the
-dependency revision and baseline metadata plus the final Git-source lock. Preserve
+Rust #158 merged at `d2044849bd3b0c100d18541b01df4a1a1eac3139`; its main
+checks passed. This update replaces the provisional
+`ba67c57790053e44be59796374f5cc1763869883` pin. The merged production delta
+classifies invalid discovery timeouts as discovery configuration errors; its
+remaining changes document the timeout and correct paused-time test scheduling.
+Discovery ownership, cancellation and routing paths remain unchanged.
+
+For future pin updates, verify the actual Rust merge and successful main CI,
+then update both the dependency revision and baseline metadata plus the final
+Git-source lock. Preserve
 the single audited Tokio identity. Review the manifest diff, replace the one P4
 manifest anchor with its exact SHA256, and retain the separate P2 minimal and
 upstream-full anchors. Renew the upstream/ownership audit if those sources change.
