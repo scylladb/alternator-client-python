@@ -61,10 +61,27 @@ Linux fault probes require a C compiler and run only in disposable subprocesses.
 Their exact normal-wheel build context and source-bound signal-global accounting
 are described in [tests/STARTUP.md](tests/STARTUP.md).
 
-The PyO3 0.29.0 integration renews only the P4 native-manifest startup anchor.
-The declared Rust revision remains `549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1`;
-its unchanged manifest still requests Tokio `full`, and the signal ownership
-source anchors remain unchanged. The separate minimal and upstream manifest
-anchors still apply. A fresh normal wheel and its compiled Tokio fingerprint
-are required to qualify the combined source; this graph update alone does not
-establish final merged-pin or release qualification.
+The native dependency and baseline metadata pin the deadline integration in
+[Rust #158](https://github.com/scylladb/alternator-client-rust/pull/158) at
+`d2044849bd3b0c100d18541b01df4a1a1eac3139`, the verified merged revision with
+successful upstream main CI. It integrates the reviewed
+[Rust #156](https://github.com/scylladb/alternator-client-rust/pull/156) deadlines
+onto current main's shared discovery ownership and rack-affinity views. The lock
+update changes only the upstream Git identity; the SDK graph and single patched
+Tokio 1.54.1 dependency remain unchanged.
+
+The startup audit confirms the upstream manifest still requests Tokio `full`.
+The signal ownership source anchors, upstream-full anchor and separate minimal
+anchor remain unchanged; only the native manifest anchor is renewed. Qualification
+must use a fresh ordinary wheel and its compiled Tokio fingerprint, followed by
+all startup failure probes and negative controls described in
+[tests/STARTUP.md](tests/STARTUP.md).
+
+Both manifest entries and the lock now name the merged Rust SHA, and the native
+manifest anchor has been renewed. The fresh ordinary host wheel/context artifacts
+are recorded in [tests/STARTUP.md](tests/STARTUP.md). Before the dependent Python
+PR becomes ready, require exact-head CI, including the existing 20-cell wheel
+matrix and aggregate gate; host qualification alone does not satisfy that gate.
+Receipts remain at `stage: interface` with `release_qualified: false`; data
+operations and error conversion belong to later issues. Python APIs, native
+interface/configuration schema 1 and all package versions remain unchanged.

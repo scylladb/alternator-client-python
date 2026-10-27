@@ -20,10 +20,10 @@ observed descriptor delta or arbitrary environment flag cannot establish the
 expected pair count. The accepted P2 minimal manifest requires zero pairs; the
 accepted P4/upstream-full manifests require exactly one. Unknown contracts fail
 closed. Renew the source audit and manifest anchors after relevant dependency
-changes, including the final verified merged P0 Git pin. Regenerate context for
+changes, including verified merged P0 Git pins. Regenerate context for
 any source/lock/wheel change. The current manifest and lock name the exact
-declared P0 Git revision `549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1`; that source
-identity alone does not establish final merged-pin or release qualification.
+merged P0 Git revision `d2044849bd3b0c100d18541b01df4a1a1eac3139`; that source
+identity alone does not establish installed-wheel or release qualification.
 
 For local Linux qualification after preparing the ordinary Python environment:
 
@@ -85,28 +85,73 @@ The Linux core job implements the source-bound startup caller:
 4. Caller/helper fixtures and qualification tests cover the required context
    argument and receipt. No optional context fallback is supported.
 
-Implemented caller plumbing and a local wheel pass do not establish final
-qualification. The retained host run covers Linux x86_64 CPython 3.13 with a
-`manylinux_2_38` wheel; it does not qualify the required `manylinux_2_28` floor,
-all 20 interpreter/platform cells or live Scylla behavior. Those require separate
-exact-head CI evidence. The PR now targets Python main after #150 and uses its
-PyO3/pyo3-async-runtimes 0.29.0 bridge. The transport rejects unsuccessful
-`GET /localnodes` responses, and a held-socket lifecycle test proves the configured
-discovery deadline independently of the read timeout. Before marking the draft
-ready, a compatible final merged Rust pin still requires maintainer approval and
-renewed source/lock/startup qualification.
+## Deadline integration source audit
 
-## Controlled final pin update
+The dependency and baseline metadata now name the verified merged revision of
+[Rust #158](https://github.com/scylladb/alternator-client-rust/pull/158),
+`d2044849bd3b0c100d18541b01df4a1a1eac3139`, with successful upstream main CI.
+Its manifest SHA256 is still
+`9b0ddba41cf7851cf16696874b4aa8dfbaa8acfeb76bafd96e3b4fff507f5228`:
+Tokio `full` remains enabled. The lock diff changes only the upstream Git source;
+Tokio remains the single path-patched 1.54.1 identity.
 
-The current `P4_FULL_MANIFEST` anchor binds the manifest declaring the Git
-revision above. After maintainer approval and parent verification of the actual
-P0 merge/green main, update the declared Git revision and final Git-source lock
-while preserving the single audited Tokio identity. Review the manifest diff,
-replace this one P4 manifest anchor with the resulting exact SHA256, and keep
-the separate P2 minimal and upstream-full anchors. Do not append a permissive
-fallback or derive ownership from the new observed FD delta. If the upstream
-manifest/ownership source changes, renew that source audit too. Then build a
-fresh normal-wheel context, verify its upstream Cargo source names the merged
-revision, and rerun the positive startup probes and all provenance/FD negative
-controls. Context schema 1, extension interface 1, Python release 2.0.1 and
-internal Cargo package version 0.1.0 are independent of this pin-only update.
+The renewed ownership audit reads `signal/registry.rs`'s static `OnceLock<Globals>`,
+`signal/unix.rs`'s original stream pair, the runtime signal driver's receiver
+duplication and ownership, and the feature gates in `runtime/driver.rs` and
+`macros/cfg.rs`. All five `SIGNAL_SOURCE` hashes still match. The worker-startup
+patch and its provenance are unchanged. Only `P4_FULL_MANIFEST` is replaced with
+the exact new native manifest hash. The P2 minimal and upstream-full anchors
+remain separate and unchanged. No observed descriptor delta determines ownership.
+
+A fresh normal-wheel context must bind this manifest/lock, the compiled Tokio
+features and the exact installed binary. Run the first/middle/last worker failure
+probes, their FD/thread controls, context provenance controls and standalone Rust
+startup harness against that wheel. Keep the original wheel and context together.
+A host Linux wheel pass does not qualify the manylinux_2_28 floor or the complete
+20-cell interpreter/platform matrix; require exact-head CI and its aggregate.
+The existing `stage: interface` and `release_qualified: false` remain unchanged.
+
+## Local qualification artifacts
+
+The 2026-10-27 Linux x86_64 CPython 3.13.5 build uses Rust 1.94.1 and maturin
+1.15.0, with a fresh target used only for the normal release wheel. Its compiled
+Tokio fingerprint contains `full`, `signal` and `process`; the independent source
+contracts require exactly one process-global signal pair.
+
+- Wheel: `alternator_client_rust_backend-2.0.1-cp313-cp313-manylinux_2_38_x86_64.whl`
+- Wheel SHA256: `26c70f525f770942983034226d4ceae3f9f97bb2d867df8d8bb8e7f90eaf143f`
+- Context SHA256: `1252a2c5c0e120d57d3f7731cd842f6996edb0ed9c178ee86232d92cb727b6e0`
+- Native manifest SHA256: `d7c10e71f2197612bddce04236e032ee284aa78382cb452db1859ca59cb91d7b`
+- Native lock SHA256: `c2697650147726000f30a417d5bb5bb02b3f244912a5926bae579f9eec3fae4c`
+
+The local artifact directory is `/tmp/dk-pr158-finalization-evidence/normal-wheel`;
+it contains the original wheel, `startup-context.json` and the fresh build
+log/fingerprint. Core qualification must install these exact bytes outside the
+checkout and retain `core.json` plus the complete `native.xml` report. CI creates
+its own fresh context and wheels for its source/run; the local hashes identify
+only this host build. The host wheel does not establish the manylinux_2_28 floor
+or release qualification.
+
+## Controlled merged pin update
+
+Rust #158 merged at `d2044849bd3b0c100d18541b01df4a1a1eac3139`; its main
+checks passed. This update replaces target main's Rust baseline
+`549c1b43a281f0b6c0644dfcbcbabb24ddafb7c1` with that merged revision. The full
+range integrates awaitable discovery shutdown, separates discovery ownership
+from node views, and updates rack-affinity/query-plan routing. It retains the
+separate discovery deadlines and classifies invalid discovery timeouts as
+discovery configuration errors. Qualification here covers configuration,
+discovery deadlines, cancellation and shutdown. It does not establish the full
+affinity/query-plan request-routing contract, which remains part of later
+data-operation qualification.
+
+For future pin updates, verify the actual Rust merge and successful main CI,
+then update both the dependency revision and baseline metadata plus the final
+Git-source lock. Preserve
+the single audited Tokio identity. Review the manifest diff, replace the one P4
+manifest anchor with its exact SHA256, and retain the separate P2 minimal and
+upstream-full anchors. Renew the upstream/ownership audit if those sources change.
+Build a fresh ordinary wheel/context and rerun positive probes, all provenance/FD
+negative controls and exact-head CI before marking the dependent Python PR ready.
+Context schema 1, extension interface 1, Python release 2.0.1 and internal Cargo
+version 0.1.0 are unchanged. No release publication is part of this update.
