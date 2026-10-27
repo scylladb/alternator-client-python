@@ -26,7 +26,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from alternator._http import AsyncHttpFetcher, SyncHttpFetcher
+from alternator._http import AsyncHttpFetcher, SyncHttpFetcher, SyncNodeFetcher
 from alternator.exceptions import ConfigurationError, NoNodesAvailableError
 
 if TYPE_CHECKING:
@@ -397,21 +397,32 @@ class SyncLiveNodesManager:
     def start(self) -> None:
         """Start background refresh thread."""
         with self._lifecycle_lock:
-            if self._refresh_thread is not None and self._refresh_thread.is_alive():
-                return
+            try:
+                if isinstance(self._http_fetch, SyncNodeFetcher):
+                    self._http_fetch.reopen()
 
-            stop_event = threading.Event()
-            wake_event = threading.Event()
-            refresh_thread = threading.Thread(
-                target=self._refresh_loop,
-                args=(stop_event, wake_event),
-                daemon=True,
-                name="alternator-node-refresh",
-            )
-            self._stop_event = stop_event
-            self._wake_event = wake_event
-            self._refresh_thread = refresh_thread
-            refresh_thread.start()
+                if self._refresh_thread is not None and self._refresh_thread.is_alive():
+                    return
+
+                stop_event = threading.Event()
+                wake_event = threading.Event()
+                refresh_thread = threading.Thread(
+                    target=self._refresh_loop,
+                    args=(stop_event, wake_event),
+                    daemon=True,
+                    name="alternator-node-refresh",
+                )
+                self._stop_event = stop_event
+                self._wake_event = wake_event
+                self._refresh_thread = refresh_thread
+                refresh_thread.start()
+            except BaseException:
+                self._stop_event.set()
+                self._wake_event.set()
+                self._refresh_thread = None
+                if isinstance(self._http_fetch, SyncNodeFetcher):
+                    self._http_fetch.close()
+                raise
 
     def stop(self) -> None:
         """Stop background refresh thread."""
@@ -422,8 +433,14 @@ class SyncLiveNodesManager:
             stop_event.set()
             wake_event.set()
 
+            if isinstance(self._http_fetch, SyncNodeFetcher):
+                self._http_fetch.close()
+
         if refresh_thread:
-            refresh_thread.join(timeout=self._config.timeouts.discovery_seconds + 1.0)
+            if refresh_thread.ident is not None:
+                refresh_thread.join(
+                    timeout=self._config.timeouts.discovery_seconds + 1.0
+                )
             with self._lifecycle_lock:
                 if (
                     self._refresh_thread is refresh_thread
@@ -526,30 +543,38 @@ class SyncLiveNodesManager:
                 if stop_event.is_set():
                     return
                 with contextlib.suppress(Exception):
-                    self._refresh_nodes()
+                    self._refresh_nodes(stop_event)
 
             interval = self._core.get_refresh_interval_seconds()
             wake_event.wait(timeout=interval)
 
-    def _refresh_nodes(self) -> bool:
+    def _refresh_nodes(self, stop_event: threading.Event | None = None) -> bool:
         """Refresh ordinary routing, then its independently selected affinity view."""
         scope: RoutingScope | None = self._config.routing_scope
         results: dict[tuple[str, bool], tuple[str, ...]] = {}
 
         while scope is not None:
+            if stop_event is not None and stop_event.is_set():
+                return False
             result = self._fetch_nodes(scope)
+            if stop_event is not None and stop_event.is_set():
+                return False
             results[_discovery_key(scope)] = result
             if self._core.process_fetch_result(result, scope):
-                self._refresh_affinity_nodes(results)
+                self._refresh_affinity_nodes(results, stop_event)
                 return True
             scope = scope.fallback
 
+        if stop_event is not None and stop_event.is_set():
+            return False
         self._core.invalidate_affinity_nodes()
         self._core.log_all_scopes_failed()
         return False
 
     def _refresh_affinity_nodes(
-        self, results: dict[tuple[str, bool], tuple[str, ...]]
+        self,
+        results: dict[tuple[str, bool], tuple[str, ...]],
+        stop_event: threading.Event | None = None,
     ) -> None:
         """Select the first usable scope in the configured rack-to-DC chain."""
         if not _uses_key_affinity(self._config):
@@ -561,14 +586,20 @@ class SyncLiveNodesManager:
             if scopes is not None
             else _derive_affinity_scopes(self._config.routing_scope)
         ):
+            if stop_event is not None and stop_event.is_set():
+                return
             key = _discovery_key(scope)
             result = results.get(key)
             if result is None:
                 result = self._fetch_nodes(scope)
-                results[key] = result
+            if stop_event is not None and stop_event.is_set():
+                return
+            results[key] = result
             if result:
                 self._core.update_affinity_nodes(result, scope)
                 return
+        if stop_event is not None and stop_event.is_set():
+            return
         logger.warning(
             "Affinity discovery exhausted its configured scopes; using ordinary routing",
             extra={"event": "affinity_discovery_failed"},

@@ -684,6 +684,12 @@ your own deadline wrapper for end-to-end call deadlines.
 to the generated SDK config. `aws_region` is a placeholder required by the SDK;
 Alternator request routing still uses discovered Alternator endpoints.
 
+Synchronous `/localnodes` discovery reuses HTTP/HTTPS connections independently
+of the SDK data-request pool. Each manager retains at most 200 idle discovery
+connections, one per endpoint. Stopping the manager closes the pool and cancels
+in-flight discovery; restarting opens a fresh pool lifecycle. Discovery
+deadlines, TLS settings, and DNS fallback still apply.
+
 ```python
 from alternator import Config, RetryConfig, RetryMode, TimeoutConfig
 
