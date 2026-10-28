@@ -138,7 +138,9 @@ def test_sync_restart_waits_for_stopping_refresh(
     monkeypatch: pytest.MonkeyPatch, phase: str, cancel_restart: bool
 ) -> None:
     """Starts coalesce across bounded shutdown; a later stop cancels the request."""
-    entered, release, restarted, joining = (threading.Event() for _ in range(4))
+    entered, release, restarted, joining, admitted = (
+        threading.Event() for _ in range(5)
+    )
     workers: list[threading.Thread] = []
     calls = 0
     active = 0
@@ -186,7 +188,11 @@ def test_sync_restart_waits_for_stopping_refresh(
 
         def observed_join(timeout: float | None = None) -> None:
             joining.set()
+            if phase == "joining" and threading.current_thread() is stopping:
+                admitted.wait(timeout=2)
             join(timeout=timeout)
+            if threading.current_thread() is stopping:
+                joining.clear()
 
         monkeypatch.setattr(old_thread, "join", observed_join)
         started = time.monotonic()
@@ -201,6 +207,9 @@ def test_sync_restart_waits_for_stopping_refresh(
         for _ in range(3):
             manager.start()
             assert manager._refresh_thread is old_thread
+        if phase == "joining":
+            assert joining.is_set()
+            admitted.set()
         assert old_thread.is_alive()
         assert calls == 1
         assert workers == [old_thread]
@@ -232,6 +241,7 @@ def test_sync_restart_waits_for_stopping_refresh(
         assert peak_active == 1
         assert calls == 2
     finally:
+        admitted.set()
         release.set()
         if stopping.ident is not None:
             stopping.join(timeout=2)
