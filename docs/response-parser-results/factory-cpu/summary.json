@@ -1,0 +1,74 @@
+[
+  {
+    "group": [
+      "cpu",
+      true,
+      "get_nested",
+      null,
+      null
+    ],
+    "incomplete_trials": [],
+    "cpu_us_op": {
+      "stock": 963.0292324218767,
+      "compiled": 553.0001679687488,
+      "paired_change_pct": -42.619732871029214,
+      "paired_min_pct": -42.76158597809384,
+      "paired_max_pct": -42.36512303896942,
+      "pairs": 5
+    }
+  },
+  {
+    "group": [
+      "cpu",
+      true,
+      "query25",
+      null,
+      null
+    ],
+    "incomplete_trials": [],
+    "cpu_us_op": {
+      "stock": 16351.090968749953,
+      "compiled": 7515.877437499985,
+      "paired_change_pct": -55.37433976493868,
+      "paired_min_pct": -63.91370645782206,
+      "paired_max_pct": -45.86940404333535,
+      "pairs": 5
+    }
+  },
+  {
+    "group": [
+      "cpu",
+      false,
+      "get_nested",
+      null,
+      null
+    ],
+    "incomplete_trials": [],
+    "cpu_us_op": {
+      "stock": 890.2780341796873,
+      "compiled": 496.35096484375134,
+      "paired_change_pct": -44.24764559072886,
+      "paired_min_pct": -45.693735570006396,
+      "paired_max_pct": -43.927518748672135,
+      "pairs": 5
+    }
+  },
+  {
+    "group": [
+      "cpu",
+      false,
+      "query25",
+      null,
+      null
+    ],
+    "incomplete_trials": [],
+    "cpu_us_op": {
+      "stock": 16667.391249999982,
+      "compiled": 6475.777656250008,
+      "paired_change_pct": -61.30177950361904,
+      "paired_min_pct": -62.174689080392106,
+      "paired_max_pct": -52.79913329837817,
+      "pairs": 5
+    }
+  }
+]

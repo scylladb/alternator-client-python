@@ -1,0 +1,10 @@
+{"mode": "cpu", "asynchronous": false, "variant": "stock", "trial": 0, "workload": "get_nested", "count": 1024, "cpu_us_op": 934.5527890625002}
+{"mode": "cpu", "asynchronous": false, "variant": "compiled", "trial": 0, "workload": "get_nested", "count": 1024, "cpu_us_op": 528.9761992187496}
+{"mode": "cpu", "asynchronous": false, "variant": "compiled", "trial": 1, "workload": "get_nested", "count": 1024, "cpu_us_op": 530.6041376953144}
+{"mode": "cpu", "asynchronous": false, "variant": "stock", "trial": 1, "workload": "get_nested", "count": 1024, "cpu_us_op": 942.0664433593736}
+{"mode": "cpu", "asynchronous": false, "variant": "stock", "trial": 2, "workload": "get_nested", "count": 1024, "cpu_us_op": 956.6294902343761}
+{"mode": "cpu", "asynchronous": false, "variant": "compiled", "trial": 2, "workload": "get_nested", "count": 1024, "cpu_us_op": 527.5637285156237}
+{"mode": "cpu", "asynchronous": false, "variant": "compiled", "trial": 3, "workload": "get_nested", "count": 1024, "cpu_us_op": 528.6621113281238}
+{"mode": "cpu", "asynchronous": false, "variant": "stock", "trial": 3, "workload": "get_nested", "count": 1024, "cpu_us_op": 942.1203857421884}
+{"mode": "cpu", "asynchronous": false, "variant": "stock", "trial": 4, "workload": "get_nested", "count": 1024, "cpu_us_op": 937.9765917968738}
+{"mode": "cpu", "asynchronous": false, "variant": "compiled", "trial": 4, "workload": "get_nested", "count": 1024, "cpu_us_op": 528.6228974609384}

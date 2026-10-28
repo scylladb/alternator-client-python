@@ -41,6 +41,7 @@ from alternator.core.key_affinity import (
     select_affinity_node,
 )
 from alternator.core.live_nodes import NodeList, SyncLiveNodesManager
+from alternator.core.response_parser import install_response_parser
 from alternator.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
@@ -271,6 +272,7 @@ def _create_client_with_manager(
 
     configure_sync_connection_pools(client, manager, config)
     skip_sdk_header_hooks(client, user_agent)
+    install_response_parser(client)
 
     # Register all handlers
     _register_alternator_handlers(
@@ -461,6 +463,7 @@ def _create_resource_with_manager(
 
     configure_sync_connection_pools(resource.meta.client, manager, config)
     skip_sdk_header_hooks(resource.meta.client, user_agent)
+    install_response_parser(resource.meta.client)
 
     # Register all handlers
     _register_alternator_handlers(

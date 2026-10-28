@@ -1,0 +1,10 @@
+{"mode": "cpu", "asynchronous": true, "variant": "stock", "trial": 0, "workload": "query25", "count": 32, "cpu_us_op": 17964.92340625003}
+{"mode": "cpu", "asynchronous": true, "variant": "compiled", "trial": 0, "workload": "query25", "count": 32, "cpu_us_op": 8271.634843749973}
+{"mode": "cpu", "asynchronous": true, "variant": "compiled", "trial": 1, "workload": "query25", "count": 32, "cpu_us_op": 8495.988406250002}
+{"mode": "cpu", "asynchronous": true, "variant": "stock", "trial": 1, "workload": "query25", "count": 32, "cpu_us_op": 19388.2299375}
+{"mode": "cpu", "asynchronous": true, "variant": "stock", "trial": 2, "workload": "query25", "count": 32, "cpu_us_op": 19267.006937499955}
+{"mode": "cpu", "asynchronous": true, "variant": "compiled", "trial": 2, "workload": "query25", "count": 32, "cpu_us_op": 6897.523312500029}
+{"mode": "cpu", "asynchronous": true, "variant": "compiled", "trial": 3, "workload": "query25", "count": 32, "cpu_us_op": 9222.534874999994}
+{"mode": "cpu", "asynchronous": true, "variant": "stock", "trial": 3, "workload": "query25", "count": 32, "cpu_us_op": 17615.784125000035}
+{"mode": "cpu", "asynchronous": true, "variant": "stock", "trial": 4, "workload": "query25", "count": 32, "cpu_us_op": 17684.789531250022}
+{"mode": "cpu", "asynchronous": true, "variant": "compiled", "trial": 4, "workload": "query25", "count": 32, "cpu_us_op": 8310.382250000053}

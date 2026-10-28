@@ -1,0 +1,20 @@
+[
+  {
+    "group": [
+      "cpu",
+      true,
+      "query25",
+      null,
+      null
+    ],
+    "incomplete_trials": [],
+    "cpu_us_op": {
+      "stock": 11259.974984375003,
+      "compiled": 4530.3482578125,
+      "paired_change_pct": -60.233371979946384,
+      "paired_min_pct": -63.97128540191013,
+      "paired_max_pct": -56.49415610892908,
+      "pairs": 9
+    }
+  }
+]
