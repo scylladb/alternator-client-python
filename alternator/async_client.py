@@ -48,6 +48,7 @@ from alternator.core.key_affinity import (
     select_affinity_node,
 )
 from alternator.core.live_nodes import AsyncLiveNodesManager, NodeList
+from alternator.core.response_parser import install_response_parser
 
 if TYPE_CHECKING:
     from aiobotocore.config import AioConfig
@@ -458,6 +459,7 @@ async def _create_async_client_with_manager(
 
     try:
         skip_sdk_header_hooks(client, user_agent)
+        install_response_parser(client, asynchronous=True)
 
         # Set up partition key cache if affinity is enabled
         pk_cache: AsyncPartitionKeyCache | None = None
