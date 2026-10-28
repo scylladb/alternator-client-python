@@ -286,10 +286,22 @@ fn connect_failure(error: BoxError, endpoint: &str) -> BoxError {
 }
 
 fn connection_failure(error: hyper::Error, endpoint: &str) -> BoxError {
-    if error.is_parse() {
+    let tls = tls_error_retryable(&error).is_some();
+    // Hyper wraps HTTP/1 body-framing decoder errors as body I/O failures,
+    // outside is_parse(). TLS also uses InvalidData, so identify it first.
+    let framing = !tls
+        && std::error::Error::source(&error)
+            .and_then(|source| source.downcast_ref::<io::Error>())
+            .is_some_and(|source| {
+                matches!(
+                    source.kind(),
+                    io::ErrorKind::InvalidInput | io::ErrorKind::InvalidData
+                )
+            });
+    if error.is_parse() || framing {
         return Box::new(error);
     }
-    let category = if tls_error_retryable(&error).is_some() {
+    let category = if tls {
         Category::Tls
     } else {
         Category::ConnectionClosed

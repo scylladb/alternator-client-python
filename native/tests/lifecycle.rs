@@ -29,6 +29,7 @@ struct Reply {
     release: Option<Arc<Semaphore>>,
     extra_headers: Vec<u8>,
     truncate_body: bool,
+    raw_chunked_body: bool,
 }
 
 impl Reply {
@@ -40,6 +41,7 @@ impl Reply {
             release: None,
             extra_headers: Vec::new(),
             truncate_body: false,
+            raw_chunked_body: false,
         }
     }
 }
@@ -257,7 +259,12 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         let encoding = reply.encoding.map_or(String::new(), |value| {
             format!("Content-Encoding: {value}\r\n")
         });
-        let mut headers = format!("HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: application/x-amz-json-1.0\r\nX-Amzn-RequestId: request-{connection}\r\nX-Original-Header: preserved\r\n{encoding}", reply.status, reply.body.len()).into_bytes();
+        let framing = if reply.raw_chunked_body {
+            "Transfer-Encoding: chunked\r\n".to_owned()
+        } else {
+            format!("Content-Length: {}\r\n", reply.body.len())
+        };
+        let mut headers = format!("HTTP/1.1 {} OK\r\n{framing}Content-Type: application/x-amz-json-1.0\r\nX-Amzn-RequestId: request-{connection}\r\nX-Original-Header: preserved\r\n{encoding}", reply.status).into_bytes();
         headers.extend_from_slice(&reply.extra_headers);
         headers.extend_from_slice(b"\r\n");
         let body = if reply.truncate_body {
@@ -350,6 +357,7 @@ fn sdk_signing_compression_retries_metadata_and_persistent_pool() {
             extra_headers: b"X-Bytes: \x80\xff\r\nX-Repeated: first\r\nX-Repeated: second\r\n"
                 .to_vec(),
             truncate_body: false,
+            raw_chunked_body: false,
         });
         server.push(Reply::json(200, r#"{"Item":{}}"#));
         let mut cfg = config(server.port);
@@ -2278,23 +2286,38 @@ fn malformed_http_retries_keep_final_protocol_error_category() {
     use aws_smithy_runtime_api::client::result::SdkError;
     use pyo3::prelude::*;
     shared_runtime().unwrap().block_on(async {
-        for malformed_status in [false, true] {
+        for (malformed, diagnostic) in [
+            (
+                Reply {
+                    extra_headers: b"invalid header\r\n".to_vec(),
+                    ..Reply::json(200, "{}")
+                },
+                "invalid HTTP header",
+            ),
+            // Four digits are not a valid HTTP status line.
+            (Reply::json(1000, "{}"), "invalid HTTP status-code"),
+            (
+                Reply {
+                    raw_chunked_body: true,
+                    ..Reply::json(200, "garbage\r\n")
+                },
+                "Invalid chunk size",
+            ),
+            (
+                Reply {
+                    raw_chunked_body: true,
+                    ..Reply::json(200, "1;extension\n")
+                },
+                "invalid chunk extension",
+            ),
+        ] {
             for final_success in [true, false] {
                 let server = Server::start().await;
-                let malformed = if malformed_status {
-                    // Four digits are not a valid HTTP status line.
-                    Reply::json(1000, "{}")
-                } else {
-                    Reply {
-                        extra_headers: b"invalid header\r\n".to_vec(),
-                        ..Reply::json(200, "{}")
-                    }
-                };
                 server.push(malformed.clone());
                 server.push(if final_success {
                     Reply::json(200, r#"{"Item":{"pk":{"S":"ok"}}}"#)
                 } else {
-                    malformed
+                    malformed.clone()
                 });
                 let mut cfg = config(server.port);
                 cfg.max_attempts = 2;
@@ -2343,15 +2366,8 @@ fn malformed_http_retries_keep_final_protocol_error_category() {
                                 .unwrap();
                         assert!(mapped.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
                         assert!(!mapped.is_instance_of::<errors::TransportError>(py));
-                        let diagnostic = mapped.to_string();
-                        assert!(
-                            diagnostic.contains(if malformed_status {
-                                "invalid HTTP status-code"
-                            } else {
-                                "invalid HTTP header"
-                            }),
-                            "{diagnostic}"
-                        );
+                        let report = mapped.to_string();
+                        assert!(report.contains(diagnostic), "{report}");
                     }
                 });
                 bounded(client.close()).await;
