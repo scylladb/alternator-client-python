@@ -445,7 +445,8 @@ pub(crate) fn service_error_with_protocol_failure(
     // bodies. Their status/header code and wire context still identify them.
     let decoded = decoded_body(attempt).map_err(failure)?;
     // Botocore identifies generic server/proxy failures before UTF-8 parsing.
-    // Python bytes.strip() includes vertical tab as well as ASCII whitespace.
+    // Match Python bytes.strip(), including vertical tab, which Rust's
+    // u8::is_ascii_whitespace() omits.
     let start = decoded
         .iter()
         .position(|byte| !matches!(byte, b' ' | b'\t'..=b'\r'))

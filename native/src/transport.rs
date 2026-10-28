@@ -326,12 +326,6 @@ fn connector_error(error: BoxError) -> ConnectorError {
             Category::EndpointConnection | Category::ConnectionClosed => ConnectorError::io(error),
         };
     }
-    if error
-        .downcast_ref::<hyper::Error>()
-        .is_some_and(|error| error.is_parse())
-    {
-        return ConnectorError::user(error);
-    }
     // tokio-rustls wraps certificate/hostname verification failures in an
     // InvalidData io::Error. Other I/O failures remain retryable.
     if tls_error_retryable(error.as_ref()) == Some(false) {

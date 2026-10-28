@@ -1851,3 +1851,87 @@ fn unknown_success_attributes_match_python_empty_structures() {
         server.stop().await;
     });
 }
+
+#[cfg(feature = "conversion-tests")]
+#[test]
+fn malformed_http_retries_keep_final_protocol_error_category() {
+    use _alternator_rust::{
+        conversion::Output, errors, response, transport_failure::TransportFailure,
+    };
+    use aws_smithy_runtime_api::client::result::SdkError;
+    use pyo3::prelude::*;
+    shared_runtime().unwrap().block_on(async {
+        for malformed_status in [false, true] {
+            for final_success in [true, false] {
+                let server = Server::start().await;
+                let malformed = if malformed_status {
+                    // Four digits are not a valid HTTP status line.
+                    Reply::json(1000, "{}")
+                } else {
+                    Reply {
+                        extra_headers: b"invalid header\r\n".to_vec(),
+                        ..Reply::json(200, "{}")
+                    }
+                };
+                server.push(malformed.clone());
+                server.push(if final_success {
+                    Reply::json(200, r#"{"Item":{"pk":{"S":"ok"}}}"#)
+                } else {
+                    malformed
+                });
+                let mut cfg = config(server.port);
+                cfg.max_attempts = 2;
+                cfg.operation_timeout_seconds = 10.;
+                let client = Client::create(cfg).await.unwrap();
+                let (output, metadata) = bounded(get(&client)).await.unwrap();
+                assert_eq!(metadata.attempts, 2);
+                assert!(server.scripts.lock().unwrap().is_empty());
+                Python::attach(|py| match output {
+                    Ok(output) => {
+                        assert!(final_success);
+                        assert_eq!(output.item.as_ref().unwrap()["pk"].as_s().unwrap(), "ok");
+                        assert_eq!(metadata.responses.len(), 1);
+                        assert_eq!(metadata.responses[0].attempt, 2);
+                        let result =
+                            response::success(py, &Output::GetItem(Box::new(output)), &metadata)
+                                .unwrap();
+                        let response_metadata =
+                            result.get_item("ResponseMetadata").unwrap().unwrap();
+                        assert_eq!(
+                            response_metadata
+                                .get_item("HTTPStatusCode")
+                                .unwrap()
+                                .extract::<u16>()
+                                .unwrap(),
+                            200
+                        );
+                        assert_eq!(
+                            response_metadata
+                                .get_item("RetryAttempts")
+                                .unwrap()
+                                .extract::<u32>()
+                                .unwrap(),
+                            1
+                        );
+                    }
+                    Err(error) => {
+                        assert!(!final_success);
+                        assert!(
+                            matches!(&error, SdkError::DispatchFailure(failure) if failure.is_io())
+                        );
+                        assert!(metadata.responses.is_empty());
+                        assert!(TransportFailure::find(&error).is_none());
+                        let mapped =
+                            errors::sdk_error(py, "GetItem", "http://node", &error, &metadata)
+                                .unwrap();
+                        assert!(mapped.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+                        assert!(!mapped.is_instance_of::<errors::TransportError>(py));
+                    }
+                });
+                bounded(client.close()).await;
+                assert_eq!(client.live_drivers(), 0);
+                server.stop().await;
+            }
+        }
+    });
+}
