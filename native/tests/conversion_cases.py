@@ -513,6 +513,18 @@ for body, expected in (
         next(iter(source.values())).append(99)
         assert error.response["Error"]["Message"] == expected
 
+# Nested message names never supply the canonical top-level message.
+for top_level in ({"Message": "top level"}, {}):
+    before = {"message": "nested lower before", "Message": "nested upper before"}
+    after = {"message": "nested lower after", "Message": "nested upper after"}
+    payload = {"__type": "FutureError", "before": before, **top_level, "after": after}
+    error = native.service("GetItem", 400, json.dumps(payload).encode(), [], 1)
+    assert error.response["Error"]["Message"] == top_level.get("Message", "")
+    assert error.response["before"] == before
+    assert error.response["after"] == after
+    if top_level:
+        assert error.response["Message"] == top_level["Message"]
+
 # These bounded shapes distinguish order/last-key behavior without a wide
 # temporary sibling queue. The source proof checks depth-only traversal state.
 values = [None, False, 2**80, {"x": ["é", 1.25]}] * 1024

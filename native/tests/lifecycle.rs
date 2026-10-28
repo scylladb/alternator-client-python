@@ -28,6 +28,7 @@ struct Reply {
     encoding: Option<&'static str>,
     release: Option<Arc<Semaphore>>,
     extra_headers: Vec<u8>,
+    truncate_body: bool,
 }
 
 impl Reply {
@@ -38,6 +39,7 @@ impl Reply {
             encoding: None,
             release: None,
             extra_headers: Vec::new(),
+            truncate_body: false,
         }
     }
 }
@@ -258,7 +260,15 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
         let mut headers = format!("HTTP/1.1 {} OK\r\nContent-Length: {}\r\nContent-Type: application/x-amz-json-1.0\r\nX-Amzn-RequestId: request-{connection}\r\nX-Original-Header: preserved\r\n{encoding}", reply.status, reply.body.len()).into_bytes();
         headers.extend_from_slice(&reply.extra_headers);
         headers.extend_from_slice(b"\r\n");
-        if write.write_all(&headers).await.is_err() || write.write_all(&reply.body).await.is_err() {
+        let body = if reply.truncate_body {
+            &reply.body[..reply.body.len() / 2]
+        } else {
+            &reply.body
+        };
+        if write.write_all(&headers).await.is_err() || write.write_all(body).await.is_err() {
+            return;
+        }
+        if reply.truncate_body {
             return;
         }
     }
@@ -339,6 +349,7 @@ fn sdk_signing_compression_retries_metadata_and_persistent_pool() {
             release: None,
             extra_headers: b"X-Bytes: \x80\xff\r\nX-Repeated: first\r\nX-Repeated: second\r\n"
                 .to_vec(),
+            truncate_body: false,
         });
         server.push(Reply::json(200, r#"{"Item":{}}"#));
         let mut cfg = config(server.port);
@@ -1213,6 +1224,39 @@ fn metadata_counts_connection_refusal_then_success_and_final_dispatch_failure() 
             _alternator_rust::transport_failure::Category::ConnectionClosed
         );
         bounded(client.close()).await;
+        server.push(Reply {
+            truncate_body: true,
+            ..Reply::json(200, r#"{"Item":{"pk":{"S":"truncated"}}}"#)
+        });
+        let mut cfg = config(port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        let (output, metadata) = bounded(get(&client)).await.unwrap();
+        let error = output.unwrap_err();
+        assert_eq!(metadata.attempts, 1);
+        assert!(metadata.is_empty());
+        assert_eq!(
+            _alternator_rust::transport_failure::TransportFailure::find(&error)
+                .unwrap()
+                .category,
+            _alternator_rust::transport_failure::Category::ConnectionClosed
+        );
+        #[cfg(feature = "conversion-tests")]
+        pyo3::Python::attach(|py| {
+            use pyo3::prelude::*;
+            let mapped = _alternator_rust::errors::sdk_error(
+                py, "GetItem", "unused", &error, &metadata,
+            ).unwrap();
+            assert!(mapped.is_instance_of::<_alternator_rust::errors::TransportError>(py));
+            let value = mapped.value(py);
+            assert_eq!(value.getattr("category").unwrap().extract::<String>().unwrap(), "connection_closed");
+            assert_eq!(value.getattr("endpoint_url").unwrap().extract::<String>().unwrap(), format!("http://127.0.0.1:{port}/"));
+            let diagnostic = value.str().unwrap().to_string();
+            assert_eq!(diagnostic.matches("connection_closed:").count(), 1);
+            assert!(diagnostic.contains("end of file before message length reached"), "{diagnostic}");
+        });
+        bounded(client.close()).await;
+        assert_eq!(client.live_drivers(), 0);
         server.stop().await;
     });
 }
@@ -1651,6 +1695,56 @@ fn final_http_errors_and_protocol_failures_keep_distinct_python_categories() {
                         }
                     }
                 }
+            });
+            server.request().await;
+        }
+        for (status, body, encoding, local_diagnostic) in [
+            (400, b"\xff".as_slice(), None, "utf-8"),
+            (503, b"caf\xe9".as_slice(), None, "utf-8"),
+            (
+                400,
+                b"bad gzip".as_slice(),
+                Some("gzip"),
+                "invalid gzip header",
+            ),
+        ] {
+            server.push(Reply {
+                body: body.to_vec(),
+                encoding,
+                ..Reply::json(status, "")
+            });
+            let (result, metadata) = bounded(
+                client.run(|sdk| async move { sdk.query().table_name("contract").send().await }),
+            )
+            .await
+            .unwrap();
+            let error = result.unwrap_err();
+            if encoding.is_some() {
+                assert!(matches!(&error, SdkError::ResponseError(_)), "{error:?}");
+            } else {
+                assert!(matches!(&error, SdkError::ServiceError(_)), "{error:?}");
+            }
+            Python::attach(|py| {
+                let mapped = errors::sdk_error(py, "Query", "http://node", &error, &metadata)
+                    .unwrap_or_else(|error| error);
+                assert!(mapped.is_instance_of::<PyRuntimeError>(py));
+                let diagnostic = mapped.to_string();
+                assert!(
+                    diagnostic.to_ascii_lowercase().contains(local_diagnostic),
+                    "{diagnostic}"
+                );
+                assert!(
+                    diagnostic.contains(if encoding.is_some() {
+                        "response error"
+                    } else {
+                        "service error"
+                    }),
+                    "{diagnostic}"
+                );
+                assert!(
+                    diagnostic.contains(&format!("StatusCode({status})")),
+                    "{diagnostic}"
+                );
             });
             server.request().await;
         }

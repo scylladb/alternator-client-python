@@ -443,7 +443,11 @@ pub(crate) fn service_error_with_protocol_failure(
     let attempt = final_response(metadata)?;
     // HTTP service errors may contain empty, non-JSON or non-object proxy
     // bodies. Their status/header code and wire context still identify them.
-    let decoded = decoded_body(attempt).map_err(failure)?;
+    let decode_failure = |error: &dyn std::fmt::Display| match &protocol_failure {
+        Some(sdk) => failure(format!("{sdk}; response body decoding failed: {error}")),
+        None => failure(error),
+    };
+    let decoded = decoded_body(attempt).map_err(|error| decode_failure(&error))?;
     // Botocore identifies generic server/proxy failures before UTF-8 parsing.
     // Match Python bytes.strip(), including vertical tab, which Rust's
     // u8::is_ascii_whitespace() omits.
@@ -460,7 +464,7 @@ pub(crate) fn service_error_with_protocol_failure(
             Ok(body) if body.get().starts_with('{') => {
                 // A real SDK parsing failure must not acquire a service class
                 // merely because its captured body is valid JSON.
-                if let Some(message) = protocol_failure {
+                if let Some(message) = &protocol_failure {
                     return Ok(failure(message));
                 }
                 let (result, message) = json_to_python(py, body.get().as_bytes())?;
@@ -468,7 +472,10 @@ pub(crate) fn service_error_with_protocol_failure(
             }
             Err(_) if !decoded.is_empty() => {
                 let result = PyDict::new(py);
-                result.set_item("message", std::str::from_utf8(&decoded).map_err(failure)?)?;
+                result.set_item(
+                    "message",
+                    std::str::from_utf8(&decoded).map_err(|error| decode_failure(&error))?,
+                )?;
                 (result, None)
             }
             _ => (PyDict::new(py), None),

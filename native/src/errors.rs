@@ -96,7 +96,10 @@ where
             py,
             failure.category,
             &failure.endpoint_url,
-            &failure.to_string(),
+            &format!(
+                "{}",
+                aws_smithy_types::error::display::DisplayErrorContext(failure)
+            ),
         );
     }
     if matches!(error, SdkError::TimeoutError(_))
@@ -104,8 +107,8 @@ where
     {
         return transport_error(py, Category::ReadTimeout, endpoint_url, &error.to_string());
     }
-    // Construction, unparseable protocol responses, runtime and closed-client
-    // failures have no service-error or network-category substitution.
+    // Remaining construction, successful-status deserialization, malformed HTTP,
+    // runtime and closed-client failures have no service/network substitution.
     Ok(pyo3::exceptions::PyRuntimeError::new_err(format!(
         "{}",
         aws_smithy_types::error::display::DisplayErrorContext(error)

@@ -213,9 +213,14 @@ Overwritten originals remain available in raw `body`.
 botocore EndpointConnectionError (`endpoint_connection`), ConnectionClosedError
 (`connection_closed`), ConnectTimeoutError (`connect_timeout`), ReadTimeoutError
 (`read_timeout`) and SSLError (`tls`). The original structured Rust cause stays
-in the SDK error chain; runtime/construction, protocol parse and closed-client
-failures keep RuntimeError behavior. Complete-operation deadlines map to
-ReadTimeoutError under the existing native timeout policy.
+in the SDK error chain. Runtime/construction, closed-client, dispatch protocol
+and successful-status deserialization failures raise RuntimeError. Non-2xx SDK
+parse failures with a JSON-object body also raise RuntimeError, as do body
+decompression failures and invalid UTF-8 outside the generic server-error path.
+Other non-2xx empty, non-JSON UTF-8 and non-object JSON bodies use the ServiceError
+status/header-code fallback. Generic server errors retain their status-based
+ServiceError fallback. Complete-operation deadlines map to ReadTimeoutError
+under the existing native timeout policy.
 
 These additions retain interface version 1. Converter types and Rust projection
 helpers are available for #135/#136; no execute methods, public factories, or
