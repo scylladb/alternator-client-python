@@ -57,7 +57,7 @@ pub fn decoded_body(response: &AttemptResponse) -> Result<Cow<'_, [u8]>, std::io
         .collect::<Vec<_>>()
         .join(",");
     for encoding in encoding.split(',').rev() {
-        // Match the pinned SDK's aliases, parameters and whitespace handling.
+        // Match the pinned SDK's case, parameter and whitespace normalization.
         let encoding = encoding.split(';').next().unwrap_or(encoding).trim();
         let decoded = match encoding.to_ascii_lowercase().as_str() {
             "" | "identity" => continue,

@@ -219,8 +219,9 @@ except native.ValidationError as error:
 else:
     raise AssertionError("empty table name bypassed its minimum")
 
-# Synthesize a value with every reachable member. This also covers members the
-# scenario fixtures deliberately omit, such as VectorIndexes capacity metrics.
+# Synthesize every reachable structure member, using a representative
+# AttributeValue sample. This also covers members the scenario fixtures
+# deliberately omit, such as VectorIndexes capacity metrics.
 manifest = json.loads(
     (Path(__file__).resolve().parents[2] / "tests/contract/manifest.json").read_text()
 )

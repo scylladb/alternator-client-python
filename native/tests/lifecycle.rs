@@ -1644,7 +1644,11 @@ fn final_http_errors_and_protocol_failures_keep_distinct_python_categories() {
                             assert!(matches!(error, SdkError::ServiceError(_)));
                         }
                         assert!(mapped.is_instance_of::<PyRuntimeError>(py));
-                        assert!(!mapped.to_string().is_empty());
+                        if !malformed_header {
+                            let diagnostic = mapped.to_string();
+                            assert!(diagnostic.contains("failed to parse JSON"), "{diagnostic}");
+                            assert!(diagnostic.contains("found `oops`"), "{diagnostic}");
+                        }
                     }
                 }
             });
@@ -1926,6 +1930,15 @@ fn malformed_http_retries_keep_final_protocol_error_category() {
                                 .unwrap();
                         assert!(mapped.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
                         assert!(!mapped.is_instance_of::<errors::TransportError>(py));
+                        let diagnostic = mapped.to_string();
+                        assert!(
+                            diagnostic.contains(if malformed_status {
+                                "invalid HTTP status-code"
+                            } else {
+                                "invalid HTTP header"
+                            }),
+                            "{diagnostic}"
+                        );
                     }
                 });
                 bounded(client.close()).await;

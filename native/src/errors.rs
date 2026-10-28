@@ -106,5 +106,8 @@ where
     }
     // Construction, unparseable protocol responses, runtime and closed-client
     // failures have no service-error or network-category substitution.
-    Ok(pyo3::exceptions::PyRuntimeError::new_err(error.to_string()))
+    Ok(pyo3::exceptions::PyRuntimeError::new_err(format!(
+        "{}",
+        aws_smithy_types::error::display::DisplayErrorContext(error)
+    )))
 }
