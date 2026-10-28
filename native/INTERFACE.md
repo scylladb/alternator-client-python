@@ -34,8 +34,9 @@ and shutdown without replacing this runtime.
 ## Client boundary to implement in transport and converter changes
 
 Construction and close are exported by the transport implementation. Execution
-and its error classes remain reserved for converter and operation changes; no
-successful placeholder data operations exist.
+remains reserved for operation changes; the converter change exports the
+version-1 error classes described below. No successful placeholder data
+operations exist.
 
 | Boundary | Signature and behavior |
 | --- | --- |
@@ -158,3 +159,74 @@ SDK future and connection lease, closing that request's socket. Async creation
 binds the Python event loop; async methods reject another loop. Raw sync close
 can drain after that loop has gone away; the async Python facade retains its
 public loop checks.
+
+## Conversion and error layer (issue #134)
+
+`conversion::Input::from_python` accepts the ten model operation names and
+converts an ordinary dictionary directly into an owned typed SDK input variant.
+It completes under the GIL, before detach/spawn. It validates required/unknown
+members, scalar/container types, modeled minimums and native integer widths.
+Modeled maximums remain service checks, matching Python request acceptance.
+AttributeValue requires exactly one recognized type member;
+cyclic or excessively nested inputs fail with a parameter path. Blob inputs
+accept bytes/bytearray, numeric attributes retain their string spelling and sets
+remain ordered lists. No Python serialization, SDK validation or transport runs.
+
+`conversion::Output` variants project typed SDK outputs into fresh
+dictionaries. Optional SDK fields retain absence and explicit empty
+containers. The captured final response supplies compact presence markers for
+SDK-defaulted scalars (Query/Scan counts) and required nested batch members.
+Generated routes skip bulk attribute contents; JSON scanning and a second
+decompression of compressed responses remain. Wire presence never substitutes
+for typed SDK values. `response::success` and `response::service_error`
+require the response belonging to the final attempt, so an earlier HTTP
+response cannot supply metadata after a dispatch failure. Rust decodes
+gzip/zlib/raw-deflate bodies without modifying captured wire bytes or headers.
+Metadata uses the full operation attempt count, including attempts without
+HTTP responses. Transport-captured header names are normalized to lowercase.
+Header values are retained byte-exact and decoded losslessly as Latin-1 in
+HTTPHeaders; service context additionally keeps the captured pairs, including
+duplicate entries.
+
+The exported `ValidationError` instances produced by conversion have a string
+`report`. `ServiceError` instances have `response`, `operation_name`, original
+wire `body: bytes` and `headers: list[tuple[str, bytes]]`. They retain body fields
+and message casing, and normalize protocol `__type` into Error.Code. Binary
+attributes in conditional failure Items and transaction cancellation reasons
+are decoded only when the SDK successfully parsed that concrete modeled error
+shape. SDK-generic and metadata-only projections retain these fields as JSON,
+including base64 strings. Duplicate members retain their last JSON value,
+including null, without reconstructing overwritten binary values. Error codes
+can also come from `code` or the protocol error-type header. Canonical Python
+error identity remains independent of the SDK-selected modeled shape. The
+private `_errors.adapt_error` uses one cached, concurrent
+safe botocore model/class registry to construct ClientError subclasses without
+an admin client. Unknown codes use ClientError; validation uses
+ParamValidationError.
+
+Decoded payload retention has explicit exceptions for `Error` and
+`ResponseMetadata`. Dictionary-valued payloads at these names retain unrelated
+nested keys through a shallow merge. Generated `Error.Code` and `Error.Message`
+take precedence. `ResponseMetadata` reserves `HTTPStatusCode`, `HTTPHeaders`,
+`RequestId`, `RetryAttempts` and `MaxAttemptsReached`, including genuine fields
+that are absent. Body values cannot supply optional request IDs or retry flags,
+and body headers are never merged into genuine `HTTPHeaders`. Non-dictionary
+payload values at these two names are replaced by generated dictionaries.
+Overwritten originals remain available in raw `body`.
+
+`TransportError` instances have `category` and `endpoint_url`. Categories map to
+botocore EndpointConnectionError (`endpoint_connection`), ConnectionClosedError
+(`connection_closed`), ConnectTimeoutError (`connect_timeout`), ReadTimeoutError
+(`read_timeout`) and SSLError (`tls`). The original structured Rust cause stays
+in the SDK error chain. Runtime/construction, closed-client, dispatch protocol
+and successful-status deserialization failures raise RuntimeError. Non-2xx SDK
+parse failures with a JSON-object body also raise RuntimeError, as do body
+decompression failures and invalid UTF-8 outside the generic server-error path.
+Other non-2xx empty, non-JSON UTF-8 and non-object JSON bodies use the ServiceError
+status/header-code fallback. Generic server errors retain their status-based
+ServiceError fallback. Complete-operation deadlines map to ReadTimeoutError
+under the existing native timeout policy.
+
+These additions retain interface version 1. Converter types and Rust projection
+helpers are available for #135/#136; no execute methods, public factories, or
+successful data-operation placeholders are exported by this change.

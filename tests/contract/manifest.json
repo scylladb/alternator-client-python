@@ -1135,7 +1135,7 @@
   },
   "error_payload_policy": {
     "python": "Canonical Error plus only body fields declared by the operation error shape; unmodeled body fields are discarded.",
-    "rust": "Canonical Error plus every body field except protocol __type; preserve message casing and unknown members. Modeled Item/CancellationReasons attributes use decoded Python values. Preserve original wire body and headers separately in native exception context."
+    "rust": "Preserve body fields, message casing and unknown members except protocol __type and reserved envelope collisions. Dictionary Error/ResponseMetadata payloads retain unrelated nested keys through a shallow merge. Generated Error.Code/Message win; metadata reserves HTTPStatusCode, HTTPHeaders, RequestId, RetryAttempts and MaxAttemptsReached even when genuine optional values are absent. Never merge body HTTPHeaders into genuine headers. Replace non-dictionary Error/ResponseMetadata values; overwritten originals remain in raw body. Modeled Item/CancellationReasons attributes use decoded Python values. Preserve original wire body and headers separately in native exception context."
   },
   "discovery": {
     "topology": "GET /localnodes through the Rust HTTP transport; never Scan topology system tables.",

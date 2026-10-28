@@ -13,7 +13,10 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = []
-extension = ["dep:pyo3", "dep:pyo3-async-runtimes", "pyo3/extension-module"]
+python = ["dep:pyo3", "dep:pyo3-async-runtimes"]
+extension = ["python", "pyo3/extension-module"]
+# Embedded-Python converter tests must not enable extension-module linking.
+conversion-tests = ["python", "pyo3/auto-initialize"]
 
 [dependencies]
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
@@ -25,9 +28,14 @@ alternator-client = { git = "https://github.com/scylladb/alternator-client-rust"
 aws-sdk-dynamodb = { version = "=1.130.0", default-features = false, features = ["rt-tokio"] }
 aws-credential-types = "=1.3.0"
 aws-smithy-runtime-api = { version = "=1.19.0", features = ["client", "http-1x"] }
+aws-smithy-json = "=0.63.1"
 aws-smithy-types = { version = "=1.8.1", features = ["http-body-1-x"] }
 bytes = "1.11.1"
 http = "1.5.0"
+serde_core = { version = "=1.0.229", default-features = false }
+serde_json = { version = "1.0", features = ["arbitrary_precision", "raw_value"] }
+flate2 = "1.1.5"
+base64 = "0.22.1"
 http-body-util = "0.1.3"
 hyper = { version = "1.11.1", features = ["client", "http1"] }
 hyper-util = { version = "0.1.21", features = ["tokio"] }
@@ -51,6 +59,4 @@ path = "tests/startup_cleanup.rs"
 harness = false
 [dev-dependencies]
 aws-smithy-async = "=1.3.0"
-serde_json = "1.0"
-flate2 = "1.1.5"
 rcgen = "0.13"
