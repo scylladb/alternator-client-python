@@ -418,6 +418,30 @@ assert [type(value) for value in error.response["future"]] == [
 ]
 
 # Preserve Python JSON numeric semantics and the modeled error with wire context.
+digit_limit = sys.get_int_max_str_digits()
+print("integer projection startup digit limit:", digit_limit, flush=True)
+large_integer = 10**5000 - 1
+for sign in (b"", b"-"):
+    token = sign + b"9" * 5000
+    body = b'{"__type":"FutureError","future":' + token + b"}"
+    headers = [("x-amzn-requestid", b"long-integer")]
+    error = native.service("GetItem", 400, body, headers, 2)
+    assert type(error) is native.ServiceError
+    assert type(error.response["future"]) is int
+    assert error.response["future"] == (-large_integer if sign else large_integer)
+    assert error.response["Error"]["Code"] == "FutureError"
+    assert error.response["ResponseMetadata"]["RequestId"] == "long-integer"
+    assert error.body == body and error.headers == headers
+
+body = b'{"__type":"FutureError","message":{"number":' + b"9" * 5000 + b"}}"
+error = native.service("GetItem", 400, body, [], 1)
+assert error.response["Error"]["Message"] == {"number": large_integer}
+error.response["message"]["number"] = 0
+assert error.response["Error"]["Message"] == {"number": large_integer}
+assert error.body == body
+assert sys.get_int_max_str_digits() == digit_limit
+
+# Float overflow retains the existing Python JSON behavior.
 body = b'{"__type":"ResourceNotFoundException","future":[1e400,-1e400]}'
 headers = [("x-amzn-requestid", b"overflow")]
 error = native.service("GetItem", 400, body, headers, 2)

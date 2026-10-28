@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::io::Read;
 
 use base64::Engine;
-use pyo3::exceptions::PyRuntimeError;
+use pyo3::exceptions::{PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBool, PyBytes, PyDict, PyFloat, PyInt, PyList, PyString};
 use serde_json::value::RawValue;
@@ -195,6 +195,33 @@ pub fn success<'py>(
     Ok(result)
 }
 
+fn integer_to_python<'py>(py: Python<'py>, token: &str) -> PyResult<Bound<'py, PyAny>> {
+    match py.get_type::<PyInt>().call1((token,)) {
+        Ok(value) => Ok(value),
+        Err(error) if error.is_instance_of::<PyValueError>(py) => {
+            // This is a validated JSON integer. The decimal-string cutoff
+            // limits int(str), not Python integer arithmetic or representability.
+            let (negative, digits) = match token.strip_prefix('-') {
+                Some(digits) => (true, digits),
+                None => (false, token),
+            };
+            let mut value = 0u64.into_pyobject(py)?.into_any();
+            for chunk in digits.as_bytes().chunks(18) {
+                let small = chunk
+                    .iter()
+                    .fold(0u64, |n, digit| n * 10 + u64::from(digit - b'0'));
+                value = value.mul(10u64.pow(chunk.len() as u32))?.add(small)?;
+            }
+            if negative {
+                value.neg()
+            } else {
+                Ok(value)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 fn scalar_to_python<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, PyAny>> {
     Ok(match value {
         Value::Null => py.None().into_bound(py),
@@ -206,7 +233,7 @@ fn scalar_to_python<'py>(py: Python<'py>, value: Value) -> PyResult<Bound<'py, P
                 v.into_pyobject(py)?.into_any()
             } else if !v.to_string().contains(['.', 'e', 'E']) {
                 // arbitrary_precision retains integer tokens beyond i64/u64.
-                py.get_type::<PyInt>().call1((v.to_string(),))?
+                integer_to_python(py, &v.to_string())?
             } else {
                 // Python JSON parsing permits float overflow to +/-infinity.
                 py.get_type::<PyFloat>().call1((v.to_string(),))?

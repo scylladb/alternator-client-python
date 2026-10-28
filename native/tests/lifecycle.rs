@@ -2052,6 +2052,102 @@ fn modeled_error_projection_retains_sdk_parsing_categories() {
 
 #[cfg(feature = "conversion-tests")]
 #[test]
+fn sdk_accepted_long_integer_retains_service_context() {
+    use _alternator_rust::errors;
+    use pyo3::prelude::*;
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        let body = format!(
+            r#"{{"__type":"FutureError","future":{}}}"#,
+            "9".repeat(5000)
+        );
+        server.push(Reply::json(400, &body));
+        let mut cfg = config(server.port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        let (result, metadata) = bounded(
+            client.run(|sdk| async move { sdk.query().table_name("contract").send().await }),
+        )
+        .await
+        .unwrap();
+        let error = result.unwrap_err();
+        let service = error.as_service_error().unwrap();
+        assert!(std::error::Error::source(service)
+            .unwrap()
+            .is::<aws_smithy_types::error::ErrorMetadata>());
+        Python::attach(|py| {
+            let mapped = errors::sdk_error(py, "Query", "http://node", &error, &metadata).unwrap();
+            assert!(mapped.is_instance_of::<errors::ServiceError>(py));
+            let value = mapped.value(py);
+            let response = value.getattr("response").unwrap();
+            let number = response.get_item("future").unwrap();
+            assert!(number.is_exact_instance_of::<pyo3::types::PyInt>());
+            assert!(number
+                .eq(py.eval(c"10**5000 - 1", None, None).unwrap())
+                .unwrap());
+            assert_eq!(
+                response
+                    .get_item("Error")
+                    .unwrap()
+                    .get_item("Code")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "FutureError"
+            );
+            assert_eq!(
+                value
+                    .getattr("operation_name")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "Query"
+            );
+            assert_eq!(
+                value.getattr("body").unwrap().extract::<Vec<u8>>().unwrap(),
+                body.as_bytes()
+            );
+            assert_eq!(
+                value
+                    .getattr("headers")
+                    .unwrap()
+                    .extract::<Vec<(String, Vec<u8>)>>()
+                    .unwrap(),
+                metadata.responses[0].headers
+            );
+            let context = response.get_item("ResponseMetadata").unwrap();
+            assert_eq!(
+                context
+                    .get_item("HTTPStatusCode")
+                    .unwrap()
+                    .extract::<u16>()
+                    .unwrap(),
+                400
+            );
+            assert_eq!(
+                context
+                    .get_item("RetryAttempts")
+                    .unwrap()
+                    .extract::<u32>()
+                    .unwrap(),
+                0
+            );
+            assert!(!context
+                .get_item("RequestId")
+                .unwrap()
+                .extract::<String>()
+                .unwrap()
+                .is_empty());
+        });
+        server.request().await;
+        bounded(client.close()).await;
+        assert_eq!(client.live_drivers(), 0);
+        server.stop().await;
+    });
+}
+
+#[cfg(feature = "conversion-tests")]
+#[test]
 fn error_binary_fields_follow_the_successfully_parsed_sdk_shape() {
     use _alternator_rust::errors;
     use pyo3::prelude::*;
