@@ -1376,6 +1376,137 @@ fn parsed_sdk_scalars_preserve_final_response_presence_and_retry_metadata() {
 }
 
 #[test]
+fn connector_read_timeout_preserves_the_routed_endpoint() {
+    use _alternator_rust::transport_failure::{Category, TransportFailure};
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        server.push(Reply {
+            release: Some(Arc::new(Semaphore::new(0))),
+            ..Reply::json(200, "{}")
+        });
+        let mut cfg = config(server.port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        // Keep the original URI spelling without an implicit root slash.
+        let endpoint = format!("http://127.0.0.1:{}", server.port);
+        let routed = endpoint.clone();
+        let (output, metadata) = bounded(client.run(|sdk| async move {
+            sdk.get_item()
+                .table_name("contract")
+                .key("pk", AttributeValue::S("x".into()))
+                .customize()
+                .mutate_request(move |request| {
+                    request.set_uri(routed.clone()).unwrap();
+                })
+                .config_override(
+                    aws_sdk_dynamodb::config::Builder::new().timeout_config(
+                        aws_smithy_types::timeout::TimeoutConfig::builder()
+                            .read_timeout(Duration::from_millis(30))
+                            .operation_timeout(Duration::from_secs(2))
+                            .operation_attempt_timeout(Duration::from_secs(2))
+                            .build(),
+                    ),
+                )
+                .send()
+                .await
+        }))
+        .await
+        .unwrap();
+        let error = output.unwrap_err();
+        let failure = TransportFailure::find(&error).expect("connector timeout source");
+        assert_eq!(failure.category, Category::ReadTimeout);
+        assert_eq!(failure.endpoint_url, endpoint);
+        assert_eq!(metadata.attempts, 1);
+        assert!(metadata.responses.is_empty());
+        #[cfg(feature = "conversion-tests")]
+        pyo3::Python::attach(|py| {
+            use pyo3::prelude::*;
+            let mapped = _alternator_rust::errors::sdk_error(
+                py,
+                "GetItem",
+                "http://placeholder",
+                &error,
+                &metadata,
+            )
+            .unwrap();
+            assert_eq!(
+                mapped
+                    .value(py)
+                    .getattr("category")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                "read_timeout"
+            );
+            assert_eq!(
+                mapped
+                    .value(py)
+                    .getattr("endpoint_url")
+                    .unwrap()
+                    .extract::<String>()
+                    .unwrap(),
+                endpoint
+            );
+        });
+        let (connection, _, _) = server.request().await;
+        bounded(client.close()).await;
+        assert_eq!(client.live_drivers(), 0);
+        server.disconnected(connection).await;
+        server.stop().await;
+    });
+}
+
+#[test]
+fn unsupported_request_scheme_stays_a_nonretryable_local_error() {
+    use _alternator_rust::transport_failure::TransportFailure;
+    shared_runtime().unwrap().block_on(async {
+        let server = Server::start().await;
+        let mut cfg = config(server.port);
+        cfg.max_attempts = 2;
+        let client = Client::create(cfg).await.unwrap();
+        let endpoint = format!("ftp://127.0.0.1:{}/local/path", server.port);
+        let (output, metadata) = bounded(client.run(|sdk| async move {
+            sdk.get_item()
+                .table_name("contract")
+                .key("pk", AttributeValue::S("x".into()))
+                .customize()
+                .mutate_request(move |request| {
+                    request.set_uri(endpoint.clone()).unwrap();
+                })
+                .send()
+                .await
+        }))
+        .await
+        .unwrap();
+        let error = output.unwrap_err();
+        assert!(TransportFailure::find(&error).is_none());
+        assert!(matches!(
+            &error,
+            aws_smithy_runtime_api::client::result::SdkError::DispatchFailure(failure)
+                if failure.is_user()
+        ));
+        assert_eq!(metadata.attempts, 1);
+        assert!(metadata.responses.is_empty());
+        #[cfg(feature = "conversion-tests")]
+        pyo3::Python::attach(|py| {
+            let mapped = _alternator_rust::errors::sdk_error(
+                py,
+                "GetItem",
+                "http://placeholder",
+                &error,
+                &metadata,
+            )
+            .unwrap();
+            assert!(mapped.is_instance_of::<pyo3::exceptions::PyRuntimeError>(py));
+            assert!(mapped.to_string().contains("unsupported endpoint scheme"));
+        });
+        bounded(client.close()).await;
+        assert_eq!(client.live_drivers(), 0);
+        server.stop().await;
+    });
+}
+
+#[test]
 fn connection_and_connect_timeout_have_structured_categories() {
     use _alternator_rust::{
         transport::Transport,

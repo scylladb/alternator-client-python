@@ -274,8 +274,13 @@ fn connect_failure(error: BoxError, endpoint: &str) -> BoxError {
         .is_some_and(|e| e.kind() == io::ErrorKind::TimedOut)
     {
         Category::ConnectTimeout
-    } else {
+    } else if error.downcast_ref::<io::Error>().is_some()
+        || error.downcast_ref::<hyper::Error>().is_some()
+    {
         Category::EndpointConnection
+    } else {
+        // Local URI/configuration errors are not retryable network failures.
+        return error;
     };
     Box::new(TransportFailure::new(category, endpoint, error))
 }
@@ -365,6 +370,11 @@ mod tests {
     #[test]
     fn connect_classification_preserves_categories_and_wraps_once() {
         let endpoint = "https://node:8043";
+        for local in ["HTTP endpoint has no host", "unsupported endpoint scheme"] {
+            let error = connect_failure(local.into(), endpoint);
+            assert!(TransportFailure::find(error.as_ref()).is_none());
+            assert!(connector_error(error).is_user());
+        }
         for kind in [io::ErrorKind::ConnectionReset, io::ErrorKind::UnexpectedEof] {
             let error = connect_failure(Box::new(io::Error::new(kind, "handshake I/O")), endpoint);
             assert_eq!(

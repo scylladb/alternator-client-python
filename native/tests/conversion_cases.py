@@ -746,10 +746,10 @@ for code, payload in (
         {"CancellationReasons": [{"Code": "None", "Item": None}]},
     ),
 ):
-    error = native.service(
-        "PutItem", 400, json.dumps({"__type": code, **payload}).encode(), [], 1
-    )
+    body = json.dumps({"__type": code, **payload}).encode()
+    error = native.service("PutItem", 400, body, [], 1, code)
     assert type(error) is native.ServiceError
+    assert error.body == body
     for name, value in payload.items():
         assert error.response[name] == value
 
