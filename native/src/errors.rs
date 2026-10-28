@@ -67,6 +67,21 @@ where
         // The pinned SDK also wraps successful-status deserialization failures
         // in ServiceError::unhandled. Preserve those as protocol failures.
         if !(200..300).contains(&service.raw().status().as_u16()) {
+            // Only a successfully parsed concrete source authorizes modeled
+            // binary conversion, independently of body/header error identity.
+            let modeled = service.err().source().and_then(|source| {
+                use crate::response::ModeledError;
+                use aws_sdk_dynamodb::types::error::{
+                    ConditionalCheckFailedException, TransactionCanceledException,
+                };
+                if source.is::<ConditionalCheckFailedException>() {
+                    Some(ModeledError::ConditionalCheckFailed)
+                } else if source.is::<TransactionCanceledException>() {
+                    Some(ModeledError::TransactionCanceled)
+                } else {
+                    None
+                }
+            });
             // Parsed modeled/unknown errors retain their protocol code. Parsed
             // code-less HTTP errors instead wrap ErrorMetadata itself. The
             // pinned SDK's deserialization failures have neither signal; pass
@@ -87,6 +102,7 @@ where
                 py,
                 operation,
                 metadata,
+                modeled,
                 protocol_failure,
             );
         }

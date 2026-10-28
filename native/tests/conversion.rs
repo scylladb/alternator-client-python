@@ -62,6 +62,7 @@ fn metadata(body: Vec<u8>, headers: Vec<(String, Vec<u8>)>, attempts: u32) -> Op
 }
 
 #[pyfunction]
+#[pyo3(signature = (operation, status, body, headers, attempts, modeled=None))]
 fn service(
     py: Python<'_>,
     operation: &str,
@@ -69,10 +70,23 @@ fn service(
     body: Vec<u8>,
     headers: Vec<(String, Vec<u8>)>,
     attempts: u32,
+    modeled: Option<&str>,
 ) -> PyResult<Py<PyAny>> {
     let mut metadata = metadata(body, headers, attempts);
     metadata.responses[0].status = status;
-    Ok(response::service_error(py, operation, &metadata)?
+    let modeled = match modeled {
+        Some("ConditionalCheckFailedException") => {
+            Some(response::ModeledError::ConditionalCheckFailed)
+        }
+        Some("TransactionCanceledException") => Some(response::ModeledError::TransactionCanceled),
+        None => None,
+        Some(_) => {
+            return Err(pyo3::exceptions::PyValueError::new_err(
+                "unknown modeled shape",
+            ))
+        }
+    };
+    Ok(response::service_error(py, operation, &metadata, modeled)?
         .into_value(py)
         .into_any())
 }
@@ -117,7 +131,7 @@ fn final_attempt_and_defaulted_scalars() {
         // Presence comes from the body; the actual value comes from the SDK.
         metadata.attempts = 4;
         assert!(response::success(py, &value, &metadata).is_err());
-        assert!(response::service_error(py, "Query", &metadata).is_err());
+        assert!(response::service_error(py, "Query", &metadata, None).is_err());
         PyResult::Ok(())
     })
     .unwrap();

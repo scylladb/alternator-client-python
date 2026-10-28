@@ -191,10 +191,15 @@ duplicate entries.
 The exported `ValidationError` instances produced by conversion have a string
 `report`. `ServiceError` instances have `response`, `operation_name`, original
 wire `body: bytes` and `headers: list[tuple[str, bytes]]`. They retain body fields
-and message casing, normalize protocol `__type` into Error.Code, and decode
-modeled binary attributes in conditional failure Items and transaction
-cancellation reasons. Error codes can also come from `code` or the protocol
-error-type header. The private `_errors.adapt_error` uses one cached, concurrent
+and message casing, and normalize protocol `__type` into Error.Code. Binary
+attributes in conditional failure Items and transaction cancellation reasons
+are decoded only when the SDK successfully parsed that concrete modeled error
+shape. SDK-generic and metadata-only projections retain these fields as JSON,
+including base64 strings. Duplicate members retain their last JSON value,
+including null, without reconstructing overwritten binary values. Error codes
+can also come from `code` or the protocol error-type header. Canonical Python
+error identity remains independent of the SDK-selected modeled shape. The
+private `_errors.adapt_error` uses one cached, concurrent
 safe botocore model/class registry to construct ClientError subclasses without
 an admin client. Unknown codes use ClientError; validation uses
 ParamValidationError.

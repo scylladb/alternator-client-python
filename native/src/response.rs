@@ -360,7 +360,7 @@ fn decode_attribute(value: &Bound<'_, PyAny>, depth: usize) -> PyResult<()> {
         ));
     }
     let dict = value.cast::<PyDict>().map_err(failure)?;
-    // The SDK skips null union members when another variant is present.
+    // The SDK skips null union tokens; JSON projection retains their last value.
     let mut variants = 0;
     for (key, value) in dict.iter() {
         if !value.is_none() && key.extract::<String>()? != "__type" {
@@ -373,7 +373,9 @@ fn decode_attribute(value: &Bound<'_, PyAny>, depth: usize) -> PyResult<()> {
         }
     }
     if variants == 0 {
-        return Err(failure("service AttributeValue has no valid type member"));
+        // The SDK already parsed this shape. A duplicate null can overwrite a
+        // valid wire member in the retained JSON dictionary; keep that null.
+        return Ok(());
     }
     for (key, value) in dict.iter() {
         if value.is_none() && variants > 0 {
@@ -426,18 +428,28 @@ fn decode_item(value: &Bound<'_, PyAny>, depth: usize) -> PyResult<()> {
     Ok(())
 }
 
+/// Binary-bearing error shape successfully parsed by the SDK. Canonical Python
+/// error codes and operation membership alone do not establish this context.
+#[derive(Clone, Copy)]
+pub enum ModeledError {
+    ConditionalCheckFailed,
+    TransactionCanceled,
+}
+
 pub fn service_error(
     py: Python<'_>,
     operation: &str,
     metadata: &OperationMetadata,
+    modeled: Option<ModeledError>,
 ) -> PyResult<PyErr> {
-    service_error_with_protocol_failure(py, operation, metadata, None)
+    service_error_with_protocol_failure(py, operation, metadata, modeled, None)
 }
 
 pub(crate) fn service_error_with_protocol_failure(
     py: Python<'_>,
     operation: &str,
     metadata: &OperationMetadata,
+    modeled: Option<ModeledError>,
     protocol_failure: Option<String>,
 ) -> PyResult<PyErr> {
     let attempt = final_response(metadata)?;
@@ -535,12 +547,12 @@ pub(crate) fn service_error_with_protocol_failure(
         },
     )?;
     result.set_item("Error", error)?;
-    if code == "ConditionalCheckFailedException" {
+    if matches!(modeled, Some(ModeledError::ConditionalCheckFailed)) {
         if let Some(item) = result.get_item("Item")?.filter(|item| !item.is_none()) {
             decode_item(&item, 0)?;
         }
     }
-    if code == "TransactionCanceledException" {
+    if matches!(modeled, Some(ModeledError::TransactionCanceled)) {
         if let Some(reasons) = result
             .get_item("CancellationReasons")?
             .filter(|reasons| !reasons.is_none())

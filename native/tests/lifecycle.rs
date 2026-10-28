@@ -1921,6 +1921,98 @@ fn modeled_error_projection_retains_sdk_parsing_categories() {
 
 #[cfg(feature = "conversion-tests")]
 #[test]
+fn error_binary_fields_follow_the_successfully_parsed_sdk_shape() {
+    use _alternator_rust::errors;
+    use pyo3::prelude::*;
+    use pyo3::types::PyBytes;
+    shared_runtime().unwrap().block_on(async {
+        let mut server = Server::start().await;
+        let mut cfg = config(server.port);
+        cfg.max_attempts = 1;
+        let client = Client::create(cfg).await.unwrap();
+        let deep_item = format!(
+            r#"{{"__type":"ConditionalCheckFailedException","Item":{{"a":{}{{"B":"AP8="}}{}}}}}"#,
+            r#"{"M":{"a":"#.repeat(64),
+            "}}".repeat(64)
+        );
+        // Operation/header select the SDK shape; the body retains Python identity.
+        // Shape: 0 = generic, 1 = conditional, 2 = cancellation.
+        for (operation, body, header, shape, binary, canonical) in [
+            ("Query", deep_item.as_str(), None, 0, false, "ConditionalCheckFailedException"),
+            ("Query", r#"{"__type":"ConditionalCheckFailedException","Item":[]}"#, None, 0, false, "ConditionalCheckFailedException"),
+            ("Query", r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{"B":"AP8="}}}"#, None, 0, false, "ConditionalCheckFailedException"),
+            ("Query", r#"{"__type":"TransactionCanceledException","CancellationReasons":{}}"#, None, 0, false, "TransactionCanceledException"),
+            ("Query", r#"{"__type":"TransactionCanceledException","CancellationReasons":[{"Item":{"a":{"B":"AP8="}}}]}"#, None, 0, false, "TransactionCanceledException"),
+            ("PutItem", r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{"B":"AP8="}}}"#, None, 1, true, "ConditionalCheckFailedException"),
+            ("PutItem", r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{"B":"AP8="}}}"#, Some("FutureError"), 0, false, "ConditionalCheckFailedException"),
+            ("PutItem", r#"{"__type":"FutureError","Item":{"a":{"B":"AP8="}}}"#, Some("ConditionalCheckFailedException"), 1, true, "FutureError"),
+            ("TransactWriteItems", r#"{"__type":"TransactionCanceledException","CancellationReasons":[{"Item":{"a":{"B":"AP8="}}}]}"#, None, 2, true, "TransactionCanceledException"),
+            ("PutItem", r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{"B":"AP8=","B":null}}}"#, None, 1, false, "ConditionalCheckFailedException"),
+            ("PutItem", r#"{"__type":"ConditionalCheckFailedException","Item":{"a":{"future":7,"future":null}}}"#, None, 1, false, "ConditionalCheckFailedException"),
+            ("TransactWriteItems", r#"{"__type":"TransactionCanceledException","CancellationReasons":[{"Item":{"a":{"B":"AP8=","B":null}}}]}"#, None, 2, false, "TransactionCanceledException"),
+        ] {
+            let mut reply = Reply::json(400, body);
+            if let Some(header) = header {
+                reply.extra_headers = format!("x-amzn-errortype: {header}\r\n").into_bytes();
+            }
+            server.push(reply);
+            // Keep each operation's actual SDK error type through sdk_error.
+            macro_rules! project {
+                ($request:expr) => {{
+                    let (result, metadata) = bounded(client.run(|sdk| async move { $request(sdk).await })).await.unwrap();
+                    assert_eq!(metadata.attempts, 1);
+                    let error = result.unwrap_err();
+                    let source = std::error::Error::source(error.as_service_error().unwrap()).unwrap();
+                    assert_eq!(source.is::<aws_sdk_dynamodb::types::error::ConditionalCheckFailedException>(), shape == 1);
+                    assert_eq!(source.is::<aws_sdk_dynamodb::types::error::TransactionCanceledException>(), shape == 2);
+                    assert_eq!(source.is::<aws_smithy_types::error::ErrorMetadata>(), shape == 0);
+                    let mapped = Python::attach(|py| errors::sdk_error(py, operation, "http://node", &error, &metadata))
+                        .unwrap_or_else(|error| error);
+                    (mapped, metadata)
+                }};
+            }
+            let (mapped, metadata) = match operation {
+                "Query" => project!(|sdk: &alternator_driver::AlternatorClient| sdk.query().table_name("contract").send()),
+                "PutItem" => project!(|sdk: &alternator_driver::AlternatorClient| sdk.put_item().table_name("contract").item("a", AttributeValue::S("x".into())).send()),
+                "TransactWriteItems" => project!(|sdk: &alternator_driver::AlternatorClient| sdk.transact_write_items().send()),
+                _ => unreachable!(),
+            };
+            Python::attach(|py| {
+                assert!(mapped.is_instance_of::<errors::ServiceError>(py), "{operation}: {mapped}");
+                let value = mapped.value(py);
+                let response = value.getattr("response").unwrap();
+                let expected = py.import("json").unwrap().call_method1("loads", (body,)).unwrap();
+                expected.del_item("__type").unwrap();
+                if binary {
+                    let item = if shape == 1 {
+                        expected.get_item("Item").unwrap()
+                    } else {
+                        expected.get_item("CancellationReasons").unwrap().get_item(0).unwrap().get_item("Item").unwrap()
+                    };
+                    item.get_item("a").unwrap().set_item("B", PyBytes::new(py, &[0, 255])).unwrap();
+                }
+                for (key, expected) in expected.cast::<pyo3::types::PyDict>().unwrap().iter() {
+                    assert!(response.get_item(&key).unwrap().eq(expected).unwrap(), "{operation}: {body}");
+                }
+                assert_eq!(response.get_item("Error").unwrap().get_item("Code").unwrap().extract::<String>().unwrap(), canonical);
+                assert_eq!(value.getattr("operation_name").unwrap().extract::<String>().unwrap(), operation);
+                assert_eq!(value.getattr("body").unwrap().extract::<Vec<u8>>().unwrap(), body.as_bytes());
+                assert_eq!(value.getattr("headers").unwrap().extract::<Vec<(String, Vec<u8>)>>().unwrap(), metadata.responses[0].headers);
+                let context = response.get_item("ResponseMetadata").unwrap();
+                assert_eq!(context.get_item("HTTPStatusCode").unwrap().extract::<u16>().unwrap(), 400);
+                assert_eq!(context.get_item("RetryAttempts").unwrap().extract::<u32>().unwrap(), 0);
+                assert!(!context.get_item("RequestId").unwrap().extract::<String>().unwrap().is_empty());
+            });
+            server.request().await;
+        }
+        bounded(client.close()).await;
+        assert_eq!(client.live_drivers(), 0);
+        server.stop().await;
+    });
+}
+
+#[cfg(feature = "conversion-tests")]
+#[test]
 fn unknown_success_attributes_match_python_empty_structures() {
     use _alternator_rust::{conversion::Output, response};
     use pyo3::prelude::*;

@@ -83,9 +83,14 @@ precedence; metadata reserves HTTPStatusCode, HTTPHeaders, RequestId,
 RetryAttempts and MaxAttemptsReached, even when genuine optional values are
 absent. Body HTTPHeaders are never merged with genuine headers. Non-dictionary
 values at the two envelope names are replaced by generated dictionaries;
-overwritten originals remain in raw `.body`. Modeled binary Item and
-CancellationReasons values remain decoded Python values. Native exception
-context also preserves the original wire body and headers for the facade.
+overwritten originals remain in raw `.body`. Binary Item and CancellationReasons
+values are decoded only for the concrete error shape successfully parsed by the
+SDK. SDK-generic and metadata-only projections retain these fields as JSON,
+including base64 strings, even when the canonical error code names a modeled
+exception. Python error code/class precedence remains independent of this
+eligibility. Duplicate members keep their last JSON value, including null;
+overwritten values remain in the original wire body. Native exception context
+also preserves the original wire body and headers for the facade.
 Header lookup is case-insensitive; retain server header values even when HTTP
 decompression changes the exposed body bytes.
 Compare semantic responses and normalize only nondeterministic metadata, such

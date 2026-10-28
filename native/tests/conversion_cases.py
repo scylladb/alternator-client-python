@@ -107,7 +107,10 @@ for code, status, payload in ERROR_CASES:
         headers = [("x-amzn-requestid", b"error-id")]
         if encoding:
             headers.append(("content-encoding", encoding))
-        error = native.service("PutItem", status, wire_body, headers, 5)
+        modeled = code if code in (
+            "ConditionalCheckFailedException", "TransactionCanceledException"
+        ) else None
+        error = native.service("PutItem", status, wire_body, headers, 5, modeled)
         assert type(error) is native.ServiceError
         result = error.response
         metadata = result.pop("ResponseMetadata")
@@ -599,8 +602,8 @@ for payload, headers in (
     error = native.service("GetItem", 400, json.dumps(payload).encode(), headers, 1)
     assert error.response["Error"]["Code"] == "ResourceNotFoundException"
 
-# Malformed non-null binary/container shapes are protocol failures, not Python
-# argument errors. Dense map/list null entries are malformed in the pinned SDK.
+# Metadata-only projection has no SDK modeled proof. Even recognized codes
+# retain binary-looking fields as JSON, including malformed containers.
 for code, payload in (
     ("ConditionalCheckFailedException", {"Item": []}),
     ("ConditionalCheckFailedException", {"Item": {"a": {"B": 7}}}),
@@ -629,14 +632,38 @@ for code, payload in (
     ("TransactionCanceledException", {"CancellationReasons": [None]}),
     ("TransactionCanceledException", {"CancellationReasons": [{"Item": []}]}),
 ):
-    try:
-        native.service(
-            "PutItem", 400, json.dumps({"__type": code, **payload}).encode(), [], 1
-        )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError((code, payload, "malformed service shape was accepted"))
+    error = native.service(
+        "PutItem", 400, json.dumps({"__type": code, **payload}).encode(), [], 1
+    )
+    for key, value in payload.items():
+        assert error.response[key] == value
+
+# Generic binary-looking fields remain strings, even for a recognized code.
+error = native.service(
+    "PutItem", 400,
+    b'{"__type":"ConditionalCheckFailedException","Item":{"a":{"B":"AP8="}}}',
+    [], 1,
+)
+assert error.response["Item"]["a"]["B"] == "AP8="
+
+attribute = {"B": "AP8="}
+for _ in range(64):
+    attribute = {"M": {"a": attribute}}
+payload = {"__type": "ConditionalCheckFailedException", "Item": {"a": attribute}}
+body = json.dumps(payload).encode()
+error = native.service("Query", 400, body, [], 1)
+assert error.response["Item"] == payload["Item"] and error.body == body
+
+# Literal duplicates collapse to the last JSON value even after modeled proof.
+for body in (
+    b'{"__type":"ConditionalCheckFailedException","Item":{"a":{"B":"AP8=","B":null}}}',
+    b'{"__type":"ConditionalCheckFailedException","Item":{"a":{"future":7,"future":null}}}',
+):
+    error = native.service(
+        "PutItem", 400, body, [], 1, "ConditionalCheckFailedException"
+    )
+    assert error.response["Item"] == json.loads(body)["Item"]
+    assert error.body == body
 
 # Null union members are skipped when a valid variant exists; retain raw nulls.
 for variant in ("S", "N", "BOOL", "NULL", "SS", "NS", "B", "BS", "M", "L"):
@@ -649,6 +676,7 @@ for variant in ("S", "N", "BOOL", "NULL", "SS", "NS", "B", "BS", "M", "L"):
         ).encode(),
         [],
         1,
+        "ConditionalCheckFailedException",
     )
     assert error.response["Item"] == item
 
@@ -670,6 +698,7 @@ for attribute in (
         ).encode(),
         [],
         1,
+        "ConditionalCheckFailedException",
     )
     assert error.response["Item"] == item
 
