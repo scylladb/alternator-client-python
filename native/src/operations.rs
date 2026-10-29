@@ -31,21 +31,24 @@ pub(crate) async fn execute(client: &Client, input: Input) -> PyResult<Py<PyAny>
                 .run($request)
                 .await
                 .map_err(|error| PyRuntimeError::new_err(error.to_string()))?;
-            Python::attach(|py| match result {
-                Ok(output) => {
-                    Ok(
-                        response::success(py, &Output::$variant(Box::new(output)), &metadata)?
-                            .into_any()
-                            .unbind(),
-                    )
-                }
-                Err(error) => Err(errors::sdk_error(
-                    py,
-                    $name,
-                    metadata.endpoint_url.as_deref().unwrap_or(""),
-                    &error,
-                    &metadata,
-                )?),
+            // GIL waits and projection must let the runtime drive unrelated I/O.
+            tokio::task::block_in_place(|| {
+                Python::attach(|py| match result {
+                    Ok(output) => {
+                        Ok(
+                            response::success(py, &Output::$variant(Box::new(output)), &metadata)?
+                                .into_any()
+                                .unbind(),
+                        )
+                    }
+                    Err(error) => Err(errors::sdk_error(
+                        py,
+                        $name,
+                        metadata.endpoint_url.as_deref().unwrap_or(""),
+                        &error,
+                        &metadata,
+                    )?),
+                })
             })
         }};
     }
