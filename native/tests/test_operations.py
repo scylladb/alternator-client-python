@@ -18,7 +18,7 @@ import pytest
 from botocore.exceptions import ClientError, ParamValidationError
 
 from alternator import Config, RetryConfig, TimeoutConfig
-from alternator._experimental.rust._config import prepare_config
+from alternator._experimental.rust._config import PreparedConfig, prepare_config
 from alternator._experimental.rust._errors import adapt_error
 from tests.contract.cases import (
     ERROR_CASES,
@@ -83,14 +83,76 @@ async def peer(
         )
         yield server, Entrypoint(client, asynchronous)
     finally:
-        if client is not None:
-            if asynchronous:
-                await client.close_async()
-            else:
-                await asyncio.to_thread(client.close)
-            assert client._live_drivers() == 0
-        prepared.close()
-        await asyncio.to_thread(server.stop)
+        try:
+            if client is not None:
+                if asynchronous:
+                    await client.close_async()
+                else:
+                    await asyncio.to_thread(client.close)
+                assert client._live_drivers() == 0
+        finally:
+            try:
+                prepared.close()
+            finally:
+                await asyncio.to_thread(server.stop)
+
+
+@pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("failure", ["close", "drivers", "prepared"])
+async def test_peer_cleanup_after_teardown_failure(
+    asynchronous: bool, failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    close = native.NativeClient.close
+    close_async = native.NativeClient.close_async
+    prepared_close = PreparedConfig.close
+    server_stop = FakeAlternatorServer.stop
+    cleanup_failure = RuntimeError(f"injected {failure} failure")
+    body_failure = ValueError("original test failure")
+    closed_configs: list[PreparedConfig] = []
+
+    def failing_close(client: NativeClient) -> None:
+        close(client)
+        raise cleanup_failure
+
+    async def failing_close_async(client: NativeClient) -> None:
+        await close_async(client)
+        raise cleanup_failure
+
+    def live_drivers(_client: NativeClient) -> int:
+        return 1
+
+    def release_config(prepared: PreparedConfig) -> None:
+        prepared_close(prepared)
+        closed_configs.append(prepared)
+        if failure == "prepared":
+            raise cleanup_failure
+
+    monkeypatch.setattr(PreparedConfig, "close", release_config)
+    if failure == "close":
+        monkeypatch.setattr(
+            native.NativeClient,
+            "close_async" if asynchronous else "close",
+            failing_close_async if asynchronous else failing_close,
+        )
+    elif failure == "drivers":
+        monkeypatch.setattr(native.NativeClient, "_live_drivers", live_drivers)
+    server = None
+    try:
+        expected = AssertionError if failure == "drivers" else RuntimeError
+        with pytest.raises(expected) as caught:
+            async with peer(asynchronous) as (server, _entry):
+                raise body_failure
+        if failure != "drivers":
+            assert caught.value is cleanup_failure
+        assert caught.value.__context__ is body_failure
+        assert len(closed_configs) == 1
+        assert server is not None
+        with pytest.raises(RuntimeError, match="not started"):
+            server.url()
+    finally:
+        # Bound the regression probe even if peer cleanup breaks again.
+        if server is not None:
+            await asyncio.to_thread(server_stop, server)
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
