@@ -39,6 +39,7 @@ from alternator.config import (
     HeaderOptimizationConfig,
     RequestCompressionConfig,
     ResponseCompression,
+    ResponseCompressionConfig,
 )
 from alternator.core.handlers import _register_alternator_handlers
 from alternator.core.key_affinity import SeededAffinityPlan
@@ -196,7 +197,7 @@ def test_response_compression_preserves_sigv4_signature(
     config = Config(
         seed_hosts=["seed"],
         port=8000,
-        response_compression=(encoding,),
+        response_compression=ResponseCompressionConfig((encoding,)),
         header_optimization=HeaderOptimizationConfig(enabled=True),
     )
     client = boto3.client(

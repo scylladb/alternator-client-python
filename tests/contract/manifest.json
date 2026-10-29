@@ -1081,7 +1081,7 @@
     "scheme": "http or verified https.",
     "routing_scope": "ClusterScope/DatacenterScope/RackScope and explicit built-in fallback chains only; reject subclasses/custom implementations.",
     "request_compression": "NONE/GZIP, min_size_bytes, gzip_level (0..9); Rust serializes and compresses.",
-    "response_compression": "Native gzip/deflate negotiation and decompression, preserving original headers.",
+    "response_compression": "Native gzip/deflate negotiation and decompression, preserving original headers. ResponseCompressionConfig groups accepted encodings and max_decompressed_bytes. Python SDK-only per-layer output limit. Default 67108864 accepted without native schema translation and preserved in the Python admin delegate; reject nondefault overrides before callbacks/network. Native data decoding retains its fixed 32 MiB limit.",
     "header_optimization": "enabled bool only. Reject non-None whitelist or whitelist_callback before network.",
     "tls": "Verified system/custom CA trust and optional client cert/key; see nested settings.",
     "key_affinity": "NONE/RMW/ANY_WRITE and frozen table_pk_attributes. Default discovery_backoff uses native policy; reject custom backoff.",
@@ -1091,8 +1091,7 @@
     "timeouts": "connect_seconds maps connect timeout; read_seconds maps native operation/attempt deadline (not Python socket-read semantics); discovery_seconds bounds discovery request.",
     "aws_region": "Signing region; default us-east-1.",
     "user_agent": "Literal/None or supported construction callback resolved once against DEFAULT_USER_AGENT, then frozen for native and lazy Python delegate; no request callback.",
-    "parameter_validation": "True (default) accepted with native typed validation. Reject False before network; validation bypass is Python SDK-specific.",
-    "max_decompressed_response_bytes": "Python SDK-only per-layer output limit. Default 67108864 accepted without native schema translation and preserved in the Python admin delegate; reject nondefault overrides before callbacks/network. Native data decoding retains its fixed 32 MiB limit."
+    "parameter_validation": "True (default) accepted with native typed validation. Reject False before network; validation bypass is Python SDK-specific."
   },
   "tls": {
     "custom_ca_cert_paths": "Load all PEM paths before network.",

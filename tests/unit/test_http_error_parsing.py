@@ -33,7 +33,7 @@ from botocore.parsers import JSONParser
 from alternator import Config, RetryConfig, close_client, close_resource
 from alternator.async_client import close_async_client, create_async_client
 from alternator.client import create_client, create_resource
-from alternator.config import ResponseCompression, RetryMode
+from alternator.config import ResponseCompression, ResponseCompressionConfig, RetryMode
 from alternator.core.response_parser import normalize_error_response
 from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
 
@@ -50,13 +50,18 @@ async def sdk_client(
         retries=RetryConfig(max_attempts=2),
     )
     if limits:
-        config = replace(config, max_decompressed_response_bytes=limits[0])
+        config = replace(
+            config,
+            response_compression=replace(
+                config.response_compression, max_decompressed_bytes=limits[0]
+            ),
+        )
     if compression:
         config = replace(
             config,
-            response_compression=(
-                ResponseCompression.GZIP,
-                ResponseCompression.DEFLATE,
+            response_compression=replace(
+                config.response_compression,
+                encodings=(ResponseCompression.GZIP, ResponseCompression.DEFLATE),
             ),
         )
     resource: Any = None
@@ -313,7 +318,7 @@ async def test_checksum_uses_original_compressed_transport_bytes(
     config = replace(
         contract_config,
         retries=RetryConfig(mode=mode, max_attempts=2),
-        response_compression=(ResponseCompression.GZIP,),
+        response_compression=ResponseCompressionConfig((ResponseCompression.GZIP,)),
     )
     client: Any = create_client(config)
     seen: list[bytes] = []

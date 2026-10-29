@@ -131,7 +131,7 @@ def create_response_compression_request_handler(
 
 
 def create_response_compression_decode_handler(
-    max_decompressed_response_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
 ) -> Callable[..., None]:
     """Create a handler that decodes compressed HTTP responses before parsing."""
 
@@ -152,10 +152,10 @@ def create_response_compression_decode_handler(
         for layer in reversed(encodings):
             try:
                 if layer == "gzip":
-                    body = _decompress_gzip(body, max_decompressed_response_bytes)
+                    body = _decompress_gzip(body, max_decompressed_bytes)
                 elif layer == "deflate":
-                    body = _decompress_deflate(body, max_decompressed_response_bytes)
-                _check_decompressed_size(len(body), max_decompressed_response_bytes)
+                    body = _decompress_deflate(body, max_decompressed_bytes)
+                _check_decompressed_size(len(body), max_decompressed_bytes)
             except (
                 OSError,
                 EOFError,
@@ -182,7 +182,7 @@ def create_response_compression_decode_handler(
 def _check_decompressed_size(size: int, max_bytes: int) -> None:
     if size > max_bytes:
         raise _ResponseDecompressionLimitError(
-            f"exceeds max_decompressed_response_bytes ({max_bytes} bytes)"
+            f"exceeds max_decompressed_bytes ({max_bytes} bytes)"
         )
 
 

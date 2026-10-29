@@ -30,6 +30,7 @@ from alternator.config import (
     KeyRouteAffinityMode,
     RequestCompressionConfig,
     ResponseCompression,
+    ResponseCompressionConfig,
     RetryConfig,
     TlsConfig,
     TlsSessionCacheConfig,
@@ -101,8 +102,9 @@ class TestAlternatorConfig:
         assert config.request_compression.algorithm == CompressionAlgorithm.NONE
         assert config.request_compression.min_size_bytes == 1024
         assert config.request_compression.gzip_level == 9
-        assert config.response_compression == ()
-        assert config.max_decompressed_response_bytes == 67_108_864
+        assert config.response_compression.encodings == ()
+        assert config.response_compression.max_decompressed_bytes == 67_108_864
+        assert not config.response_compression.enabled
         assert config.header_optimization.enabled is False
         assert config.header_optimization.whitelist is None
         assert config.header_optimization.whitelist_callback is None
@@ -116,15 +118,40 @@ class TestAlternatorConfig:
 
     @pytest.mark.parametrize("limit", [1, 67_108_865, 2**100])
     def test_decompressed_response_limit_config_and_builder(self, limit: int) -> None:
-        direct = Config(["localhost"], 8000, max_decompressed_response_bytes=limit)
+        direct = Config(
+            ["localhost"],
+            8000,
+            response_compression=ResponseCompressionConfig(
+                encodings=(ResponseCompression.GZIP,), max_decompressed_bytes=limit
+            ),
+        )
         built = (
             AlternatorConfigBuilder()
             .with_seeds("localhost")
-            .with_max_decompressed_response_bytes(limit)
+            .with_response_compression(
+                ResponseCompression.GZIP, max_decompressed_bytes=limit
+            )
             .build()
         )
-        assert direct.max_decompressed_response_bytes == limit
-        assert built.max_decompressed_response_bytes == limit
+        assert direct.response_compression.max_decompressed_bytes == limit
+        assert built.response_compression.max_decompressed_bytes == limit
+
+    def test_response_compression_freezes_encodings(self) -> None:
+        encodings = [ResponseCompression.GZIP]
+        compression = ResponseCompressionConfig(encodings, max_decompressed_bytes=1024)
+        encodings.append(ResponseCompression.DEFLATE)
+        assert compression.encodings == (ResponseCompression.GZIP,)
+        assert compression.enabled
+
+    @pytest.mark.parametrize("encodings", [(), (ResponseCompression.GZIP,)])
+    def test_legacy_response_compression_sequences(
+        self, encodings: tuple[ResponseCompression, ...]
+    ) -> None:
+        config = Config(["localhost"], 8000, response_compression=cast(Any, encodings))
+        assert isinstance(config.response_compression, ResponseCompressionConfig)
+        assert config.response_compression.encodings == encodings
+        assert config.response_compression.enabled == bool(encodings)
+        assert config.response_compression.max_decompressed_bytes == 67_108_864
 
     @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "100", None])
     def test_invalid_decompressed_response_limit(self, value: object) -> None:
@@ -132,13 +159,17 @@ class TestAlternatorConfig:
             Config(
                 ["localhost"],
                 8000,
-                max_decompressed_response_bytes=cast(Any, value),
+                response_compression=ResponseCompressionConfig(
+                    max_decompressed_bytes=cast(Any, value)
+                ),
             )
         with pytest.raises(ConfigurationError, match="must be a positive integer"):
             (
                 AlternatorConfigBuilder()
                 .with_seeds("localhost")
-                .with_max_decompressed_response_bytes(cast(Any, value))
+                .with_response_compression(
+                    ResponseCompression.GZIP, max_decompressed_bytes=cast(Any, value)
+                )
                 .build()
             )
 
@@ -166,7 +197,7 @@ class TestAlternatorConfig:
         assert config.aws_region == "positional-region"
         assert config.user_agent == "positional-agent"
         assert config.parameter_validation is False
-        assert config.max_decompressed_response_bytes == 67_108_864
+        assert config.response_compression.max_decompressed_bytes == 67_108_864
 
 
 class TestDeprecatedConfigNames:
@@ -317,7 +348,7 @@ class TestAlternatorConfigBuilder:
             )
             .build()
         )
-        assert config.response_compression == (
+        assert config.response_compression.encodings == (
             ResponseCompression.GZIP,
             ResponseCompression.DEFLATE,
         )
@@ -332,7 +363,7 @@ class TestAlternatorConfigBuilder:
             .without_response_compression()
             .build()
         )
-        assert config.response_compression == ()
+        assert config.response_compression.encodings == ()
 
     def test_with_response_compression_rejects_invalid_encoding(self) -> None:
         """Test enabling response compression rejects invalid encodings."""

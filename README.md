@@ -206,8 +206,8 @@ config = (
 | `compression` | `CompressionAlgorithm` | `NONE` | Request compression |
 | `min_compression_size_bytes` | `int` | `1024` | Minimum body size to compress |
 | `gzip_level` | `int` | `9` | gzip compression level, `0` through `9` |
-| `response_compression` | `Sequence[ResponseCompression]` | empty | Accepted response compression encodings |
-| `max_decompressed_response_bytes` | `int` | `67108864` (64 MiB) | Maximum output bytes per Python SDK response decoding layer; positive integers only |
+| `response_compression` | `ResponseCompressionConfig` | disabled | Accepted response encodings and decoded output limit |
+| `response_compression.max_decompressed_bytes` | `int` | `67108864` (64 MiB) | Maximum decoded output bytes; positive integers only |
 | `optimize_headers` | `bool` | `False` | Enable header filtering |
 | `headers_whitelist` | `frozenset[str]` | `None` | Additional headers to keep |
 | `header_whitelist_callback` | callable | `None` | Callback for dynamic header whitelist additions |
@@ -536,13 +536,35 @@ Use `.without_response_compression()` to disable it again in builder chains.
 The Python SDK decoder limits each supported encoding layer's output to 64 MiB
 (67,108,864 bytes) by default, including intermediate layers, final output and
 `identity` layers. Concatenated gzip members share the layer's limit. Set
-`Config(..., max_decompressed_response_bytes=128 * 1024 * 1024)` or use
-`.with_max_decompressed_response_bytes(128 * 1024 * 1024)` in the builder to raise
-or lower the ceiling. The value must be a positive integer; `None`, booleans and
-unlimited settings are not supported. Output exactly at the ceiling is accepted.
+the limit in `ResponseCompressionConfig` or pass `max_decompressed_bytes` to
+`.with_response_compression(...)` in the builder to raise or lower the ceiling.
+The value must be a positive integer; `None`, booleans and unlimited settings
+are not supported. Output exactly at the ceiling is accepted.
 An over-limit HTTP error (status 400 or higher) uses the SDK's empty-body fallback
 with its existing retries and metadata. An over-limit success raises `ValueError`
 and preserves the original parser body and headers.
+
+Configure encodings and the limit together:
+
+```python
+from alternator import Config, ResponseCompression, ResponseCompressionConfig
+
+config = Config(
+    seed_hosts=["node1"],
+    port=8000,
+    response_compression=ResponseCompressionConfig(
+        encodings=(ResponseCompression.GZIP, ResponseCompression.DEFLATE),
+        max_decompressed_bytes=128 * 1024 * 1024,
+    ),
+)
+```
+
+The equivalent builder call is
+`.with_response_compression(ResponseCompression.GZIP, ResponseCompression.DEFLATE, max_decompressed_bytes=128 * 1024 * 1024)`.
+An empty `encodings` sequence disables response compression. Legacy encoding
+sequences passed directly to `Config(response_compression=...)` remain accepted
+at runtime and are normalized to `ResponseCompressionConfig`; new typed code
+should use the config object.
 
 The HTTP input is fully buffered. Decoding produces bounded chunks and stops
 when the layer exceeds the ceiling, then assembles accepted output as bytes for

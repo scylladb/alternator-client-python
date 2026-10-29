@@ -224,12 +224,12 @@ def _register_alternator_handlers(
         events.register("request-created.dynamodb.*", compress_handler)
 
     # Register response compression handlers if enabled
-    if config.response_compression:
+    if config.response_compression.enabled:
         accept_encoding_handler = create_response_compression_request_handler(
-            config.response_compression,
+            config.response_compression.encodings,
         )
         decode_response_handler = create_response_compression_decode_handler(
-            config.max_decompressed_response_bytes
+            config.response_compression.max_decompressed_bytes
         )
         # Accept-Encoding may already be covered by SigV4, so finalize it before signing.
         events.register("request-created.dynamodb.*", accept_encoding_handler)

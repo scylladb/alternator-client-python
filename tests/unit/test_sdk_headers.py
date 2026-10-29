@@ -37,6 +37,7 @@ from alternator import (
     HeaderOptimizationConfig,
     RequestCompressionConfig,
     ResponseCompression,
+    ResponseCompressionConfig,
     RetryConfig,
     close_client,
     create_client,
@@ -77,7 +78,7 @@ def _config(
         request_compression=RequestCompressionConfig(
             algorithm=CompressionAlgorithm.GZIP, min_size_bytes=0
         ),
-        response_compression=(ResponseCompression.GZIP,),
+        response_compression=ResponseCompressionConfig((ResponseCompression.GZIP,)),
         retries=RetryConfig(max_attempts=2),
     )
 

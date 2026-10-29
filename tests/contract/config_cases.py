@@ -31,6 +31,7 @@ from alternator import (
     ExponentialBackoff,
     HeaderOptimizationConfig,
     KeyRouteAffinityConfig,
+    ResponseCompressionConfig,
     RetryConfig,
     RetryMode,
     TlsSessionCacheConfig,
@@ -85,7 +86,12 @@ def rejected_native_configs(base: Config) -> list[RejectedConfig]:
         ),
         RejectedConfig(
             "python-response-decompression-limit",
-            replace(base, max_decompressed_response_bytes=1024),
+            replace(
+                base,
+                response_compression=ResponseCompressionConfig(
+                    max_decompressed_bytes=1024
+                ),
+            ),
         ),
         RejectedConfig(
             "insecure-tls", replace(base, tls=TLS(trust_all_certificates=True))

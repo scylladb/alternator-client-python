@@ -34,6 +34,7 @@ from alternator.config import (
     NodeListPollingConfig,
     RequestCompressionConfig,
     ResponseCompression,
+    ResponseCompressionConfig,
     RetryConfig,
     RetryMode,
     TimeoutConfig,
@@ -191,7 +192,7 @@ class PreparedConfig:
             "compression_min_bytes": config.request_compression.min_size_bytes,
             "gzip_level": config.request_compression.gzip_level,
             "response_compression": [
-                value.value for value in config.response_compression
+                value.value for value in config.response_compression.encodings
             ],
             "optimize_headers": config.header_optimization.enabled,
             "user_agent": config.user_agent,
@@ -216,6 +217,11 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
     _require(type(auth) is Auth, "native backend requires built-in Auth")
     for value, expected, name in (
         (config.request_compression, RequestCompressionConfig, "request_compression"),
+        (
+            config.response_compression,
+            ResponseCompressionConfig,
+            "response_compression",
+        ),
         (config.header_optimization, HeaderOptimizationConfig, "header_optimization"),
         (config.key_affinity, KeyRouteAffinityConfig, "key_affinity"),
         (config.retries, RetryConfig, "retries"),
@@ -250,9 +256,9 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
         "native backend requires parameter_validation=True",
     )
     _require(
-        config.max_decompressed_response_bytes
+        config.response_compression.max_decompressed_bytes
         == DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
-        "native backend does not support Python max_decompressed_response_bytes tuning",
+        "native backend does not support Python response_compression.max_decompressed_bytes tuning",
     )
     _require(
         config.retries.mode is RetryMode.STANDARD,
@@ -323,7 +329,7 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
         _require(
             type(key) is str and bool(key), "partition key must be a non-empty string"
         )
-    for encoding in config.response_compression:
+    for encoding in config.response_compression.encodings:
         _require(type(encoding) is ResponseCompression, "invalid response compression")
     if auth.enabled:
         _string(auth.access_key_id, "access key")
@@ -385,7 +391,7 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
         scheme=config.scheme,
         routing_scope=scope,
         request_compression=replace(config.request_compression),
-        response_compression=tuple(config.response_compression),
+        response_compression=replace(config.response_compression),
         header_optimization=HeaderOptimizationConfig(
             enabled=config.header_optimization.enabled
         ),
@@ -403,7 +409,6 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
         node_list_polling=replace(config.node_list_polling),
         timeouts=timeouts,
         parameter_validation=config.parameter_validation,
-        max_decompressed_response_bytes=config.max_decompressed_response_bytes,
         aws_region=config.aws_region,
         user_agent=user_agent,
     )
