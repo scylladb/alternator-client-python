@@ -44,7 +44,7 @@ from botocore.parsers import JSONParser, ResponseParserFactory
 from alternator import Auth, Config, RetryConfig, close_client, close_resource
 from alternator.async_client import close_async_client, create_async_client
 from alternator.client import create_client, create_resource
-from alternator.config import ResponseCompression
+from alternator.config import ResponseCompression, ResponseCompressionConfig
 from alternator.core.response_parser import (
     _async_parser_class,
     _CompiledJSONParser,
@@ -546,7 +546,9 @@ async def test_real_factories_compression_signing_concurrency_and_hooks(
     config = replace(
         contract_config,
         retries=RetryConfig(max_attempts=2),
-        response_compression=(ResponseCompression(encoding),),
+        response_compression=ResponseCompressionConfig(
+            (ResponseCompression(encoding),)
+        ),
     )
     auth = Auth.static_credentials("access", "secret")
     resource: Any = None

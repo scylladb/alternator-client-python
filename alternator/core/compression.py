@@ -12,19 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Request body compression for bandwidth optimization."""
+"""Request compression and bounded HTTP response decoding."""
 
 from __future__ import annotations
 
 import contextlib
 import gzip
+import io
 import zlib
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 
-from alternator.config import ResponseCompression
+from alternator.config import (
+    DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
+    ResponseCompression,
+)
+
+_DECOMPRESSION_CHUNK_SIZE = 64 * 1024
+
+
+class _ResponseDecompressionLimitError(ValueError):
+    """A response encoding layer expanded beyond its configured byte limit."""
 
 
 def create_compression_handler(
@@ -120,7 +130,9 @@ def create_response_compression_request_handler(
     return request_response_compression
 
 
-def create_response_compression_decode_handler() -> Callable[..., None]:
+def create_response_compression_decode_handler(
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
+) -> Callable[..., None]:
     """Create a handler that decodes compressed HTTP responses before parsing."""
 
     def decode_response_compression(
@@ -132,18 +144,89 @@ def create_response_compression_decode_handler() -> Callable[..., None]:
         if encoding is None:
             return
 
-        normalized_encoding = encoding.strip().lower()
-        if normalized_encoding == ResponseCompression.GZIP.value:
-            response_dict["body"] = _decode_gzip_response(response_dict.get("body"))
-        elif normalized_encoding == ResponseCompression.DEFLATE.value:
-            response_dict["body"] = _decode_deflate_response(response_dict.get("body"))
-        else:
+        encodings = [part.strip().lower() for part in encoding.split(",")]
+        if any(part not in {"gzip", "deflate", "identity"} for part in encodings):
             return
 
+        body = _response_body_as_bytes(response_dict.get("body"))
+        for layer in reversed(encodings):
+            try:
+                if layer == "gzip":
+                    body = _decompress_gzip(body, max_decompressed_bytes)
+                elif layer == "deflate":
+                    body = _decompress_deflate(body, max_decompressed_bytes)
+                _check_decompressed_size(len(body), max_decompressed_bytes)
+            except (
+                OSError,
+                EOFError,
+                zlib.error,
+                _ResponseDecompressionLimitError,
+            ) as exc:
+                if response_dict.get("status_code", 200) >= 400:
+                    # Only the parser view changes; original transport bytes
+                    # remain available for SDK checksum validation.
+                    response_dict["body"] = b""
+                    return
+                raise ValueError(f"decode {layer} response: {exc}") from exc
+
+        # Commit only after every layer succeeds. Unknown chains and corrupt
+        # success bodies retain their original body and headers.
+        response_dict["body"] = body
         _delete_header(headers, "Content-Encoding")
-        _delete_header(headers, "Content-Length")
+        if any(layer != "identity" for layer in encodings):
+            _delete_header(headers, "Content-Length")
 
     return decode_response_compression
+
+
+def _check_decompressed_size(size: int, max_bytes: int) -> None:
+    if size > max_bytes:
+        raise _ResponseDecompressionLimitError(
+            f"exceeds max_decompressed_bytes ({max_bytes} bytes)"
+        )
+
+
+def _decompress_gzip(body: bytes, max_bytes: int) -> bytes:
+    output = io.BytesIO()
+    size = 0
+    # read1 bounds the underlying expansion and retains gzip's member, padding,
+    # truncation and trailer checks. One extra byte detects an exceeded ceiling.
+    with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as decoder:
+        while chunk := decoder.read1(
+            min(_DECOMPRESSION_CHUNK_SIZE, max_bytes - size + 1)
+        ):
+            size += len(chunk)
+            _check_decompressed_size(size, max_bytes)
+            output.write(chunk)
+    return output.getvalue()
+
+
+def _decompress_deflate(body: bytes, max_bytes: int) -> bytes:
+    decoder = zlib.decompressobj()
+    output = io.BytesIO()
+    size = 0
+    source = memoryview(body)
+    offset = 0
+    data: bytes | memoryview = b""
+    while True:
+        if not data and offset < len(source):
+            # zlib copies unconsumed_tail. Bound its input too, so each output
+            # step cannot copy the entire remaining compressed response.
+            data = source[offset : offset + _DECOMPRESSION_CHUNK_SIZE]
+            offset += len(data)
+        chunk = decoder.decompress(
+            data, max_length=min(_DECOMPRESSION_CHUNK_SIZE, max_bytes - size + 1)
+        )
+        size += len(chunk)
+        _check_decompressed_size(size, max_bytes)
+        output.write(chunk)
+        if decoder.eof:
+            # Match zlib.decompress: consume only the first stream and tolerate
+            # trailing input. Do not flush: its length argument is not a bound.
+            return output.getvalue()
+        data = decoder.unconsumed_tail
+        if not data and not chunk and offset == len(source):
+            raise zlib.error("incomplete or truncated stream")
 
 
 def _response_accept_encoding(
@@ -157,20 +240,6 @@ def _response_accept_encoding(
         seen.add(encoding)
         parts.append(encoding.value)
     return ", ".join(parts)
-
-
-def _decode_gzip_response(body: object) -> bytes:
-    try:
-        return gzip.decompress(_response_body_as_bytes(body))
-    except Exception as exc:
-        raise ValueError(f"decode gzip response: {exc}") from exc
-
-
-def _decode_deflate_response(body: object) -> bytes:
-    try:
-        return zlib.decompress(_response_body_as_bytes(body))
-    except Exception as exc:
-        raise ValueError(f"decode deflate response: {exc}") from exc
 
 
 def _response_body_as_bytes(body: object) -> bytes:

@@ -35,6 +35,38 @@ from botocore.parsers import JSONParser, ResponseParserFactory
 _Parse = Callable[[Any], Any]
 
 
+def normalize_error_response(
+    response_dict: dict[str, Any],
+    **kwargs: Any,  # noqa: ANN401 -- botocore event handler signature
+) -> None:
+    """Let the SDK apply its status fallback to undecodable HTTP errors."""
+    if response_dict.get("status_code", 200) < 400:
+        return
+    body = response_dict.get("body")
+    if not body:
+        return
+    try:
+        text = body.decode("utf-8")
+    except UnicodeDecodeError:
+        response_dict["body"] = b""
+        return
+    if text.lstrip().startswith("{"):
+        return
+    try:
+        # Inspect non-object roots without converting integer values.
+        document = json.loads(text, parse_int=str)
+    except json.JSONDecodeError:
+        # Ordinary text errors are already handled by the SDK.
+        return
+    except RecursionError:
+        # Deep arrays still need status fallback; object parsing stays with SDK.
+        if text.lstrip().startswith("["):
+            response_dict["body"] = b""
+        return
+    if not isinstance(document, dict):
+        response_dict["body"] = b""
+
+
 class _Compiler:
     def __init__(self, parser: Any) -> None:  # noqa: ANN401 -- SDK private shape handlers
         self._parser = parser

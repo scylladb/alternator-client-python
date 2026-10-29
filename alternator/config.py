@@ -36,6 +36,7 @@ SDKClientCert = str | tuple[str, str]
 UserAgentCustomizer = Callable[[str], str]
 UserAgent = str | UserAgentCustomizer
 DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
+DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES = 64 * 1024 * 1024
 
 
 class CompressionAlgorithm(Enum):
@@ -189,6 +190,36 @@ class RequestCompressionConfig:
     def enabled(self) -> bool:
         """Whether compression is active."""
         return self.algorithm != CompressionAlgorithm.NONE
+
+
+@dataclass(frozen=True)
+class ResponseCompressionConfig:
+    """Accepted response encodings and the Python SDK decoded output limit.
+
+    The byte limit applies after each decoding step, including intermediate output.
+    """
+
+    encodings: Sequence[ResponseCompression] = field(default_factory=tuple)
+    max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "encodings", _normalize_response_compression(self.encodings)
+        )
+        if (
+            isinstance(self.max_decompressed_bytes, bool)
+            or not isinstance(self.max_decompressed_bytes, int)
+            or self.max_decompressed_bytes <= 0
+        ):
+            raise ConfigurationError(
+                "max_decompressed_bytes must be a positive integer, "
+                f"got {self.max_decompressed_bytes!r}"
+            )
+
+    @property
+    def enabled(self) -> bool:
+        """Whether response compression is active."""
+        return bool(self.encodings)
 
 
 @dataclass(frozen=True)
@@ -409,7 +440,9 @@ class Config:
     )
 
     # Response compression settings
-    response_compression: Sequence[ResponseCompression] = field(default_factory=tuple)
+    response_compression: ResponseCompressionConfig = field(
+        default_factory=ResponseCompressionConfig
+    )
 
     # Header optimization
     header_optimization: HeaderOptimizationConfig = field(
@@ -457,11 +490,17 @@ class Config:
             )
         if not self.aws_region:
             raise ConfigurationError("aws_region must not be empty")
-        object.__setattr__(
-            self,
-            "response_compression",
-            _normalize_response_compression(self.response_compression),
+        # Accept the legacy sequence form at runtime; new callers use the config object.
+        response_compression = cast(
+            "ResponseCompressionConfig | Sequence[ResponseCompression]",
+            self.response_compression,
         )
+        if not isinstance(response_compression, ResponseCompressionConfig):
+            object.__setattr__(
+                self,
+                "response_compression",
+                ResponseCompressionConfig(response_compression),
+            )
 
 
 @dataclass(frozen=True)
@@ -499,7 +538,7 @@ class AlternatorConfigBuilder:
         self._scheme: Literal["http", "https"] = "http"
         self._routing_scope: RoutingScope | None = None
         self._request_compression = RequestCompressionConfig()
-        self._response_compression: tuple[ResponseCompression, ...] = ()
+        self._response_compression = ResponseCompressionConfig()
         self._header_optimization = HeaderOptimizationConfig()
         self._tls = TLS.system_default()
         self._key_affinity = KeyRouteAffinityConfig()
@@ -572,15 +611,18 @@ class AlternatorConfigBuilder:
         self,
         encoding: ResponseCompression,
         *additional_encodings: ResponseCompression,
+        max_decompressed_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
     ) -> AlternatorConfigBuilder:
         """Enable response compression for the accepted encodings."""
         encodings = (encoding, *additional_encodings)
-        self._response_compression = _normalize_response_compression(encodings)
+        self._response_compression = ResponseCompressionConfig(
+            encodings=encodings, max_decompressed_bytes=max_decompressed_bytes
+        )
         return self
 
     def without_response_compression(self) -> AlternatorConfigBuilder:
         """Disable response compression."""
-        self._response_compression = ()
+        self._response_compression = ResponseCompressionConfig()
         return self
 
     def with_header_optimization(
