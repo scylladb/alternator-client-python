@@ -155,7 +155,8 @@ def create_response_compression_decode_handler() -> Callable[..., None]:
         # success bodies retain their original body and headers.
         response_dict["body"] = body
         _delete_header(headers, "Content-Encoding")
-        _delete_header(headers, "Content-Length")
+        if any(layer != "identity" for layer in encodings):
+            _delete_header(headers, "Content-Length")
 
     return decode_response_compression
 

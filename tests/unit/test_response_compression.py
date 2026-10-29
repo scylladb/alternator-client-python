@@ -174,7 +174,6 @@ class TestResponseCompressionDecodeHandler:
             ("gzip, deflate", zlib.compress(gzip.compress(b"payload"))),
             ("deflate, gzip", gzip.compress(zlib.compress(b"payload"))),
             (" GZip , IDENTITY , DeFLate ", zlib.compress(gzip.compress(b"payload"))),
-            ("identity", b"payload"),
         ],
     )
     def test_combined_encodings(self, encoding: str, body: bytes) -> None:
@@ -184,6 +183,18 @@ class TestResponseCompressionDecodeHandler:
         }
         create_response_compression_decode_handler()(response)
         assert response == {"body": b"payload", "headers": {}}
+
+    @pytest.mark.parametrize(
+        "encoding", ["identity", "identity, identity", " IdEnTiTy , IDENTITY "]
+    )
+    def test_identity_preserves_content_length(self, encoding: str) -> None:
+        body = b"payload"
+        response: dict[str, Any] = {
+            "body": body,
+            "headers": {"Content-Encoding": encoding, "Content-Length": str(len(body))},
+        }
+        create_response_compression_decode_handler()(response)
+        assert response == {"body": body, "headers": {"Content-Length": "7"}}
 
     @pytest.mark.parametrize("encoding", ["br, gzip", "gzip, br", "gzip,", ""])
     def test_unknown_chain_is_not_partially_decoded(self, encoding: str) -> None:

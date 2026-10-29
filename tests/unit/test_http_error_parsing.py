@@ -159,7 +159,9 @@ async def test_malformed_http_errors_retry_without_compression(
     assert len(fake_alternator_server.captured_requests(operation="ListTables")) == 2
 
 
-@pytest.mark.parametrize("encoding", ["gzip, deflate", " Deflate , identity , GZIP "])
+@pytest.mark.parametrize(
+    "encoding", ["gzip, deflate", " Deflate , identity , GZIP ", "identity"]
+)
 @pytest.mark.parametrize("status", [200, 400])
 async def test_combined_encoding_success_and_modeled_error(
     sdk_client: Any,  # noqa: ANN401 -- sync/resource/async SDK client
@@ -168,11 +170,12 @@ async def test_combined_encoding_success_and_modeled_error(
     status: int,
 ) -> None:
     raw = b'{"Item":{"pk":{"B":"AP8="}},"Attributes":{"pk":{"B":"AP8="}},"__type":"ConditionalCheckFailedException","message":"condition"}'
-    body = (
-        zlib.compress(gzip.compress(raw))
-        if encoding == "gzip, deflate"
-        else gzip.compress(zlib.compress(raw))
-    )
+    if encoding == "identity":
+        body = raw
+    elif encoding == "gzip, deflate":
+        body = zlib.compress(gzip.compress(raw))
+    else:
+        body = gzip.compress(zlib.compress(raw))
     fake_alternator_server.script(
         "PutItem",
         [FakeAlternatorResponse(status, body, {"Content-Encoding": encoding})],
@@ -201,6 +204,12 @@ async def test_combined_encoding_success_and_modeled_error(
             if isinstance(binary, Binary)
             else binary == {"B": b"\x00\xff"}
         )
+    headers = result["ResponseMetadata"]["HTTPHeaders"]
+    assert "content-encoding" not in headers
+    if encoding == "identity":
+        assert headers["content-length"] == str(len(body))
+    else:
+        assert "content-length" not in headers
 
 
 @pytest.mark.parametrize("mode", list(RetryMode))
