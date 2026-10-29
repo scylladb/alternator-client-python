@@ -39,6 +39,7 @@ from alternator.core.key_affinity import AffinityTarget, SeededAffinityPlan
 from alternator.core.live_nodes import _format_host_port
 from alternator.core.query_plan import LazyQueryPlan
 from alternator.core.request import extract_operation_name, extract_request_params
+from alternator.core.response_parser import normalize_error_response
 from alternator.exceptions import NoNodesAvailableError
 
 if TYPE_CHECKING:
@@ -231,6 +232,8 @@ def _register_alternator_handlers(
         # Accept-Encoding may already be covered by SigV4, so finalize it before signing.
         events.register("request-created.dynamodb.*", accept_encoding_handler)
         events.register("before-parse.dynamodb.*", decode_response_handler)
+
+    events.register("before-parse.dynamodb.*", normalize_error_response)
 
     # Register header filter if optimization enabled
     if config.header_optimization.enabled:

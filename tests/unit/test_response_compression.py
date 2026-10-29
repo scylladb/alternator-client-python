@@ -167,3 +167,71 @@ class TestResponseCompressionDecodeHandler:
                     "body": b"not-deflate",
                 }
             )
+
+    @pytest.mark.parametrize(
+        "encoding,body",
+        [
+            ("gzip, deflate", zlib.compress(gzip.compress(b"payload"))),
+            ("deflate, gzip", gzip.compress(zlib.compress(b"payload"))),
+            (" GZip , IDENTITY , DeFLate ", zlib.compress(gzip.compress(b"payload"))),
+            ("identity", b"payload"),
+        ],
+    )
+    def test_combined_encodings(self, encoding: str, body: bytes) -> None:
+        response: dict[str, Any] = {
+            "body": body,
+            "headers": {"Content-Encoding": encoding, "Content-Length": "123"},
+        }
+        create_response_compression_decode_handler()(response)
+        assert response == {"body": b"payload", "headers": {}}
+
+    @pytest.mark.parametrize("encoding", ["br, gzip", "gzip, br", "gzip,", ""])
+    def test_unknown_chain_is_not_partially_decoded(self, encoding: str) -> None:
+        body = gzip.compress(b"payload")
+        response: dict[str, Any] = {
+            "body": body,
+            "headers": {"Content-Encoding": encoding},
+        }
+        create_response_compression_decode_handler()(response)
+        assert response == {"body": body, "headers": {"Content-Encoding": encoding}}
+
+    @pytest.mark.parametrize(
+        "encoding,body",
+        [
+            ("gzip, deflate", zlib.compress(b"not-gzip")),
+            ("deflate, gzip", gzip.compress(b"not-deflate")),
+        ],
+    )
+    def test_failed_inner_layer_is_atomic(self, encoding: str, body: bytes) -> None:
+        headers = {"Content-Encoding": encoding, "Content-Length": str(len(body))}
+        response: dict[str, Any] = {"body": body, "headers": headers.copy()}
+        with pytest.raises(ValueError, match="decode .* response"):
+            create_response_compression_decode_handler()(response)
+        assert response == {"body": body, "headers": headers}
+
+    @pytest.mark.parametrize("encoding", ["gzip", "deflate"])
+    def test_invalid_error_body_preserves_headers(self, encoding: str) -> None:
+        headers = {"Content-Encoding": encoding, "x-amzn-requestid": "request"}
+        response: dict[str, Any] = {
+            "status_code": 503,
+            "body": b"corrupt",
+            "headers": headers.copy(),
+        }
+        create_response_compression_decode_handler()(response)
+        assert response == {"status_code": 503, "body": b"", "headers": headers}
+
+    def test_unexpected_decoder_exception_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def custom_decoder(body: bytes) -> bytes:
+            raise RuntimeError("application decoder")
+
+        monkeypatch.setattr(gzip, "decompress", custom_decoder)
+        with pytest.raises(RuntimeError, match="application decoder"):
+            create_response_compression_decode_handler()(
+                {
+                    "status_code": 503,
+                    "body": b"body",
+                    "headers": {"Content-Encoding": "gzip"},
+                }
+            )

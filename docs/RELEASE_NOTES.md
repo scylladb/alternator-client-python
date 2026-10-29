@@ -1,5 +1,17 @@
 # Release Notes
 
+## Unreleased
+
+### Fixes
+
+- Let the SDK parse HTTP errors with non-object JSON roots, invalid UTF-8, or
+  corrupt supported compression through its empty-body fallback. Sync clients,
+  resources, and async clients now retain status-based retries and final-response
+  metadata for these errors. HTTP success parsing behavior remains unchanged.
+- Decode combined gzip, deflate, and identity response encoding chains in reverse
+  application order. Validate the entire chain and finish decoding before changing
+  the parser body or compression headers; unsupported chains remain unchanged.
+
 ## 2.0.1 (2026-10-20)
 
 This patch release fixes authenticated response-compression negotiation and

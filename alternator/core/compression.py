@@ -132,14 +132,28 @@ def create_response_compression_decode_handler() -> Callable[..., None]:
         if encoding is None:
             return
 
-        normalized_encoding = encoding.strip().lower()
-        if normalized_encoding == ResponseCompression.GZIP.value:
-            response_dict["body"] = _decode_gzip_response(response_dict.get("body"))
-        elif normalized_encoding == ResponseCompression.DEFLATE.value:
-            response_dict["body"] = _decode_deflate_response(response_dict.get("body"))
-        else:
+        encodings = [part.strip().lower() for part in encoding.split(",")]
+        if any(part not in {"gzip", "deflate", "identity"} for part in encodings):
             return
 
+        body = _response_body_as_bytes(response_dict.get("body"))
+        for layer in reversed(encodings):
+            try:
+                if layer == "gzip":
+                    body = gzip.decompress(body)
+                elif layer == "deflate":
+                    body = zlib.decompress(body)
+            except (OSError, EOFError, zlib.error) as exc:
+                if response_dict.get("status_code", 200) >= 400:
+                    # Only the parser view changes; original transport bytes
+                    # remain available for SDK checksum validation.
+                    response_dict["body"] = b""
+                    return
+                raise ValueError(f"decode {layer} response: {exc}") from exc
+
+        # Commit only after every layer succeeds. Unknown chains and corrupt
+        # success bodies retain their original body and headers.
+        response_dict["body"] = body
         _delete_header(headers, "Content-Encoding")
         _delete_header(headers, "Content-Length")
 
@@ -157,20 +171,6 @@ def _response_accept_encoding(
         seen.add(encoding)
         parts.append(encoding.value)
     return ", ".join(parts)
-
-
-def _decode_gzip_response(body: object) -> bytes:
-    try:
-        return gzip.decompress(_response_body_as_bytes(body))
-    except Exception as exc:
-        raise ValueError(f"decode gzip response: {exc}") from exc
-
-
-def _decode_deflate_response(body: object) -> bytes:
-    try:
-        return zlib.decompress(_response_body_as_bytes(body))
-    except Exception as exc:
-        raise ValueError(f"decode deflate response: {exc}") from exc
 
 
 def _response_body_as_bytes(body: object) -> bytes:

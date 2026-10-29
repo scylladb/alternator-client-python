@@ -524,10 +524,13 @@ sends compressed bodies when the compressed payload is smaller than the original
 payload.
 
 Response compression is disabled by default. When enabled, the client sends
-`Accept-Encoding` with the configured encodings and decodes `Content-Encoding:
-gzip` or `Content-Encoding: deflate` responses before boto3/aiobotocore parses the
-DynamoDB JSON body. Use `.without_response_compression()` to disable it again in
-builder chains.
+`Accept-Encoding` with the configured encodings and decodes gzip and deflate
+responses before boto3/aiobotocore parses the DynamoDB JSON body. Combined
+`Content-Encoding` chains are decoded in reverse application order; encoding names
+are case-insensitive, whitespace is ignored, and `identity` layers are supported.
+Chains containing unsupported encodings are left unchanged. Body and compression
+headers change only after every layer decodes successfully.
+Use `.without_response_compression()` to disable it again in builder chains.
 
 ## Header Optimization
 
@@ -569,6 +572,16 @@ active. Headers supplied by your own event handlers are still subject to any
 enabled whitelist filtering.
 
 ## Error Handling
+
+For HTTP errors (status 400 or higher), the SDK's empty-body error fallback
+handles non-object JSON roots, invalid UTF-8, and corrupt supported compressed
+bodies.
+The SDK keeps the HTTP status, response headers, and request ID, and controls
+exception classes, retry modes, backoff, and attempt limits. Valid object errors
+and ordinary text errors keep the SDK's existing parsing behavior. Original
+transport bytes remain available for checksum validation. Malformed HTTP success
+responses keep existing SDK behavior, including its empty-success fallback;
+corrupt compressed success responses still raise a decoding error.
 
 ```python
 from alternator import (
