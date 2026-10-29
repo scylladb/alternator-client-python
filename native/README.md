@@ -6,8 +6,9 @@ distribution. Its static Python release version matches
 `alternator/_version.py`; the internal Cargo crate version is independent.
 This package supplies interface version 1, the shared runtime, validated
 private native constructors and per-client HTTP transport/lifecycle. Typed
-request/response conversion and reserved error interfaces are available; data
-execution remains staged for the operation changes. See
+request/response conversion, error mapping and execution of `GetItem`, `PutItem`,
+`UpdateItem`, `DeleteItem`, `Query` and `Scan` are available through both native
+entrypoints. Batch/transaction execution and Python facades remain staged. See
 [INTERFACE.md](INTERFACE.md) for the frozen configuration and client contract.
 
 Only GIL-enabled CPython 3.10–3.14 is supported. Release wheels target
@@ -26,7 +27,7 @@ uv venv .venv
 uv pip install --python .venv/bin/python -e '.[dev,async]' maturin==1.15.0
 (cd native && ../.venv/bin/maturin build --release --locked --interpreter ../.venv/bin/python --out ../dist/native)
 uv pip install --python .venv/bin/python dist/native/*.whl
-.venv/bin/python -m pytest native/tests/test_extension.py native/tests/test_client_lifecycle.py
+.venv/bin/python -m pytest native/tests/test_extension.py native/tests/test_client_lifecycle.py native/tests/test_operations.py
 ```
 
 Run the Rust core independently of Python or extension-module linking:
@@ -84,8 +85,8 @@ are recorded in [tests/STARTUP.md](tests/STARTUP.md). Before the dependent Pytho
 PR becomes ready, require exact-head CI, including the existing 20-cell wheel
 matrix and aggregate gate; host qualification alone does not satisfy that gate.
 Merged-pin qualification receipts remain at `stage: interface` with
-`release_qualified: false`. This change adds conversion and error mapping; data
-operations remain staged for later issues. Python APIs, native
+`release_qualified: false`. The native boundary executes the six item/query/scan operations; batch and
+transaction operations remain staged for later issues. Python APIs, native
 interface/configuration schema 1 and all package versions remain unchanged.
 
 Service-error JSON projection uses the already-locked SDK tokenizer and a small

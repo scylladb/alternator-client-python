@@ -23,3 +23,6 @@ pub mod conversion;
 pub mod errors;
 #[cfg(feature = "python")]
 pub mod response;
+
+#[cfg(feature = "python")]
+mod operations;
