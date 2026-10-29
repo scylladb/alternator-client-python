@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import gzip
+import random
 import zlib
 from typing import Any
 from unittest.mock import MagicMock
@@ -387,6 +388,38 @@ class TestResponseCompressionDecodeHandler:
         }
         create_response_compression_decode_handler(7)(response)
         assert response == {"body": b"payload", "headers": {}}
+
+    @pytest.mark.parametrize("level", [0, 6])
+    def test_deflate_bounds_input_to_avoid_repeated_large_tail_copies(
+        self, level: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = random.Random(165).randbytes(512 * 1024)
+        body = zlib.compress(raw, level=level)
+        decoder = zlib.decompressobj()
+        input_sizes: list[int] = []
+
+        class ObservedDeflate:
+            def decompress(
+                self, data: bytes | memoryview, max_length: int = 0
+            ) -> bytes:
+                input_sizes.append(len(data))
+                return decoder.decompress(data, max_length)
+
+            def __getattr__(self, name: str) -> Any:  # noqa: ANN401 -- decoder proxy
+                return getattr(decoder, name)
+
+        monkeypatch.setattr(zlib, "decompressobj", ObservedDeflate)
+        response: dict[str, Any] = {
+            "body": body,
+            "headers": {"Content-Encoding": "deflate"},
+        }
+
+        create_response_compression_decode_handler(len(raw))(response)
+
+        assert response == {"body": raw, "headers": {}}
+        assert len(input_sizes) > 1
+        assert max(input_sizes) <= 64 * 1024
+        assert sum(input_sizes) <= 2 * len(body)
 
     @pytest.mark.parametrize("encoding", ["gzip", "deflate"])
     def test_expansion_uses_bounded_operations_and_stops_at_sentinel(

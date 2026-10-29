@@ -205,8 +205,15 @@ def _decompress_deflate(body: bytes, max_bytes: int) -> bytes:
     decoder = zlib.decompressobj()
     output = io.BytesIO()
     size = 0
-    data = body
+    source = memoryview(body)
+    offset = 0
+    data: bytes | memoryview = b""
     while True:
+        if not data and offset < len(source):
+            # zlib copies unconsumed_tail. Bound its input too, so each output
+            # step cannot copy the entire remaining compressed response.
+            data = source[offset : offset + _DECOMPRESSION_CHUNK_SIZE]
+            offset += len(data)
         chunk = decoder.decompress(
             data, max_length=min(_DECOMPRESSION_CHUNK_SIZE, max_bytes - size + 1)
         )
@@ -218,7 +225,7 @@ def _decompress_deflate(body: bytes, max_bytes: int) -> bytes:
             # trailing input. Do not flush: its length argument is not a bound.
             return output.getvalue()
         data = decoder.unconsumed_tail
-        if not data and not chunk:
+        if not data and not chunk and offset == len(source):
             raise zlib.error("incomplete or truncated stream")
 
 
