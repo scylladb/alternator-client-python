@@ -42,13 +42,15 @@ from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
 async def sdk_client(
     request: pytest.FixtureRequest, contract_config: Config
 ) -> AsyncIterator[Any]:
-    kind, compression = (
+    kind, compression, *limits = (
         request.param if isinstance(request.param, tuple) else (request.param, True)
     )
     config = replace(
         contract_config,
         retries=RetryConfig(max_attempts=2),
     )
+    if limits:
+        config = replace(config, max_decompressed_response_bytes=limits[0])
     if compression:
         config = replace(
             config,
@@ -79,6 +81,81 @@ async def sdk_client(
 async def _list_tables(client: Any) -> dict[str, Any]:  # noqa: ANN401 -- SDK client
     result = client.list_tables()
     return cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+
+
+_LIMITED_SUCCESS_BODY = b'{"TableNames":["contract"]}'
+
+
+@pytest.mark.parametrize(
+    "sdk_client",
+    [
+        (kind, True, len(_LIMITED_SUCCESS_BODY))
+        for kind in ("client", "resource", "async")
+    ],
+    indirect=True,
+)
+@pytest.mark.parametrize(
+    "outcome",
+    ["accepted", "success-overflow", "bad-request", "retry-success", "exhausted"],
+)
+async def test_configured_response_limit_reaches_sdk_factories(
+    sdk_client: Any,  # noqa: ANN401 -- sync/resource/async SDK client
+    fake_alternator_server: FakeAlternatorServer,
+    outcome: str,
+) -> None:
+    oversized = gzip.compress(b'{"TableNames":["' + b"x" * 100 + b'"]}')
+    accepted = FakeAlternatorResponse(
+        200, gzip.compress(_LIMITED_SUCCESS_BODY), {"Content-Encoding": "gzip"}
+    )
+    status = (
+        400
+        if outcome == "bad-request"
+        else 200
+        if outcome == "success-overflow"
+        else 503
+    )
+    responses = [
+        FakeAlternatorResponse(
+            status,
+            oversized,
+            {
+                "Content-Encoding": "gzip",
+                "x-amzn-requestid": f"limit-{attempt}",
+                "x-amz-crc32": str(zlib.crc32(oversized)),
+            },
+        )
+        for attempt in (1, 2)
+    ]
+    if outcome == "accepted":
+        responses = [accepted]
+    elif outcome == "retry-success":
+        responses[1] = accepted
+    fake_alternator_server.script("ListTables", responses)
+
+    if outcome in {"accepted", "retry-success"}:
+        result = await _list_tables(sdk_client)
+        assert result["TableNames"] == ["contract"]
+        assert result["ResponseMetadata"]["RetryAttempts"] == (
+            outcome == "retry-success"
+        )
+    elif outcome == "success-overflow":
+        with pytest.raises(ValueError, match="decode gzip response: exceeds"):
+            await _list_tables(sdk_client)
+    else:
+        with pytest.raises(ClientError) as caught:
+            await _list_tables(sdk_client)
+        attempts = 1 if status == 400 else 2
+        assert caught.value.response["Error"]["Code"] == str(status)
+        metadata = caught.value.response["ResponseMetadata"]
+        assert metadata["HTTPStatusCode"] == status
+        assert metadata["RetryAttempts"] == attempts - 1
+        assert metadata["HTTPHeaders"]["x-amzn-requestid"] == f"limit-{attempts}"
+        assert metadata["HTTPHeaders"]["content-encoding"] == "gzip"
+    expected_attempts = 2 if outcome in {"retry-success", "exhausted"} else 1
+    assert (
+        len(fake_alternator_server.captured_requests(operation="ListTables"))
+        == expected_attempts
+    )
 
 
 _MALFORMED = [

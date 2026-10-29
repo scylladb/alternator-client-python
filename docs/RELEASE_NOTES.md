@@ -11,6 +11,16 @@
 - Decode combined gzip, deflate, and identity response encoding chains in reverse
   application order. Validate the entire chain and finish decoding before changing
   the parser body or compression headers; unsupported chains remain unchanged.
+- Bound Python SDK response expansion to 64 MiB (67,108,864 bytes) of output per
+  layer by default, including intermediate output and concatenated gzip members.
+  Configure a positive integer byte ceiling with
+  `Config.max_decompressed_response_bytes` or the builder's
+  `with_max_decompressed_response_bytes(...)`. Over-limit HTTP errors use the SDK
+  empty-body fallback; over-limit successes raise `ValueError` with the original
+  parser body and headers intact. HTTP input and accepted output remain buffered;
+  this limits decoder output rather than total process memory. The experimental
+  native backend keeps its fixed 32 MiB policy and rejects nondefault overrides
+  of this Python SDK setting.
 
 ## 2.0.1 (2026-10-20)
 

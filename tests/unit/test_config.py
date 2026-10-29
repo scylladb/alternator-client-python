@@ -102,6 +102,7 @@ class TestAlternatorConfig:
         assert config.request_compression.min_size_bytes == 1024
         assert config.request_compression.gzip_level == 9
         assert config.response_compression == ()
+        assert config.max_decompressed_response_bytes == 67_108_864
         assert config.header_optimization.enabled is False
         assert config.header_optimization.whitelist is None
         assert config.header_optimization.whitelist_callback is None
@@ -112,6 +113,60 @@ class TestAlternatorConfig:
         assert isinstance(config.user_agent, str)
         assert config.user_agent.startswith("alternator-client-python/")
         assert isinstance(config.routing_scope, ClusterScope)
+
+    @pytest.mark.parametrize("limit", [1, 67_108_865, 2**100])
+    def test_decompressed_response_limit_config_and_builder(self, limit: int) -> None:
+        direct = Config(["localhost"], 8000, max_decompressed_response_bytes=limit)
+        built = (
+            AlternatorConfigBuilder()
+            .with_seeds("localhost")
+            .with_max_decompressed_response_bytes(limit)
+            .build()
+        )
+        assert direct.max_decompressed_response_bytes == limit
+        assert built.max_decompressed_response_bytes == limit
+
+    @pytest.mark.parametrize("value", [0, -1, True, False, 1.5, "100", None])
+    def test_invalid_decompressed_response_limit(self, value: object) -> None:
+        with pytest.raises(ConfigurationError, match="must be a positive integer"):
+            Config(
+                ["localhost"],
+                8000,
+                max_decompressed_response_bytes=cast(Any, value),
+            )
+        with pytest.raises(ConfigurationError, match="must be a positive integer"):
+            (
+                AlternatorConfigBuilder()
+                .with_seeds("localhost")
+                .with_max_decompressed_response_bytes(cast(Any, value))
+                .build()
+            )
+
+    def test_existing_positional_configuration_order(self) -> None:
+        default = Config(["localhost"], 8000)
+        config = Config(
+            default.seed_hosts,
+            default.port,
+            default.scheme,
+            default.routing_scope,
+            default.request_compression,
+            default.response_compression,
+            default.header_optimization,
+            default.tls,
+            default.key_affinity,
+            default.retries,
+            42,
+            default.node_list_polling,
+            default.timeouts,
+            "positional-region",
+            "positional-agent",
+            False,
+        )
+        assert config.max_pool_connections == 42
+        assert config.aws_region == "positional-region"
+        assert config.user_agent == "positional-agent"
+        assert config.parameter_validation is False
+        assert config.max_decompressed_response_bytes == 67_108_864
 
 
 class TestDeprecatedConfigNames:

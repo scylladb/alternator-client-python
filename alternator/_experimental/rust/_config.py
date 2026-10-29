@@ -22,6 +22,7 @@ from typing import Any
 
 from alternator.backoff import ExponentialBackoff
 from alternator.config import (
+    DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
     TLS,
     AlternatorConfig,
     Auth,
@@ -249,6 +250,11 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
         "native backend requires parameter_validation=True",
     )
     _require(
+        config.max_decompressed_response_bytes
+        == DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
+        "native backend does not support Python max_decompressed_response_bytes tuning",
+    )
+    _require(
         config.retries.mode is RetryMode.STANDARD,
         "native backend supports STANDARD retries only",
     )
@@ -397,6 +403,7 @@ def prepare_config(config: Config, auth: Auth | None = None) -> PreparedConfig:
         node_list_polling=replace(config.node_list_polling),
         timeouts=timeouts,
         parameter_validation=config.parameter_validation,
+        max_decompressed_response_bytes=config.max_decompressed_response_bytes,
         aws_region=config.aws_region,
         user_agent=user_agent,
     )

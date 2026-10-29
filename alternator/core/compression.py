@@ -12,19 +12,29 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Request body compression for bandwidth optimization."""
+"""Request compression and bounded HTTP response decoding."""
 
 from __future__ import annotations
 
 import contextlib
 import gzip
+import io
 import zlib
 from collections.abc import Callable, Sequence
 from typing import Any, cast
 
 from botocore.awsrequest import AWSPreparedRequest, AWSRequest
 
-from alternator.config import ResponseCompression
+from alternator.config import (
+    DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
+    ResponseCompression,
+)
+
+_DECOMPRESSION_CHUNK_SIZE = 64 * 1024
+
+
+class _ResponseDecompressionLimitError(ValueError):
+    """A response encoding layer expanded beyond its configured byte limit."""
 
 
 def create_compression_handler(
@@ -120,7 +130,9 @@ def create_response_compression_request_handler(
     return request_response_compression
 
 
-def create_response_compression_decode_handler() -> Callable[..., None]:
+def create_response_compression_decode_handler(
+    max_decompressed_response_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES,
+) -> Callable[..., None]:
     """Create a handler that decodes compressed HTTP responses before parsing."""
 
     def decode_response_compression(
@@ -140,10 +152,16 @@ def create_response_compression_decode_handler() -> Callable[..., None]:
         for layer in reversed(encodings):
             try:
                 if layer == "gzip":
-                    body = gzip.decompress(body)
+                    body = _decompress_gzip(body, max_decompressed_response_bytes)
                 elif layer == "deflate":
-                    body = zlib.decompress(body)
-            except (OSError, EOFError, zlib.error) as exc:
+                    body = _decompress_deflate(body, max_decompressed_response_bytes)
+                _check_decompressed_size(len(body), max_decompressed_response_bytes)
+            except (
+                OSError,
+                EOFError,
+                zlib.error,
+                _ResponseDecompressionLimitError,
+            ) as exc:
                 if response_dict.get("status_code", 200) >= 400:
                     # Only the parser view changes; original transport bytes
                     # remain available for SDK checksum validation.
@@ -159,6 +177,49 @@ def create_response_compression_decode_handler() -> Callable[..., None]:
             _delete_header(headers, "Content-Length")
 
     return decode_response_compression
+
+
+def _check_decompressed_size(size: int, max_bytes: int) -> None:
+    if size > max_bytes:
+        raise _ResponseDecompressionLimitError(
+            f"exceeds max_decompressed_response_bytes ({max_bytes} bytes)"
+        )
+
+
+def _decompress_gzip(body: bytes, max_bytes: int) -> bytes:
+    output = io.BytesIO()
+    size = 0
+    # read1 bounds the underlying expansion and retains gzip's member, padding,
+    # truncation and trailer checks. One extra byte detects an exceeded ceiling.
+    with gzip.GzipFile(fileobj=io.BytesIO(body), mode="rb") as decoder:
+        while chunk := decoder.read1(
+            min(_DECOMPRESSION_CHUNK_SIZE, max_bytes - size + 1)
+        ):
+            size += len(chunk)
+            _check_decompressed_size(size, max_bytes)
+            output.write(chunk)
+    return output.getvalue()
+
+
+def _decompress_deflate(body: bytes, max_bytes: int) -> bytes:
+    decoder = zlib.decompressobj()
+    output = io.BytesIO()
+    size = 0
+    data = body
+    while True:
+        chunk = decoder.decompress(
+            data, max_length=min(_DECOMPRESSION_CHUNK_SIZE, max_bytes - size + 1)
+        )
+        size += len(chunk)
+        _check_decompressed_size(size, max_bytes)
+        output.write(chunk)
+        if decoder.eof:
+            # Match zlib.decompress: consume only the first stream and tolerate
+            # trailing input. Do not flush: its length argument is not a bound.
+            return output.getvalue()
+        data = decoder.unconsumed_tail
+        if not data and not chunk:
+            raise zlib.error("incomplete or truncated stream")
 
 
 def _response_accept_encoding(

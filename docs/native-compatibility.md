@@ -116,6 +116,7 @@ need not duplicate Python HTTP implementation details:
 | Timeouts | Connect timeout, bounded native request deadline from read_seconds, discovery request deadline; no exact socket-read equivalence |
 | Python pool limit | Default 200 accepted with native connection-pool defaults; nondefault tuning rejected |
 | Parameter validation | Default `True` accepted with native typed validation; reject `False` because bypass is Python SDK-specific |
+| Python response output limit | `max_decompressed_response_bytes` default 67,108,864 accepted without native translation and preserved for the Python admin delegate; reject nondefault overrides before callbacks/network. Native data decoding retains its fixed 32 MiB limit |
 | TLS trust | Verified system and/or custom PEM CAs; fail construction if no usable roots |
 | Mutual TLS | PEM certificate chain and optional separate key; verification remains enabled |
 | Advanced TLS | Reject trust_all_certificates, disabled hostname checks, key logging and nondefault session-cache settings |

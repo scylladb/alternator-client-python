@@ -36,6 +36,7 @@ SDKClientCert = str | tuple[str, str]
 UserAgentCustomizer = Callable[[str], str]
 UserAgent = str | UserAgentCustomizer
 DEFAULT_USER_AGENT = f"alternator-client-python/{__version__}"
+DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES = 64 * 1024 * 1024
 
 
 class CompressionAlgorithm(Enum):
@@ -441,6 +442,9 @@ class Config:
     user_agent: UserAgent | None = DEFAULT_USER_AGENT
     parameter_validation: bool = True
 
+    # Python SDK decoder output limit for each response encoding layer.
+    max_decompressed_response_bytes: int = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES
+
     def __post_init__(self) -> None:
         """Validate configuration values."""
         if not self.seed_hosts:
@@ -457,6 +461,15 @@ class Config:
             )
         if not self.aws_region:
             raise ConfigurationError("aws_region must not be empty")
+        if (
+            isinstance(self.max_decompressed_response_bytes, bool)
+            or not isinstance(self.max_decompressed_response_bytes, int)
+            or self.max_decompressed_response_bytes <= 0
+        ):
+            raise ConfigurationError(
+                "max_decompressed_response_bytes must be a positive integer, "
+                f"got {self.max_decompressed_response_bytes!r}"
+            )
         object.__setattr__(
             self,
             "response_compression",
@@ -510,6 +523,7 @@ class AlternatorConfigBuilder:
         self._aws_region = "us-east-1"
         self._user_agent: UserAgent | None = DEFAULT_USER_AGENT
         self._parameter_validation = True
+        self._max_decompressed_response_bytes = DEFAULT_MAX_DECOMPRESSED_RESPONSE_BYTES
 
     def with_seeds(self, *hosts: str) -> AlternatorConfigBuilder:
         """Add seed hosts for node discovery."""
@@ -581,6 +595,13 @@ class AlternatorConfigBuilder:
     def without_response_compression(self) -> AlternatorConfigBuilder:
         """Disable response compression."""
         self._response_compression = ()
+        return self
+
+    def with_max_decompressed_response_bytes(
+        self, max_bytes: int
+    ) -> AlternatorConfigBuilder:
+        """Set the positive byte limit per Python SDK response decoding layer."""
+        self._max_decompressed_response_bytes = max_bytes
         return self
 
     def with_header_optimization(
@@ -695,6 +716,7 @@ class AlternatorConfigBuilder:
             aws_region=self._aws_region,
             user_agent=self._user_agent,
             parameter_validation=self._parameter_validation,
+            max_decompressed_response_bytes=self._max_decompressed_response_bytes,
         )
 
 

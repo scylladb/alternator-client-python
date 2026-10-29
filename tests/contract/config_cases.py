@@ -84,6 +84,10 @@ def rejected_native_configs(base: Config) -> list[RejectedConfig]:
             "python-validation-bypass", replace(base, parameter_validation=False)
         ),
         RejectedConfig(
+            "python-response-decompression-limit",
+            replace(base, max_decompressed_response_bytes=1024),
+        ),
+        RejectedConfig(
             "insecure-tls", replace(base, tls=TLS(trust_all_certificates=True))
         ),
         RejectedConfig(

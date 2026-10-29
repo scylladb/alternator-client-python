@@ -83,6 +83,7 @@ def test_callback_runs_once_and_copies_are_independent() -> None:
     assert native["user_agent"] == "frozen-agent/1"
     assert native["session_token"] == "token"
     assert native["discovery_seconds"] == 5.0
+    assert "max_decompressed_response_bytes" not in native
     native["table_pk_attributes"]["table"] = "mutated"
     native["seed_hosts"].clear()
     delegate = prepared.delegate_config()
@@ -91,6 +92,7 @@ def test_callback_runs_once_and_copies_are_independent() -> None:
     assert prepared.native_config()["table_pk_attributes"] == {"table": "pk"}
     assert prepared.delegate_config().user_agent == "frozen-agent/1"
     assert prepared.delegate_config().parameter_validation is True
+    assert prepared.delegate_config().max_decompressed_response_bytes == 67_108_864
     assert prepared.auth == auth
     assert calls == [DEFAULT_USER_AGENT]
 
@@ -251,8 +253,9 @@ def test_ca_and_client_pem_contents_are_copied(tmp_path: Path) -> None:
     [
         Config(["127.0.0.1"], 8000, max_pool_connections=201),
         Config(["127.0.0.1"], 8000, parameter_validation=False),
+        Config(["127.0.0.1"], 8000, max_decompressed_response_bytes=1024),
     ],
-    ids=["pool-tuning", "validation-bypass"],
+    ids=["pool-tuning", "validation-bypass", "response-decompression-limit"],
 )
 def test_unsupported_policy_does_not_invoke_user_callback(config: Config) -> None:
     calls: list[str] = []
