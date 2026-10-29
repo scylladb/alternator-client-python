@@ -128,7 +128,8 @@ async def test_operation_contract(
         result.clear()
         metadata["HTTPHeaders"].clear()
         again = await entry.call(case.operation, request)
-        assert again.pop("ResponseMetadata")["HTTPHeaders"]
+        metadata_again = again.pop("ResponseMetadata")
+        assert metadata_again["HTTPHeaders"]
         assert again == response
 
 
