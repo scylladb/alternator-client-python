@@ -143,7 +143,8 @@ Python socket-read or retry timing. TLS always verifies chains and hostname.
 Rust `client::Client::run` is the sole complete-operation admission/registry seam.
 It returns `(SDK output, metadata::OperationMetadata)` or `registry::Closed`.
 OperationMetadata owns `attempts: u32` (including attempts without responses)
-and `responses: Vec<AttemptResponse>`; it dereferences to the response slice.
+and `responses: Vec<AttemptResponse>`, plus the last routed endpoint as
+`endpoint_url: Option<String>`; it dereferences to the response slice.
 Each captured response owns status, original wire header values as byte vectors,
 complete wire body and one-based SDK attempt count. Header names are strings;
 `request_id()` exposes a UTF-8 request ID when present, including ordinary ASCII

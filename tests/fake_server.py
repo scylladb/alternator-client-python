@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import gzip
 import json
+import select
 import socket
 import ssl
 import threading
@@ -43,7 +44,10 @@ def _merge_headers(
 
 @dataclass(frozen=True)
 class FakeAlternatorResponse:
-    """One response; optional barriers pause after capture and before headers."""
+    """One response; barriers pause after capture and before headers.
+
+    client_disconnected optionally observes a held plain HTTP connection.
+    """
 
     status: int
     body: bytes
@@ -51,6 +55,7 @@ class FakeAlternatorResponse:
     entered: threading.Event | None = None
     release: threading.Event | None = None
     disconnect: bool = False
+    client_disconnected: threading.Event | None = None
 
     @classmethod
     def json(
@@ -61,6 +66,7 @@ class FakeAlternatorResponse:
         headers: Mapping[str, str] | None = None,
         entered: threading.Event | None = None,
         release: threading.Event | None = None,
+        client_disconnected: threading.Event | None = None,
     ) -> FakeAlternatorResponse:
         """Build a DynamoDB JSON response with stable request metadata."""
         return cls(
@@ -75,6 +81,7 @@ class FakeAlternatorResponse:
             ),
             entered,
             release,
+            client_disconnected=client_disconnected,
         )
 
 
@@ -178,6 +185,21 @@ class FakeAlternatorServer:
                     for _ in range(100):
                         if response.release.wait(0.05) or owner._stopping.is_set():
                             break
+                        if response.client_disconnected is not None and not isinstance(
+                            self.connection, ssl.SSLSocket
+                        ):
+                            readable, _, _ = select.select([self.connection], [], [], 0)
+                            if readable:
+                                try:
+                                    disconnected = not self.connection.recv(
+                                        1, socket.MSG_PEEK
+                                    )
+                                except OSError:
+                                    disconnected = True
+                                if disconnected:
+                                    response.client_disconnected.set()
+                                    self.close_connection = True
+                                    return
                     else:
                         response = FakeAlternatorResponse.json(
                             {

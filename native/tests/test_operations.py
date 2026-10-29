@@ -6,10 +6,14 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
+import subprocess
+import sys
 import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -289,7 +293,32 @@ async def test_validation_unsupported_and_closed(asynchronous: bool) -> None:
 
 
 @pytest.mark.parametrize("asynchronous", [False, True], ids=["sync", "async"])
-async def test_close_cancels_held_operation(asynchronous: bool) -> None:
+def test_close_cancels_held_operation(asynchronous: bool, tmp_path: Path) -> None:
+    # Bound native close, peer teardown and asyncio's executor shutdown together.
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            "".join(
+                [
+                    "import alternator, _alternator_rust, asyncio, runpy, sys; ",
+                    "sys.path.insert(0, sys.argv[2]); ",
+                    "asyncio.run(runpy.run_path(sys.argv[1])",
+                    "['_close_cancels_held_operation'](sys.argv[3] == 'True'))",
+                ]
+            ),
+            str(Path(__file__).resolve()),
+            str(Path(inspect.getfile(FakeAlternatorServer)).resolve().parents[1]),
+            str(asynchronous),
+        ],
+        cwd=tmp_path,
+        check=True,
+        timeout=20,
+    )
+
+
+async def _close_cancels_held_operation(asynchronous: bool) -> None:
     entered, release = threading.Event(), threading.Event()
     async with peer(asynchronous, timeout=10) as (server, entry):
         server.script(
@@ -316,11 +345,18 @@ async def test_close_cancels_held_operation(asynchronous: bool) -> None:
 
 
 async def test_async_cancellation_and_owned_request() -> None:
-    entered, release = threading.Event(), threading.Event()
+    entered, release, disconnected = (threading.Event() for _ in range(3))
     async with peer(True, timeout=10) as (server, entry):
         server.script(
             "PutItem",
-            [FakeAlternatorResponse.json({}, entered=entered, release=release)],
+            [
+                FakeAlternatorResponse.json(
+                    {},
+                    entered=entered,
+                    release=release,
+                    client_disconnected=disconnected,
+                )
+            ],
         )
         value = bytearray(b"original")
         request = {"TableName": TABLE, "Item": {"pk": {"B": value}}}
@@ -336,6 +372,9 @@ async def test_async_cancellation_and_owned_request() -> None:
             future.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await future
+            assert await asyncio.to_thread(disconnected.wait, 3), (
+                "cancelled native PutItem kept its held connection open"
+            )
             server.set_operation("GetItem", {})
             assert (await entry.call("GetItem", {"TableName": TABLE, "Key": KEY}))[
                 "ResponseMetadata"
