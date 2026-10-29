@@ -235,16 +235,19 @@ async fn serve<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin>(
                 !table.starts_with(".scylla."),
                 "discovery must use GET /localnodes"
             );
+            // Reserve the response before waking a caller that may send the
+            // next request on another connection.
+            let reply = scripts
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected SDK data request");
             let _ = events.send(Event::Request {
                 connection,
                 headers,
                 body,
             });
-            scripts
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("unexpected SDK data request")
+            reply
         };
         if reply.status == 0 {
             return;
