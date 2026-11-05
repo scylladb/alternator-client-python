@@ -132,53 +132,120 @@ async def test_async_stop_cancels_in_flight_discovery() -> None:
     assert manager._refresh_task is None
 
 
-def test_sync_stop_is_bounded_and_restart_waits_for_stopped_thread() -> None:
-    """A blocked refresh thread must exit before a replacement can start."""
-    entered = threading.Event()
-    release = threading.Event()
-    restarted = threading.Event()
+@pytest.mark.parametrize("phase", ["joining", "timed_out"])
+@pytest.mark.parametrize("cancel_restart", [False, True])
+def test_sync_restart_waits_for_stopping_refresh(
+    monkeypatch: pytest.MonkeyPatch, phase: str, cancel_restart: bool
+) -> None:
+    """Starts coalesce across bounded shutdown; a later stop cancels the request."""
+    entered, release, restarted, joining, admitted = (
+        threading.Event() for _ in range(5)
+    )
+    workers: list[threading.Thread] = []
     calls = 0
+    active = 0
+    peak_active = 0
 
     def fetch(url: str) -> Sequence[str]:
-        nonlocal calls
+        nonlocal calls, active, peak_active
         calls += 1
-        if calls == 1:
-            entered.set()
-            release.wait(timeout=3)
-        else:
-            restarted.set()
-        return []
+        active += 1
+        peak_active = max(peak_active, active)
+        try:
+            if calls == 1:
+                entered.set()
+                assert release.wait(timeout=5)
+            else:
+                restarted.set()
+            return ["127.0.0.1"]
+        finally:
+            active -= 1
 
     config = Config(
         seed_hosts=["seed.test"],
         port=8000,
         timeouts=TimeoutConfig(discovery_seconds=0.05),
+        node_list_polling=NodeListPollingConfig(
+            active_interval_ms=10000, idle_interval_ms=10000
+        ),
     )
     manager = SyncLiveNodesManager(config, fetch)
-    manager.start()
-    assert entered.wait(timeout=1)
+    refresh_loop = manager._refresh_loop
 
-    started = time.monotonic()
-    manager.stop()
-    elapsed = time.monotonic() - started
+    def observed_loop(stop: threading.Event, wake: threading.Event) -> None:
+        workers.append(threading.current_thread())
+        refresh_loop(stop, wake)
 
-    assert elapsed < 1.5
-    assert manager._refresh_thread is not None
-    assert manager._refresh_thread.is_alive()
-
-    stopped_thread = manager._refresh_thread
-    for _ in range(3):
+    monkeypatch.setattr(manager, "_refresh_loop", observed_loop)
+    stopping = threading.Thread(target=manager.stop)
+    try:
         manager.start()
-        assert manager._refresh_thread is stopped_thread
+        assert entered.wait(timeout=1)
+        old_thread = manager._refresh_thread
+        assert old_thread is not None
+        old_stop, old_wake = manager._stop_event, manager._wake_event
+        join = old_thread.join
 
-    release.set()
-    stopped_thread.join(timeout=1)
-    assert not stopped_thread.is_alive()
+        def observed_join(timeout: float | None = None) -> None:
+            joining.set()
+            if phase == "joining" and threading.current_thread() is stopping:
+                admitted.wait(timeout=2)
+            join(timeout=timeout)
+            if threading.current_thread() is stopping:
+                joining.clear()
 
-    manager.start()
-    assert manager._refresh_thread is not stopped_thread
-    assert restarted.wait(timeout=1)
-    manager.stop()
+        monkeypatch.setattr(old_thread, "join", observed_join)
+        started = time.monotonic()
+        stopping.start()
+        assert joining.wait(timeout=1)
+        assert old_stop.is_set()
+        if phase == "timed_out":
+            stopping.join(timeout=1.5)
+            assert not stopping.is_alive()
+            assert time.monotonic() - started < 1.5
+
+        for _ in range(3):
+            manager.start()
+            assert manager._refresh_thread is old_thread
+        if phase == "joining":
+            assert joining.is_set()
+            admitted.set()
+        assert old_thread.is_alive()
+        assert calls == 1
+        assert workers == [old_thread]
+
+        if cancel_restart:
+            manager.stop()
+        release.set()
+        join(timeout=1)
+        stopping.join(timeout=1)
+        assert not old_thread.is_alive()
+        assert not stopping.is_alive()
+
+        if cancel_restart:
+            assert manager._refresh_thread is None
+            assert not restarted.is_set()
+            assert workers == [old_thread]
+            # A cancelled request does not prevent a later explicit start.
+            manager.start()
+        assert restarted.wait(timeout=1)
+        successor = manager._refresh_thread
+        assert successor is not None and successor is not old_thread
+        for _ in range(3):
+            manager.start()
+            assert manager._refresh_thread is successor
+        assert workers == [old_thread, successor]
+        assert manager._stop_event is not old_stop
+        assert manager._wake_event is not old_wake
+        assert not manager._stop_event.is_set()
+        assert peak_active == 1
+        assert calls == 2
+    finally:
+        admitted.set()
+        release.set()
+        if stopping.ident is not None:
+            stopping.join(timeout=2)
+        manager.stop()
     assert manager._refresh_thread is None
 
 

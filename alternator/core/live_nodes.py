@@ -393,60 +393,85 @@ class SyncLiveNodesManager:
         self._lifecycle_lock = threading.Lock()
         self._refresh_lock = threading.Lock()
         self._refresh_thread: threading.Thread | None = None
+        self._restart_pending = False
 
     def start(self) -> None:
-        """Start background refresh thread."""
+        """Start background refresh, deferring a restart until a stopping loop exits."""
         with self._lifecycle_lock:
-            try:
-                if isinstance(self._http_fetch, SyncNodeFetcher):
-                    self._http_fetch.reopen()
+            self._start_locked()
 
-                if self._refresh_thread is not None and self._refresh_thread.is_alive():
-                    return
+    def _start_locked(self) -> None:
+        """Admit a start request while holding the lifecycle lock."""
+        try:
+            if isinstance(self._http_fetch, SyncNodeFetcher):
+                # Manual discovery must work even while the old worker stops.
+                self._http_fetch.reopen()
 
-                stop_event = threading.Event()
-                wake_event = threading.Event()
-                refresh_thread = threading.Thread(
-                    target=self._refresh_loop,
-                    args=(stop_event, wake_event),
-                    daemon=True,
-                    name="alternator-node-refresh",
-                )
-                self._stop_event = stop_event
-                self._wake_event = wake_event
-                self._refresh_thread = refresh_thread
-                refresh_thread.start()
-            except BaseException:
-                self._stop_event.set()
-                self._wake_event.set()
+            if self._refresh_thread is not None:
+                if self._stop_event.is_set():
+                    self._restart_pending = True
+                return
+
+            self._stop_event = threading.Event()
+            self._wake_event = threading.Event()
+            self._refresh_thread = threading.Thread(
+                target=self._run_refresh_loop,
+                args=(self._stop_event, self._wake_event),
+                daemon=True,
+                name="alternator-node-refresh",
+            )
+            self._refresh_thread.start()
+        except BaseException:
+            self._restart_pending = False
+            self._stop_event.set()
+            self._wake_event.set()
+            # Retain workers with published IDs until their loop cleanup. A
+            # cancelled pre-ID attempt may finish untracked without discovery.
+            if self._refresh_thread is not None and self._refresh_thread.ident is None:
                 self._refresh_thread = None
-                if isinstance(self._http_fetch, SyncNodeFetcher):
-                    self._http_fetch.close()
-                raise
+            if isinstance(self._http_fetch, SyncNodeFetcher):
+                self._http_fetch.close()
+            raise
+
+    def _run_refresh_loop(
+        self,
+        stop_event: threading.Event,
+        wake_event: threading.Event,
+    ) -> None:
+        """Finish the old loop before handing a pending request to one successor."""
+        try:
+            self._refresh_loop(stop_event, wake_event)
+        finally:
+            with self._lifecycle_lock:
+                if self._refresh_thread is threading.current_thread():
+                    self._refresh_thread = None
+                    if self._restart_pending:
+                        self._restart_pending = False
+                        try:
+                            self._start_locked()
+                        except Exception:
+                            logger.exception(
+                                "Failed to restart background node refresh"
+                            )
+                        except BaseException:
+                            logger.exception(
+                                "Failed to restart background node refresh"
+                            )
+                            raise
 
     def stop(self) -> None:
-        """Stop background refresh thread."""
+        """Cancel background refresh and any pending restart with a bounded join."""
         with self._lifecycle_lock:
-            stop_event = self._stop_event
-            wake_event = self._wake_event
+            self._restart_pending = False
             refresh_thread = self._refresh_thread
-            stop_event.set()
-            wake_event.set()
+            self._stop_event.set()
+            self._wake_event.set()
 
             if isinstance(self._http_fetch, SyncNodeFetcher):
                 self._http_fetch.close()
 
-        if refresh_thread:
-            if refresh_thread.ident is not None:
-                refresh_thread.join(
-                    timeout=self._config.timeouts.discovery_seconds + 1.0
-                )
-            with self._lifecycle_lock:
-                if (
-                    self._refresh_thread is refresh_thread
-                    and not refresh_thread.is_alive()
-                ):
-                    self._refresh_thread = None
+        if refresh_thread is not None and refresh_thread.is_alive():
+            refresh_thread.join(timeout=self._config.timeouts.discovery_seconds + 1.0)
 
     @property
     def nodes(self) -> NodeList:
