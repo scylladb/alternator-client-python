@@ -126,7 +126,7 @@ jobs:
             target: x86_64-apple-darwin
             manylinux: 'off'
           - platform: macos_arm64
-            runner: macos-14
+            runner: macos-15
             target: aarch64-apple-darwin
             manylinux: 'off'
           - platform: win_amd64

@@ -8,7 +8,7 @@ reusable workflow builds all 20 GIL-enabled CPython 3.10–3.14 wheels, crossing
 | --- | --- | --- |
 | `manylinux_2_28_x86_64` | `x86_64-unknown-linux-gnu` | Ubuntu 24.04, pinned manylinux image |
 | `macosx_11_0_x86_64` | `x86_64-apple-darwin` | macOS 15 Intel |
-| `macosx_11_0_arm64` | `aarch64-apple-darwin` | macOS 14 ARM64 |
+| `macosx_11_0_arm64` | `aarch64-apple-darwin` | macOS 15 ARM64 |
 | `win_amd64` | `x86_64-pc-windows-msvc` | Windows 2022 x64 |
 
 The explicit macOS deployment target is 11.0 for both architectures. This is a
