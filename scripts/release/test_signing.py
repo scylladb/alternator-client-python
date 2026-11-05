@@ -12,6 +12,7 @@ import unittest
 from unittest.mock import patch
 
 import signing
+import pipeline
 
 ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_PRIMARY = signing.PRIMARY
@@ -335,7 +336,7 @@ class SigningTests(unittest.TestCase):
     @contextmanager
     def make_repository(self):
         with self.repository() as directory:
-            for name in ["Makefile", "scripts/release/signing.py", "scripts/release/guard.py"]:
+            for name in ["Makefile", "scripts/release/signing.py", "scripts/release/guard.py", "scripts/release/version.py"]:
                 target = Path(name)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_text((ROOT / name).read_text())
@@ -344,6 +345,8 @@ class SigningTests(unittest.TestCase):
                               .replace(REPOSITORY_PRIMARY, self.primary)
                               .replace(REPOSITORY_SIGNING, self.subkey))
             shutil.copyfile(self.public, "scripts/release/publisher.asc")
+            Path("native").mkdir()
+            Path("native/pyproject.toml").write_text('[project]\nname = "alternator-client-rust-backend"\nversion = "0.0.0"\n')
             Path("alternator").mkdir()
             Path("alternator/_version.py").write_text('__version__ = "0.0.0"\n')
             # Stub package tooling; exercise real Make, Git, GPG, and checksum commands.
@@ -357,6 +360,7 @@ class SigningTests(unittest.TestCase):
                 "import os, pathlib, sys",
                 "assert not any(k.startswith('RELEASE_GPG_') for k in os.environ)",
                 "assert 'GNUPGHOME' not in os.environ",
+                "assert not any(k in os.environ for k in ('GH_TOKEN', 'GITHUB_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_URL'))",
                 "assert not any(k.startswith(('GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_')) for k in os.environ)",
                 "assert 'GIT_CONFIG_COUNT' not in os.environ",
                 "assert not list(pathlib.Path(os.environ['RUNNER_TEMP']).glob('release-signing-*'))",
@@ -377,7 +381,10 @@ class SigningTests(unittest.TestCase):
             # may survive into either package-tool subprocess.
             password = directory / "passphrase"
             password.write_text(self.password + "\n")
-            os.environ.update(RELEASE_GPG_PRIVATE_KEY=self.private.read_text(),
+            os.environ.update(GH_TOKEN="test-only-token", GITHUB_TOKEN="test-only-token",
+                              ACTIONS_ID_TOKEN_REQUEST_TOKEN="test-only-token",
+                              ACTIONS_ID_TOKEN_REQUEST_URL="https://example.invalid",
+                              RELEASE_GPG_PRIVATE_KEY=self.private.read_text(),
                               RELEASE_GPG_PASSPHRASE_FILE=str(password))
             signing.run(["git", "add", "."])
             signing.run(["git", "-c", "user.name=Initial", "-c", "user.email=initial@example.invalid",
@@ -411,6 +418,44 @@ class SigningTests(unittest.TestCase):
             self.assertIn("Expected exactly one prepared release commit", result.stderr)
             self.assertFalse(list(directory.glob("release-signing-*")))
 
+    def test_atomic_push_publishes_both_refs_and_rejects_racing_tag(self):
+        with self.make_repository() as directory:
+            baseline = os.environ["RELEASE_BASE_COMMIT"]
+            signing.run(["make", "release-prepare"])
+            signing.run(["make", "release-tag"])
+            prepared = signing.run(["git", "rev-parse", "HEAD"]).strip()
+            remote = directory / "remote.git"
+            signing.run(["git", "init", "--bare", "--quiet", str(remote)])
+            signing.run(["git", "remote", "add", "origin", str(remote)])
+            signing.run(["git", "push", "origin", baseline + ":refs/heads/main"])
+            data = {"baseline": baseline, "tag": "v1.0.0", "registry": "pypi"}
+            with patch.object(pipeline, "verify_recovery", return_value=data), patch.object(pipeline, "blockers"):
+                pipeline.push()
+            self.assertEqual(signing.run(["git", "--git-dir=" + str(remote), "rev-parse", "main"]).strip(), prepared)
+            self.assertEqual(signing.run(["git", "--git-dir=" + str(remote), "rev-parse", "v1.0.0^{commit}"]).strip(), prepared)
+            # Recreate a separate remote with a conflicting tag. Atomic push must
+            # leave main at the baseline even though that individual update is valid.
+            other = directory / "conflict.git"
+            signing.run(["git", "init", "--bare", "--quiet", str(other)])
+            signing.run(["git", "remote", "set-url", "origin", str(other)])
+            signing.run(["git", "push", "origin", baseline + ":refs/heads/main", baseline + ":refs/tags/v1.0.0"])
+            with patch.object(pipeline, "verify_recovery", return_value=data), patch.object(pipeline, "blockers"), self.assertRaises(pipeline.ReleaseError):
+                pipeline.push()
+            self.assertEqual(signing.run(["git", "--git-dir=" + str(other), "rev-parse", "main"]).strip(), baseline)
+
+    def test_prepared_metadata_and_extra_changes_are_rejected(self):
+        with self.make_repository():
+            signing.run(["make", "release-commit"])
+            prepared = signing.run(["git", "rev-parse", "HEAD"]).strip()
+            for filename, content in [("unrelated", "unexpected"), ("native/pyproject.toml", '[project]\nversion = "9.0.0"\n')]:
+                Path(filename).write_text(content)
+                signing.run(["git", "add", filename])
+                with self.session():
+                    signing.run(["git", "commit", "--amend", "--no-edit"])
+                with self.assertRaises(signing.SigningError):
+                    signing.verify_prepared()
+                signing.run(["git", "reset", "--hard", prepared])
+
     def test_make_release_rerun_by_different_maintainer(self):
         with self.make_repository() as directory:
             # Workflow recursion must not fall back to local account authorization.
@@ -431,7 +476,7 @@ class SigningTests(unittest.TestCase):
             Path("pyproject.toml").write_text(
                 '[build-system]\nrequires = ["setuptools==80.9.0", "wheel==0.45.1"]\n'
                 'build-backend = "setuptools.build_meta"\n'
-                '[project]\nname = "release-smoke-fixture"\nversion = "1.0.0"\n'
+                '[project]\nname = "alternator-client"\nversion = "1.0.0"\n'
                 'description = "Disposable signing smoke project"\n'
                 '[tool.setuptools.packages.find]\ninclude = ["alternator*"]\n')
             signing.run(["git", "add", "."])
@@ -440,11 +485,34 @@ class SigningTests(unittest.TestCase):
             os.environ["RELEASE_BASE_COMMIT"] = signing.run(["git", "rev-parse", "HEAD"]).strip()
             signing.run(["make", "release-prepare"])
             prepared = signing.run(["git", "rev-parse", "HEAD"]).strip()
-            # Restore the bundle into a separate checkout just as the tag job does.
+            signing.run(["make", "release-tag"])
+            os.environ.update(GITHUB_REPOSITORY="fixture/release", RELEASE_REGISTRY="testpypi")
+            pipeline.manifest()
+            pipeline.verify_recovery()
+            upload = next(Path("packages").glob("*.whl"))
+            content = upload.read_bytes()
+            upload.write_bytes(b"tampered")
+            with self.assertRaisesRegex(pipeline.ReleaseError, "upload differs"):
+                pipeline.verify_recovery()
+            upload.write_bytes(content)
+            # Reproduce the pinned publish action's directory mutation.
+            for package in Path("packages").iterdir():
+                Path(str(package) + ".publish.attestation").write_text('{"fixture": true}')
+            with self.assertRaisesRegex(pipeline.ReleaseError, "Unexpected registry"):
+                pipeline.verify_recovery()
+            pipeline.verify_recovery(after_upload=True)
+            unexpected = Path("packages/unrelated.publish.attestation")
+            unexpected.write_text("unexpected")
+            with self.assertRaisesRegex(pipeline.ReleaseError, "Unexpected registry"):
+                pipeline.verify_recovery(after_upload=True)
+            unexpected.unlink()
+            # Restore exact signed objects and assets into an independent checkout.
             clone = directory / "restored"
-            signing.run(["git", "clone", "--quiet", ".", str(clone)])
-            for name in ("release-source.bundle",):
+            signing.run(["git", "clone", "--quiet", "release-source.bundle", str(clone)])
+            for name in ("release-source.bundle", "release-manifest.json"):
                 shutil.copyfile(name, clone / name)
+            shutil.copytree("dist", clone / "dist")
+            shutil.copytree("packages", clone / "packages")
             original = Path.cwd()
             try:
                 os.chdir(clone)
@@ -452,6 +520,7 @@ class SigningTests(unittest.TestCase):
                 signing.verify_prepared()
                 signing.run(["make", "release-tag"])
                 signing.verify_tag("v1.0.0", prepared)
+                pipeline.verify_recovery(after_upload=True)
             finally:
                 os.chdir(original)
             with signing.public_environment() as env:
@@ -599,47 +668,6 @@ class WorkflowTests(unittest.TestCase):
         import re
         workflow = (ROOT / ".github/workflows/release.yml").read_text()
         return dict(re.findall(r"^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:|\Z)", workflow, re.M | re.S))
-
-    def test_all_signing_and_publishing_jobs_require_release_environment(self):
-        jobs = self.workflow_jobs()
-        protected = {"build", "tag-release", "publish-testpypi", "publish", "create-release"}
-        self.assertEqual(set(jobs), protected | {"validate"})
-        for name in protected:
-            with self.subTest(job=name):
-                self.assertRegex(jobs[name], r"(?m)^    environment: release$")
-                self.assertNotIn("GITHUB_TRIGGERING_ACTOR", jobs[name])
-                self.assertNotIn("Require publisher release user", jobs[name])
-        workflow = (ROOT / ".github/workflows/release.yml").read_text()
-        self.assertIn('test "$GITHUB_REF" = refs/heads/main', workflow)
-        self.assertNotRegex(workflow, r"echo .*RELEASE_GPG_.*GITHUB_ENV")
-        self.assertIn('baseline: ${{ github.sha }}', workflow)
-        self.assertIn('RELEASE_BASE_COMMIT: ${{ needs.build.outputs.baseline }}', workflow)
-
-    def test_validation_finishes_before_approval_on_separate_runner(self):
-        jobs = self.workflow_jobs()
-        validation, release = jobs["validate"], jobs["build"]
-        self.assertRegex(validation, r"(?m)^    runs-on: ubuntu-latest$")
-        self.assertNotIn("environment:", validation)
-        self.assertNotIn("secrets.", validation)
-        self.assertNotIn("RELEASE_GPG_", validation)
-        self.assertNotIn("id-token:", validation)
-        for command in ("make test-unit", "make test-integration", "make lint"):
-            self.assertIn(command, validation)
-            self.assertNotIn(command, release)
-        for command in ("make release-commit", "make release-build", "make release-sign"):
-            self.assertIn(command, release)
-            self.assertNotIn(command, validation)
-        self.assertRegex(release, r"(?m)^    needs: validate$")
-        self.assertRegex(release, r"(?m)^    runs-on: ubuntu-latest$")
-        self.assertNotIn("always()", release.split("    steps:\n", 1)[0])
-        self.assertNotIn("continue-on-error:", validation)
-        self.assertNotIn("actions/download-artifact", release)
-        self.assertIn("ref: ${{ github.sha }}", release)
-        self.assertIn("VALIDATED_COMMIT: ${{ needs.validate.outputs.commit }}", release)
-        self.assertIn('test "$VALIDATED_COMMIT" = "$GITHUB_SHA"', release)
-        self.assertIn('test "$(git rev-parse HEAD)" = "$VALIDATED_COMMIT"', release)
-        for output in ("package-version", "prerelease"):
-            self.assertIn(output + ": ${{ needs.validate.outputs." + output + " }}", release)
 
     def test_local_entrypoints_all_authorize_before_changes(self):
         with tempfile.TemporaryDirectory() as temp:

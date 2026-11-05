@@ -15,8 +15,8 @@ and annotated release tags use the same signing subkey, selected by its complete
 fingerprint with `!`. The primary key certifies the signing subkey and remains offline.
 
 The release workflow authorizes maintainers through the protected `release`
-environment on **every** signing and publishing job. Approved operators may differ
-from `scylladb-publisher`, including when another approved maintainer reruns a job.
+environment on its single signing and publishing job. Approved operators may differ
+from `scylladb-publisher`; the pinned publisher key remains the signing identity.
 The signer remains the pinned publisher key. Workflow Make invocations pass
 `RELEASE_WORKFLOW=1` as a command-line argument, which skips the local account check
 only when `GITHUB_ACTIONS=true`; recursive Make calls inherit that argument.
@@ -70,8 +70,13 @@ against arbitrary build code or same-user persistence within that runner.
 release version before creating or accepting the signed tag. These targets prepare
 local outputs; the workflow handles uploads and publication. Do not change or replace
 existing tags.
-Version validation and prerelease normalization live in the `release-version`
-Make target; `VERSION_FILE` defaults to `alternator/_version.py`.
+Version validation and prerelease normalization live in `version.py`, called by
+`release-version`. Normal preparation updates `alternator/_version.py` and
+`native/pyproject.toml` together; Cargo metadata and native publication stay separate.
+`VERSION_FILE` (and optional `NATIVE_VERSION_FILE`) support isolated fixtures.
+After tagging, the source bundle includes both the commit and signed tag with
+full history. The workflow verifies and retains the bundle, manifest and exact
+signed distributions before upload. See [stage-specific recovery](../../RELEASING.md#publishing-fails-recovery-by-completed-stage).
 
 Complex pre-release checks can run before preparation or against the signed outputs
 after the session closes. Verification needs only the public certificate. Checks
@@ -120,28 +125,26 @@ following the repository's recovery instructions.
 
 ## Protected environment rollout
 
-Before merging the environment-aware workflow, create **Settings → Environments →
-release**. Require one approval from the repository's designated release-maintainer
-team, prevent self-review, disable administrator bypass, and permit only the
-`main` branch. Confirm the actual team with repository administrators; this code
-cannot choose that team or configure approval rules. Every job may require its own
-approval. The first approval is requested only after the separate validation job
-succeeds. The same branch restriction applies to TestPyPI rehearsals.
+Configure **Settings → Environments → release** to require one approval from
+`nikagra` or `dkropachev`, allow self-review, disable administrator bypass and
+permit only branch `main`. Both workflows use one protected job after independent
+validation. Production and rehearsal share job-level concurrency and never cancel
+an active publication.
 
-Upload `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` into that environment using the original
-secure material. Existing GitHub secrets cannot be downloaded. Pass values through
-stdin, such as `gh secret set GPG_PRIVATE_KEY --repo scylladb/alternator-client-python
---env release < /secure/signing-private.asc`; do not use arguments containing the
-secret itself. Validate the protected subkey and reject empty/multiline passphrases
-before uploading. Update both PyPI and TestPyPI trusted-publisher registrations to
-require the `release` environment in `release.yml`.
+Upload environment `GPG_PRIVATE_KEY` and `GPG_PASSPHRASE` from the original secure
+material; GitHub secrets cannot be downloaded. Supply values through stdin, for
+example `gh secret set GPG_PRIVATE_KEY --repo scylladb/alternator-client-python
+--env release < /secure/signing-private.asc`. Validate the pinned protected subkey
+and nonempty single-line passphrase before use. Configure PyPI's publisher for
+`release.yml`, TestPyPI's for `release-dry-run.yml`, both in environment `release`.
 
-Run an approved TestPyPI rehearsal from `main`, including a rerun by a different
-approved maintainer, and check approvals, pinned signatures, log artifacts, and
-keyring cleanup. This rehearsal uploads packages to TestPyPI; it is not upload-free.
-Only after that succeeds remove the repository-level signing secret copies. Do not
-remove them before old workflows have been migrated, or retain them indefinitely.
-No workflow has been dispatched and no live signing secrets are used by the tests.
+Enable immutable releases and an active `v*` tag ruleset prohibiting updates and
+deletion without bypass actors. Existing published releases remain unchanged.
+Run an approved TestPyPI rehearsal from `main`; verify downloaded distribution
+hashes/signatures against the retained manifest and confirm there were no remote
+Git or GitHub release writes. Only then remove repository-level signing secret
+copies. Rerunning release jobs is prohibited: recover the original objects/assets
+by completed stage as documented in [RELEASING.md](../../RELEASING.md).
 
 ## Reference parity and test coverage
 
@@ -156,13 +159,15 @@ Python-specific release preparation in place of Maven's release/SCM plugins:
   and apply inherited runtime Git configuration without persisting checkout state.
 - `RELEASE_BASE_COMMIT` must be exported in the calling shell before preparation;
   Make cannot set the caller's environment. Verification requires exactly one new
-  signed Python release commit after that ancestor. Python has no separate
+  signed, single-parent Python release commit directly after that baseline.
+  With `RELEASE_VERSION` supplied, verification checks the exact commit subject
+  and both expected metadata edits, rejecting unrelated changes. Python has no separate
   development-version commit. Tagging additionally checks the prepared bundle,
   version, signed annotated tag, and exact target. Published tags are never moved.
 - Historical release dispatch is unsupported: every workflow run must start on
   `main`. Consumer verification of historical certificates remains supported.
 - Build and metadata tooling run after the signing session ends, with credential
-  inputs and runtime signing settings removed. The build and metadata frontends
+  inputs, GitHub/OIDC tokens and runtime signing settings removed. The build and metadata frontends
   are pinned. A fresh session signs the resulting distributions and checksums.
 - `guard.py` rejects debug/credential-bearing command arguments, captures at most
   8 MiB across stdout/stderr in memory, and redacts complete streams and encoded

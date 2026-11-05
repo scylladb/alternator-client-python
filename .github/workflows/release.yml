@@ -4,469 +4,152 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Version to release (e.g., 2.0.2 or 2.1.0-rc.1); set automatically"
+        description: 'Version to release (X.Y.Z, X.Y.Z-rc.1, alpha/beta or Python prerelease spelling)'
         required: true
         type: string
-      dry_run:
-        description: "Dry run: build and publish to TestPyPI only (no real release)"
+      skip-tests:
+        description: 'Skip project unit/integration tests; release helper tests always run'
         required: false
         type: boolean
         default: false
 
-concurrency:
-  group: release
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
   validate:
-    name: Validate Release
+    name: Pre-release checks
     runs-on: ubuntu-latest
     permissions:
-      actions: read
       contents: read
       issues: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_BASE_COMMIT: ${{ github.sha }}
+      RELEASE_REGISTRY: pypi
+      RELEASE_PRODUCTION_FLAG: '--production'
+      GH_TOKEN: ${{ github.token }}
     outputs:
-      commit: ${{ github.sha }}
-      package-version: ${{ steps.version.outputs.package-version }}
-      prerelease: ${{ steps.version.outputs.prerelease }}
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          fetch-depth: 0
-
-      - name: Block release with open release blockers
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          blocker=$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --label release-blocker \
-            --limit 1 \
-            --json title,url \
-            --jq '.[0] // empty')
-          if [[ -n "$blocker" ]]; then
-            blocker_title=$(jq -r '.title' <<< "$blocker")
-            blocker_url=$(jq -r '.url' <<< "$blocker")
-            echo "Release blocked by open release blocker:"
-            echo "${blocker_title} (${blocker_url})"
-            exit 1
-          fi
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          python-version: "3.11"
-
-      - name: Validate release target
-        run: |
-          test "$GITHUB_REF" = refs/heads/main || {
-            echo 'All releases, including TestPyPI rehearsals, must start from main.' >&2
-            exit 1
-          }
-
-      - name: Validate and set package version
-        id: version
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          make --no-print-directory release-version RELEASE_WORKFLOW=1 >> "$GITHUB_OUTPUT"
-
-      - name: Require main branch for a production release
-        if: ${{ !inputs.dry_run && github.ref != 'refs/heads/main' }}
-        run: |
-          echo "Production releases must be dispatched from the main branch."
-          echo "Current ref: $GITHUB_REF"
-          exit 1
-
-      - name: Require successful CI for the production commit
-        if: ${{ !inputs.dry_run }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          RELEASE_CI_COUNT=$(gh api \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?head_sha=${GITHUB_SHA}&status=success&per_page=100" \
-            --jq '[.workflow_runs[] | select(.event == "push" and .conclusion == "success")] | length')
-          if [ "$RELEASE_CI_COUNT" -lt 1 ]; then
-            echo "No successful main-branch CI run found for ${GITHUB_SHA}."
-            echo "Wait for CI to pass for this exact commit, then dispatch again."
-            exit 1
-          fi
-
-      - name: Check tag does not already exist
-        if: ${{ !inputs.dry_run }}
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          if ! RELEASE_REMOTE_TAG=$(git ls-remote --tags origin "refs/tags/v${RELEASE_VERSION}"); then
-            echo "Unable to check remote tag v${RELEASE_VERSION}."
-            exit 1
-          fi
-          if [ -n "$RELEASE_REMOTE_TAG" ]; then
-            echo "Tag v${RELEASE_VERSION} already exists on remote!"
-            echo "Choose a new version; published release versions must not be reused."
-            exit 1
-          fi
-
-      - name: Check version does not already exist on PyPI
-        if: ${{ !inputs.dry_run }}
-        env:
-          RELEASE_VERSION: ${{ steps.version.outputs.package-version }}
-        run: |
-          PYPI_URL="https://pypi.org/pypi/alternator-client/${RELEASE_VERSION}/json"
-          HTTP_STATUS=$(curl --silent --show-error --location \
-            --output /dev/null --write-out '%{http_code}' "$PYPI_URL")
-
-          case "$HTTP_STATUS" in
-            404)
-              echo "alternator-client ${RELEASE_VERSION} is available on PyPI."
-              ;;
-            200)
-              echo "alternator-client ${RELEASE_VERSION} already exists on PyPI."
-              exit 1
-              ;;
-            *)
-              echo "Unable to confirm version availability on PyPI (HTTP ${HTTP_STATUS})."
-              exit 1
-              ;;
-          esac
-
-      - name: Install dependencies
-        run: make install
-
-      - name: Run tests
-        run: make test-unit
-
-      - name: Run integration tests
-        run: make test-integration
-
-      - name: Run linters
-        run: make lint
-
-  build:
-    name: Prepare & Sign Release
-    needs: validate
-    runs-on: ubuntu-latest
-    environment: release
-    permissions:
-      contents: read
-    outputs:
-      commit: ${{ steps.release-commit.outputs.sha }}
-      package-version: ${{ needs.validate.outputs.package-version }}
-      prerelease: ${{ needs.validate.outputs.prerelease }}
-      baseline: ${{ github.sha }}
+      baseline: ${{ steps.validate.outputs.baseline }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
-
-      - name: Verify validated revision
+          persist-credentials: false
+      - name: Check blockers before validation
         env:
-          VALIDATED_COMMIT: ${{ needs.validate.outputs.commit }}
-        run: |
-          test "$VALIDATED_COMMIT" = "$GITHUB_SHA"
-          test "$(git rev-parse HEAD)" = "$VALIDATED_COMMIT"
-          echo "RELEASE_BASE_COMMIT=$VALIDATED_COMMIT" >> "$GITHUB_ENV"
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/pipeline.py blockers
+      - name: Validate release
+        id: validate
+        uses: ./.github/actions/release-validate
         with:
-          python-version: "3.11"
-
-      - name: Prepare signed release commit
-        id: release-commit
+          skip-tests: ${{ inputs.skip-tests }}
+      - name: Recheck blockers before approval
         env:
-          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: make release-commit RELEASE_WORKFLOW=1
-
-      - name: Verify prepared history
-        run: python3 scripts/release/signing.py verify-prepared
-
-      - name: Build and check release artifacts
-        run: make release-build RELEASE_WORKFLOW=1
-
-      - name: Sign release artifacts and checksums
-        env:
-          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-        run: make release-sign RELEASE_WORKFLOW=1
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: dist
-          path: dist/
-          if-no-files-found: error
-          overwrite: true
-
-      - name: Upload release commit
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-source
-          path: release-source.bundle
-          if-no-files-found: error
-          overwrite: true
-
-      - name: Upload sanitized release logs
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/pipeline.py blockers
+      - name: Upload sanitized validation logs
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-logs-${{ github.job }}
+          name: validation-logs-${{ github.run_attempt }}
           path: release-logs/
-          overwrite: true
           if-no-files-found: ignore
+          retention-days: 7
 
-  tag-release:
-    name: Create Signed Tag
-    if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
+  release:
+    name: Release
+    needs: validate
     runs-on: ubuntu-latest
     environment: release
-    needs: build
+    concurrency:
+      group: alternator-python-release
+      cancel-in-progress: false
     permissions:
       contents: write
+      id-token: write
       issues: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_BASE_COMMIT: ${{ needs.validate.outputs.baseline }}
+      RELEASE_REGISTRY: pypi
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          ref: ${{ needs.validate.outputs.baseline }}
           fetch-depth: 0
-
-      - name: Download release commit
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: release-source
-
-      - name: Restore tested release commit
-        env:
-          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
-        run: |
-          git bundle verify release-source.bundle
-          git fetch release-source.bundle HEAD
-          test "$(git rev-parse FETCH_HEAD)" = "$RELEASE_COMMIT"
-          git checkout --detach "$RELEASE_COMMIT"
-
-      - name: Verify prepared history
-        env:
-          RELEASE_BASE_COMMIT: ${{ needs.build.outputs.baseline }}
-        run: python3 scripts/release/signing.py verify-prepared
-
-      - name: Create and verify signed tag
-        env:
-          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          RELEASE_GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_BASE_COMMIT: ${{ needs.build.outputs.baseline }}
-        run: make release-tag RELEASE_WORKFLOW=1
-
-      - name: Block release with open release blockers
+          persist-credentials: false
+      - name: Recheck blockers after approval
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          blocker=$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --label release-blocker \
-            --limit 1 \
-            --json title,url \
-            --jq '.[0] // empty')
-          if [[ -n "$blocker" ]]; then
-            blocker_title=$(jq -r '.title' <<< "$blocker")
-            blocker_url=$(jq -r '.url' <<< "$blocker")
-            echo "Release blocked by open release blocker:"
-            echo "${blocker_title} (${blocker_url})"
-            exit 1
-          fi
-
-      - name: Push signed tag
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-        run: |
-          git push origin "v${RELEASE_VERSION}"
-
-      - name: Upload sanitized release logs
-        if: always()
+        run: python3 scripts/release/pipeline.py blockers
+      - name: Prepare signed release
+        uses: ./.github/actions/release-prepare
+        with:
+          private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Save verified recovery artifacts before publication
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: release-logs-${{ github.job }}
-          path: release-logs/
-          overwrite: true
-          if-no-files-found: ignore
-
-  publish-testpypi:
-    name: Publish to TestPyPI
-    if: ${{ inputs.dry_run }}
-    runs-on: ubuntu-latest
-    environment: release
-    needs: build
-    permissions:
-      id-token: write
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Remove non-package files before upload
-        run: |
-          rm -f dist/*.asc dist/SHA256SUMS 2>/dev/null || true
-          ls -la dist/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          skip-existing: true
-
-  publish:
-    name: Publish to PyPI
-    if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    environment: release
-    needs: [build, tag-release]
-    permissions:
-      id-token: write
-      issues: read
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Remove non-package files before PyPI upload
-        run: |
-          rm -f dist/*.asc dist/SHA256SUMS 2>/dev/null || true
-          ls -la dist/
-
-      - name: Block release with open release blockers
+          name: release-recovery-${{ github.run_attempt }}
+          path: |
+            release-source.bundle
+            release-manifest.json
+            dist/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Final checks before registry upload
         env:
           GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          blocker=$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --label release-blocker \
-            --limit 1 \
-            --json title,url \
-            --jq '.[0] // empty')
-          if [[ -n "$blocker" ]]; then
-            blocker_title=$(jq -r '.title' <<< "$blocker")
-            blocker_url=$(jq -r '.url' <<< "$blocker")
-            echo "Release blocked by open release blocker:"
-            echo "${blocker_title} (${blocker_url})"
-            exit 1
-          fi
-
+        run: python3 scripts/release/pipeline.py checkpoint --registry pypi --production
       - name: Publish to PyPI
+        id: registry
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
-
-  create-release:
-    name: Create GitHub Release
-    if: ${{ !inputs.dry_run && github.ref == 'refs/heads/main' }}
-    runs-on: ubuntu-latest
-    environment: release
-    needs: [build, publish]
-    permissions:
-      contents: write
-      issues: read
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          fetch-depth: 0
-
-      - name: Download artifacts
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+          packages-dir: packages/
+      - name: Atomically push release commit to main and signed tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        id: scm
+        run: python3 scripts/release/pipeline.py push
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        id: github
+        run: python3 scripts/release/pipeline.py github
+      - name: Record completed publication stages
+        if: always()
+        env:
+          REGISTRY_OUTCOME: ${{ steps.registry.outcome }}
+          SCM_OUTCOME: ${{ steps.scm.outcome }}
+          GITHUB_OUTCOME: ${{ steps.github.outcome }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          fields = ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "REGISTRY_OUTCOME", "SCM_OUTCOME", "GITHUB_OUTCOME")
+          Path("release-stages.json").write_text(json.dumps({k: os.environ.get(k) for k in fields}, indent=2) + "\n")
+          PYTHON
+      - name: Retain partial preparation and publication receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: dist
-          path: dist/
-
-      - name: Verify published tag identifies the signed release commit
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_COMMIT: ${{ needs.build.outputs.commit }}
-        run: |
-          set -euo pipefail
-          git fetch --force origin "refs/tags/v${RELEASE_VERSION}:refs/tags/v${RELEASE_VERSION}"
-          python3 scripts/release/signing.py verify-tag "v${RELEASE_VERSION}" "$RELEASE_COMMIT"
-
-      - name: Build release body
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          PACKAGE_VERSION: ${{ needs.build.outputs.package-version }}
-        run: |
-          gh api --method POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
-            -f "tag_name=v${RELEASE_VERSION}" --jq .body > generated-notes.md
-          # shellcheck disable=SC2016 # Markdown code fences are literal text.
-          {
-            cat generated-notes.md
-            printf '\n## Installation\n\n```bash\n'
-            printf 'pip install alternator-client==%s\n' "$PACKAGE_VERSION"
-            printf '```\n\n## Verification\n\n'
-            printf 'Download the wheel, source distribution, checksums, and checksum signature:\n\n'
-            printf '```bash\n'
-            printf 'mkdir "alternator-client-%s"\n' "$RELEASE_VERSION"
-            printf 'cd "alternator-client-%s"\n' "$RELEASE_VERSION"
-            printf 'gh release download "v%s" --repo "%s" \\\n' "$RELEASE_VERSION" "$GITHUB_REPOSITORY"
-            printf '%s\n' "  --pattern '*.whl' \\"
-            printf '%s\n' "  --pattern '*.tar.gz' \\"
-            printf '%s\n' "  --pattern 'SHA256SUMS*'"
-            printf '```\n\n### Checksum Verification\n\n```bash\n'
-            printf 'sha256sum -c SHA256SUMS\n'
-            printf '```\n\n### GPG Signature Verification\n\n'
-            printf 'The signed checksum file authenticates the checksums used above. To verify it:\n\n'
-            printf '```bash\n'
-            printf 'curl -fsSL https://github.com/scylladb-publisher.gpg | gpg --import\n'
-            printf 'gpg --fingerprint 2CCB493E76F3979F5968A0151E253E2DAAEDB096\n'
-            printf 'gpg --verify SHA256SUMS.asc SHA256SUMS\n'
-            printf '```\n'
-          } > release-body.md
-
-      - name: Block release with open release blockers
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          blocker=$(gh issue list \
-            --repo "$GITHUB_REPOSITORY" \
-            --state open \
-            --label release-blocker \
-            --limit 1 \
-            --json title,url \
-            --jq '.[0] // empty')
-          if [[ -n "$blocker" ]]; then
-            blocker_title=$(jq -r '.title' <<< "$blocker")
-            blocker_url=$(jq -r '.url' <<< "$blocker")
-            echo "Release blocked by open release blocker:"
-            echo "${blocker_title} (${blocker_url})"
-            exit 1
-          fi
-
-      - name: Create draft, attach artifacts, and publish release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          PRERELEASE: ${{ needs.build.outputs.prerelease }}
-        run: |
-          set -euo pipefail
-          tag="v${RELEASE_VERSION}"
-          # Reuse a draft left by an interrupted attempt. Never modify published assets.
-          if release=$(gh release view "$tag" --json isDraft,url); then
-            if [[ $(jq -r .isDraft <<< "$release") != true ]]; then
-              echo "Release is already published: $(jq -r .url <<< "$release")"
-              exit 0
-            fi
-            gh release edit "$tag" --notes-file release-body.md --prerelease="$PRERELEASE"
-          else
-            gh release create "$tag" --verify-tag --draft --title "$tag" \
-              --notes-file release-body.md --prerelease="$PRERELEASE"
-          fi
-          gh release upload "$tag" dist/* --clobber
-          gh release edit "$tag" --draft=false
+          name: release-receipts-${{ github.run_attempt }}
+          path: |
+            release-source.bundle
+            release-manifest.json
+            release-stages.json
+            release-draft.json
+            dist/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload sanitized release logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-logs-${{ github.run_attempt }}
+          path: release-logs/
+          if-no-files-found: ignore
+          retention-days: 7
