@@ -1,0 +1,123 @@
+name: Release dry run
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (X.Y.Z, X.Y.Z-rc.1, alpha/beta or Python prerelease spelling)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Pre-release checks
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_BASE_COMMIT: ${{ github.sha }}
+      RELEASE_REGISTRY: testpypi
+      RELEASE_PRODUCTION_FLAG: ''
+      GH_TOKEN: ${{ github.token }}
+    outputs:
+      baseline: ${{ steps.validate.outputs.baseline }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate release
+        id: validate
+        uses: ./.github/actions/release-validate
+      - name: Upload sanitized validation logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: validation-logs-${{ github.run_attempt }}
+          path: release-logs/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  release:
+    name: Release dry run
+    needs: validate
+    runs-on: ubuntu-latest
+    environment: release
+    concurrency:
+      group: alternator-python-release
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_BASE_COMMIT: ${{ needs.validate.outputs.baseline }}
+      RELEASE_REGISTRY: testpypi
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          ref: ${{ needs.validate.outputs.baseline }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Prepare signed release
+        uses: ./.github/actions/release-prepare
+        with:
+          private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Save verified recovery artifacts before publication
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-recovery-${{ github.run_attempt }}
+          path: |
+            release-source.bundle
+            release-manifest.json
+            dist/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Final checks before registry upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release/pipeline.py checkpoint --registry testpypi
+      - name: Publish to TestPyPI
+        id: registry
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        with:
+          packages-dir: packages/
+          repository-url: https://test.pypi.org/legacy/
+      - name: Record completed publication stages
+        if: always()
+        env:
+          REGISTRY_OUTCOME: ${{ steps.registry.outcome }}
+        run: |
+          python3 - <<'PYTHON'
+          import json, os
+          from pathlib import Path
+          fields = ("GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "REGISTRY_OUTCOME", "SCM_OUTCOME", "GITHUB_OUTCOME")
+          Path("release-stages.json").write_text(json.dumps({k: os.environ.get(k) for k in fields}, indent=2) + "\n")
+          PYTHON
+      - name: Retain partial preparation and publication receipts
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-receipts-${{ github.run_attempt }}
+          path: |
+            release-source.bundle
+            release-manifest.json
+            release-stages.json
+            release-draft.json
+            dist/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Upload sanitized release logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-logs-${{ github.run_attempt }}
+          path: release-logs/
+          if-no-files-found: ignore
+          retention-days: 7

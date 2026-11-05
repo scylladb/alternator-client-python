@@ -1,0 +1,63 @@
+name: Validate release
+description: Current-run checks without release credentials
+inputs:
+  skip-tests:
+    description: Skip only project unit and integration tests
+    default: 'false'
+outputs:
+  baseline:
+    description: Validated main revision
+    value: ${{ steps.baseline.outputs.sha }}
+runs:
+  using: composite
+  steps:
+    - name: Validate dispatch and baseline
+      id: baseline
+      shell: bash
+      run: |
+        test "$GITHUB_REF" = refs/heads/main
+        test "$(git rev-parse HEAD)" = "$RELEASE_BASE_COMMIT"
+        printf 'sha=%s\n' "$RELEASE_BASE_COMMIT" >> "$GITHUB_OUTPUT"
+    - name: Install uv
+      uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      with:
+        python-version: '3.11'
+    - name: Check tooling
+      shell: bash
+      run: |
+        for tool in git gpg gh npm uv uvx; do command -v "$tool"; done
+        test '${{ inputs.skip-tests }}' = true || test '${{ inputs.skip-tests }}' = false
+    - name: Validate version and registry availability
+      shell: bash
+      run: |
+        make --no-print-directory release-version RELEASE_WORKFLOW=1
+        python3 scripts/release/pipeline.py available --registry "$RELEASE_REGISTRY" $RELEASE_PRODUCTION_FLAG
+    - name: Install dependencies
+      shell: bash
+      run: |
+        make install
+        npm ci --ignore-scripts --prefix .github
+    - name: Test release automation
+      shell: bash
+      env:
+        RELEASE_REAL_BUILD_TEST: '1'
+      run: |
+        make test-release-signing
+        node --test .github/tests/*.test.cjs
+    - name: Lint
+      shell: bash
+      run: make lint
+    - name: Project unit and integration tests
+      if: inputs.skip-tests != 'true'
+      shell: bash
+      run: |
+        make test-unit
+        make test-integration
+    - name: Unsigned build and metadata checks
+      shell: bash
+      run: |
+        make release-build RELEASE_WORKFLOW=1
+        python3 scripts/release/pipeline.py metadata
+    - name: Recheck main after validation
+      shell: bash
+      run: python3 scripts/release/pipeline.py main

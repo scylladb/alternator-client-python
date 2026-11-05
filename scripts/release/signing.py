@@ -110,7 +110,8 @@ def build_environment():
     env = {key: value for key, value in os.environ.items()
             if not key.startswith(("RELEASE_GPG_", "GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_"))
             and key not in ("GNUPGHOME", "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
-                            "MAKEOVERRIDES")}
+                            "MAKEOVERRIDES", "GH_TOKEN", "GITHUB_TOKEN",
+                            "ACTIONS_ID_TOKEN_REQUEST_TOKEN", "ACTIONS_ID_TOKEN_REQUEST_URL")}
     # Recursive Make serializes command-line variable overrides after this
     # separator. Keep execution flags (e.g. -n), but never re-export credentials.
     if "MAKEFLAGS" in env:
@@ -351,7 +352,24 @@ def verify_prepared(baseline=None):
     # Python preparation creates one release commit, without a development bump.
     if len(commits) != 1:
         raise SigningError("Expected exactly one prepared release commit after RELEASE_BASE_COMMIT.")
+    if run(["git", "show", "-s", "--format=%P", "HEAD"]).strip() != baseline:
+        raise SigningError("Prepared release must be a direct, single-parent child of the baseline.")
     verify_commit(commits[0])
+    requested = os.environ.get("RELEASE_VERSION")
+    if requested:
+        import version
+        normalized = version.normalize(requested)
+        if run(["git", "show", "-s", "--format=%s", "HEAD"]).strip() != "Release v" + requested:
+            raise SigningError("Prepared release version does not match RELEASE_VERSION")
+        changed = set(run(["git", "diff", "--name-only", baseline, "HEAD"]).splitlines())
+        if changed - set(version.FILES):
+            raise SigningError("Prepared release changes unexpected files.")
+        for i, name in enumerate(version.FILES):
+            original = run(["git", "show", baseline + ":" + name])
+            expected = version.updated(original, normalized, native=i == 1)
+            if run(["git", "show", "HEAD:" + name]) != expected:
+                raise SigningError("Prepared release metadata differs from the expected version change.")
+        run(["git", "diff", "--exit-code", "HEAD"])
 
 
 def sign_files(files):

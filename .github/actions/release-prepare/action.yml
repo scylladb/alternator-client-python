@@ -1,0 +1,50 @@
+name: Prepare signed release
+description: Prepare one signed version commit, distributions, tag and recovery manifest
+inputs:
+  private-key:
+    description: Protected release signing subkey
+    required: true
+  passphrase:
+    description: Signing subkey passphrase
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Verify validated baseline after approval
+      shell: bash
+      run: |
+        if [ "$GITHUB_RUN_ATTEMPT" != 1 ]; then
+          echo 'Release jobs cannot be rerun. Inspect saved artifacts and recover the completed stage manually.' >&2
+          exit 1
+        fi
+        test "$GITHUB_REF" = refs/heads/main
+        test "$RELEASE_BASE_COMMIT" = "$GITHUB_SHA"
+        test "$(git rev-parse HEAD)" = "$RELEASE_BASE_COMMIT"
+        python3 scripts/release/pipeline.py main
+    - name: Install uv
+      uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+      with:
+        python-version: '3.11'
+    - name: Prepare signed release commit
+      shell: bash
+      env:
+        RELEASE_GPG_PRIVATE_KEY: ${{ inputs.private-key }}
+        RELEASE_GPG_PASSPHRASE: ${{ inputs.passphrase }}
+      run: make release-commit RELEASE_WORKFLOW=1
+    - name: Verify history and build distributions
+      shell: bash
+      run: |
+        python3 scripts/release/signing.py verify-prepared
+        make release-build RELEASE_WORKFLOW=1
+        python3 scripts/release/pipeline.py metadata
+    - name: Sign distributions, checksums and annotated tag
+      shell: bash
+      env:
+        RELEASE_GPG_PRIVATE_KEY: ${{ inputs.private-key }}
+        RELEASE_GPG_PASSPHRASE: ${{ inputs.passphrase }}
+      run: |
+        make release-sign RELEASE_WORKFLOW=1
+        make release-tag RELEASE_WORKFLOW=1
+    - name: Verify and record recovery manifest
+      shell: bash
+      run: python3 scripts/release/pipeline.py manifest

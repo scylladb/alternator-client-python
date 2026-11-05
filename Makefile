@@ -57,24 +57,7 @@ build:
 
 # Validate version input before changing the source file.
 release-version: release-check-user
-	@set -eu; \
-	version=$${RELEASE_VERSION:-}; \
-	file=$${VERSION_FILE:-alternator/_version.py}; \
-	invalid() { echo 'Expected X.Y.Z, X.Y.Z-rc.1, -alpha.1, -beta.1, or X.Y.Zrc1/a1/b1' >&2; exit 1; }; \
-	case "$$version" in ''|*[!0-9A-Za-z.-]*) invalid;; esac; \
-	number='(0|[1-9][0-9]*)'; \
-	printf '%s\n' "$$version" | grep -Eq "^$$number\.$$number\.$$number((-(alpha|beta|rc)\.|a|b|rc)$$number)?$$" || invalid; \
-	normalized=$$(printf '%s\n' "$$version" | sed -E 's/-alpha\./a/; s/-beta\./b/; s/-rc\./rc/'); \
-	temp=$$(mktemp "$$file.XXXXXX"); \
-	trap 'rm -f "$$temp"' EXIT; \
-	sed 's/\r$$//' "$$file" > "$$temp"; \
-	count=$$(grep -c '^__version__ = "[^"]*"$$' "$$temp" || :); \
-	if [ "$$count" != 1 ]; then \
-		echo "Expected one __version__ assignment in $$file" >&2; exit 1; \
-	fi; \
-	sed -E "s/^__version__ = \"[^\"]*\"$$/__version__ = \"$$normalized\"/" "$$temp" > "$$file"; \
-	case "$$normalized" in *[a-z]*) prerelease=true;; *) prerelease=false;; esac; \
-	printf 'package-version=%s\nprerelease=%s\n' "$$normalized" "$$prerelease"
+	@python3 scripts/release/version.py
 
 # Actions operators are authorized by the protected release environment.
 # Only explicit workflow invocations skip the local publisher-account check.
@@ -109,8 +92,8 @@ _release-commit: release-check-user
 	base=$${RELEASE_BASE_COMMIT:?Export RELEASE_BASE_COMMIT before preparation}; \
 	test "$$(git rev-parse HEAD)" = "$$base"; \
 	git checkout --detach "$$base"; \
-	git add alternator/_version.py; \
-	git commit --allow-empty --only alternator/_version.py -m "Release v$$RELEASE_VERSION"; \
+	git add alternator/_version.py native/pyproject.toml; \
+	git commit --allow-empty --only alternator/_version.py native/pyproject.toml -m "Release v$$RELEASE_VERSION"; \
 	python3 scripts/release/signing.py verify-prepared; \
 	git diff --exit-code HEAD; \
 	git bundle create release-source.bundle "$$base..HEAD" HEAD; \
@@ -146,7 +129,8 @@ _release-tag: release-check-user
 	if ! git show-ref --verify --quiet "refs/tags/$$tag"; then \
 		git tag -s "$$tag" -m "Release $$tag"; \
 	fi; \
-	python3 scripts/release/signing.py verify-tag "$$tag" "$$prepared"
+	python3 scripts/release/signing.py verify-tag "$$tag" "$$prepared"; \
+	git bundle create release-source.bundle HEAD "refs/tags/$$tag"
 
 test-release-signing:
 	python3 -m unittest discover -s scripts/release -p 'test_*.py' -v
