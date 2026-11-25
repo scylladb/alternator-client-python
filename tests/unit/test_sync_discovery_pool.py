@@ -26,7 +26,13 @@ import pytest
 from alternator._http import SyncNodeFetcher, create_sync_http_fetcher
 from alternator._sync_http_pool import SyncConnectionPool
 from alternator.client import Helper, create_client
-from alternator.config import Config, KeyRouteAffinityConfig, KeyRouteAffinityMode
+from alternator.config import (
+    Config,
+    KeyRouteAffinityConfig,
+    KeyRouteAffinityMode,
+    NodeListPollingConfig,
+    TimeoutConfig,
+)
 from alternator.core.live_nodes import SyncLiveNodesManager
 from alternator.core.routing_scope import ClusterScope, DatacenterScope, RackScope
 from tests.fake_server import FakeAlternatorResponse, FakeAlternatorServer
@@ -784,10 +790,14 @@ def test_start_during_stop_join_restores_manual_discovery(
         assert joining.wait(timeout=1)
         manager.start()
         assert manager._refresh_thread is old_thread and old_thread.is_alive()
+        assert manager.refresh_nodes()
         release.set()
         stopping.join(timeout=2)
         assert not stopping.is_alive()
         assert not old_thread.is_alive()
+        assert manager._refresh_thread is not None
+        assert manager._refresh_thread is not old_thread
+        server.wait_for_requests(3, path="/localnodes")
         assert manager.refresh_nodes()
     finally:
         release.set()
@@ -796,6 +806,322 @@ def test_start_during_stop_join_restores_manual_discovery(
                 stopping.join(timeout=2)
         finally:
             manager.stop()
+    assert_peer_closed(server)
+
+
+@pytest.mark.parametrize(
+    ("stage", "error_type"),
+    [
+        (stage, error_type)
+        for stage in ["construct", "start", "started", "reopen"]
+        for error_type in [RuntimeError, KeyboardInterrupt]
+    ]
+    + [("start", SystemExit)],
+)
+def test_deferred_restart_failure_closes_pool_and_allows_retry(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    stage: str,
+    error_type: type[BaseException],
+) -> None:
+    """Deferred startup rolls back once, retaining a launched worker until exit."""
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    fetcher = create_sync_http_fetcher(timeout_seconds=1)
+    manager = SyncLiveNodesManager(Config(seed_hosts=["127.0.0.1"], port=port), fetcher)
+    joining, release_old, entered_failed, release_failed = (
+        threading.Event() for _ in range(4)
+    )
+    refresh_loop = manager._refresh_loop
+    loops = 0
+    failed_threads: list[threading.Thread] = []
+    uncaught: list[threading.ExceptHookArgs] = []
+    failure = error_type("replacement startup failed")
+    monkeypatch.setattr(threading, "excepthook", uncaught.append)
+
+    def delayed_loop(stop: threading.Event, wake: threading.Event) -> None:
+        nonlocal loops
+        loops += 1
+        if loops == 2 and stage == "started":
+            entered_failed.set()
+            assert release_failed.wait(timeout=3)
+        refresh_loop(stop, wake)
+        if loops == 1:
+            assert release_old.wait(timeout=3)
+
+    monkeypatch.setattr(manager, "_refresh_loop", delayed_loop)
+    stopping = threading.Thread(target=manager.stop)
+    try:
+        manager.start()
+        server.wait_for_requests(1, path="/localnodes")
+        old_thread = manager._refresh_thread
+        assert old_thread is not None
+        join = old_thread.join
+
+        def observed_join(timeout: float | None = None) -> None:
+            joining.set()
+            join(timeout=timeout)
+
+        monkeypatch.setattr(old_thread, "join", observed_join)
+        stopping.start()
+        assert joining.wait(timeout=1)
+        manager.start()
+        # Reopened resources can already be used by manual discovery.
+        assert manager.refresh_nodes()
+        caplog.clear()
+        with monkeypatch.context() as fault:
+            if stage == "started":
+                start = threading.Thread.start
+
+                def fail_after_start(thread: threading.Thread) -> None:
+                    start(thread)
+                    failed_threads.append(thread)
+                    assert entered_failed.wait(timeout=1)
+                    raise failure
+
+                fault.setattr(threading.Thread, "start", fail_after_start)
+            else:
+                target, name = {
+                    "construct": (threading, "Thread"),
+                    "start": (threading.Thread, "start"),
+                    "reopen": (fetcher, "reopen"),
+                }[stage]
+                fault.setattr(
+                    target,
+                    name,
+                    Mock(side_effect=failure),
+                )
+            release_old.set()
+            join(timeout=2)
+            assert not old_thread.is_alive()
+            if issubclass(error_type, Exception):
+                assert not uncaught
+            else:
+                assert len(uncaught) == 1
+                assert uncaught[0].exc_value is failure
+                assert uncaught[0].thread is old_thread
+            stopping.join(timeout=2)
+            assert not stopping.is_alive()
+            assert fetcher._pool._closed
+            assert_peer_closed(server)
+            assert (
+                len(
+                    [
+                        record
+                        for record in caplog.records
+                        if record.getMessage()
+                        == "Failed to restart background node refresh"
+                    ]
+                )
+                == 1
+            )
+            if stage == "started":
+                assert len(failed_threads) == 1
+                failed = failed_threads[0]
+                assert manager._refresh_thread is failed and failed.is_alive()
+                assert manager._stop_event.is_set()
+                assert manager._wake_event.is_set()
+                release_failed.set()
+                failed.join(timeout=1)
+                assert not failed.is_alive()
+            assert manager._refresh_thread is None
+        manager.start()
+        server.wait_for_requests(3, path="/localnodes")
+        assert manager.refresh_nodes()
+    finally:
+        release_old.set()
+        release_failed.set()
+        if stopping.ident is not None:
+            stopping.join(timeout=2)
+        manager.stop()
+    assert_peer_closed(server)
+    assert [error.exc_value for error in uncaught] == (
+        [] if issubclass(error_type, Exception) else [failure]
+    )
+
+
+def test_immediate_start_failure_retains_launched_worker(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupted start cannot detach a worker that was already launched."""
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    fetcher = create_sync_http_fetcher(timeout_seconds=1)
+    manager = SyncLiveNodesManager(Config(seed_hosts=["127.0.0.1"], port=port), fetcher)
+    entered, release = threading.Event(), threading.Event()
+    refresh_loop = manager._refresh_loop
+    start = threading.Thread.start
+
+    def delayed_loop(stop: threading.Event, wake: threading.Event) -> None:
+        entered.set()
+        assert release.wait(timeout=3)
+        refresh_loop(stop, wake)
+
+    def interrupted_start(thread: threading.Thread) -> None:
+        start(thread)
+        assert entered.wait(timeout=1)
+        raise KeyboardInterrupt("start interrupted")
+
+    monkeypatch.setattr(manager, "_refresh_loop", delayed_loop)
+    try:
+        assert manager.refresh_nodes()
+        with monkeypatch.context() as fault:
+            fault.setattr(threading.Thread, "start", interrupted_start)
+            with pytest.raises(KeyboardInterrupt, match="start interrupted"):
+                manager.start()
+        failed = manager._refresh_thread
+        assert failed is not None and failed.is_alive()
+        assert manager._stop_event.is_set()
+        assert manager._wake_event.is_set()
+        assert fetcher._pool._closed
+        assert_peer_closed(server)
+        release.set()
+        failed.join(timeout=1)
+        assert not failed.is_alive()
+        assert manager._refresh_thread is None
+        manager.start()
+        server.wait_for_requests(2, path="/localnodes")
+        assert manager.refresh_nodes()
+    finally:
+        release.set()
+        manager.stop()
+    assert_peer_closed(server)
+
+
+@pytest.mark.parametrize("published_ident", [False, True])
+def test_interrupted_bootstrap_preserves_worker_and_pending_restart(
+    fake_alternator_server: FakeAlternatorServer,
+    monkeypatch: pytest.MonkeyPatch,
+    published_ident: bool,
+) -> None:
+    server = fake_alternator_server
+    server.set_localnodes(["127.0.0.1"])
+    port = urlsplit(server.url()).port
+    assert port is not None
+    fetcher = create_sync_http_fetcher(timeout_seconds=1)
+    manager = SyncLiveNodesManager(
+        Config(
+            seed_hosts=["127.0.0.1"],
+            port=port,
+            timeouts=TimeoutConfig(discovery_seconds=0.01),
+            node_list_polling=NodeListPollingConfig(
+                active_interval_ms=10000, idle_interval_ms=10000
+            ),
+        ),
+        fetcher,
+    )
+    before_ident, release_old, retry_stopped, release_retry = (
+        threading.Event() for _ in range(4)
+    )
+    workers: list[threading.Thread] = []
+    uncaught: list[threading.ExceptHookArgs] = []
+    monkeypatch.setattr(threading, "excepthook", uncaught.append)
+    start = threading.Thread.start
+    refresh_loop = manager._refresh_loop
+    retry: threading.Thread | None = None
+
+    def interrupted_first_start(thread: threading.Thread) -> None:
+        if thread.name != "alternator-node-refresh":
+            start(thread)
+            return
+        workers.append(thread)
+        if len(workers) != 1:
+            start(thread)
+            return
+        # Pause before startup completes, on either side of ident publication.
+        # These private bootstrap members have no public typing declarations.
+        set_ident: Callable[[], None] = thread._set_ident  # type: ignore[attr-defined]  # -- Test-only bootstrap scheduling.
+        started: threading.Event = thread._started  # type: ignore[attr-defined]  # -- Test-only startup wait observation.
+
+        def delayed_ident() -> None:
+            if published_ident:
+                set_ident()
+            before_ident.set()
+            assert release_old.wait(timeout=5)
+            if not published_ident:
+                set_ident()
+
+        def interrupt_wait(timeout: float | None = None) -> bool:
+            assert before_ident.wait(timeout=1)
+            raise KeyboardInterrupt("startup interrupted before bootstrap completes")
+
+        with monkeypatch.context() as fault:
+            fault.setattr(thread, "_set_ident", delayed_ident)
+            fault.setattr(started, "wait", interrupt_wait)
+            start(thread)
+
+    def delayed_retry_exit(stop: threading.Event, wake: threading.Event) -> None:
+        refresh_loop(stop, wake)
+        if threading.current_thread() is retry:
+            retry_stopped.set()
+            assert release_retry.wait(timeout=5)
+
+    monkeypatch.setattr(threading.Thread, "start", interrupted_first_start)
+    monkeypatch.setattr(manager, "_refresh_loop", delayed_retry_exit)
+    try:
+        assert manager.refresh_nodes()
+        with pytest.raises(KeyboardInterrupt, match="before bootstrap completes"):
+            manager.start()
+        old = workers[0]
+        assert (old.ident is not None) == published_ident
+        assert (
+            manager._refresh_thread,
+            manager._stop_event.is_set(),
+            manager._wake_event.is_set(),
+        ) == (old if published_ident else None, True, True)
+        assert fetcher._pool._closed
+        assert_peer_closed(server)
+        manager.stop()
+
+        manager.start()
+        if published_ident:
+            assert (manager._refresh_thread, manager._restart_pending) == (old, True)
+            assert workers == [old]
+            release_old.set()
+            assert old._started.wait(timeout=1)  # type: ignore[attr-defined]  # -- Wait until the retained bootstrap is joinable.
+            old.join(timeout=1)
+        retry = manager._refresh_thread
+        assert retry is not None and retry is not old
+        server.wait_for_requests(2, path="/localnodes")
+        stopping_at = time.monotonic()
+        manager.stop()
+        assert time.monotonic() - stopping_at < 1.5
+        assert retry_stopped.is_set() and retry.is_alive()
+        manager.start()
+        assert manager.refresh_nodes()
+        assert (manager._refresh_thread, manager._restart_pending) == (retry, True)
+
+        release_old.set()
+        assert old._started.wait(timeout=1)  # type: ignore[attr-defined]  # -- Pre-ident cancellation can finish native bootstrap later.
+        old.join(timeout=1)
+        assert not old.is_alive()
+        assert (manager._refresh_thread, manager._restart_pending) == (retry, True)
+        manager.start()
+        assert workers == [old, retry]
+        assert len(server.captured_requests(path="/localnodes")) == 3
+
+        release_retry.set()
+        retry.join(timeout=1)
+        assert not retry.is_alive()
+        server.wait_for_requests(4, path="/localnodes")
+        assert len(workers) == 3
+        assert manager._refresh_thread is workers[2]
+        assert not manager._restart_pending
+    finally:
+        release_old.set()
+        release_retry.set()
+        manager.stop()
+        for worker in workers:
+            assert worker._started.wait(timeout=1)  # type: ignore[attr-defined]  # -- Cleanup must await native bootstrap before joining.
+            worker.join(timeout=2)
+            assert not worker.is_alive()
+    assert not uncaught
     assert_peer_closed(server)
 
 
