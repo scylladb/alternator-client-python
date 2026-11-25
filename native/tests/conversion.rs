@@ -51,6 +51,7 @@ fn output<'py>(
 
 fn metadata(body: Vec<u8>, headers: Vec<(String, Vec<u8>)>, attempts: u32) -> OperationMetadata {
     OperationMetadata {
+        endpoint_url: None,
         attempts,
         responses: vec![AttemptResponse {
             status: 200,

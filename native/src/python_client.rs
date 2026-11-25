@@ -29,6 +29,43 @@ impl NativeClient {
 
 #[pymethods]
 impl NativeClient {
+    fn execute(
+        &self,
+        py: Python<'_>,
+        operation: &str,
+        parameters: &Bound<'_, PyDict>,
+    ) -> PyResult<Py<PyAny>> {
+        self.check_loop(py)?;
+        if self.client.is_closed() {
+            return Err(PyRuntimeError::new_err(
+                "Alternator native client is closed",
+            ));
+        }
+        let input = crate::operations::input(operation, parameters.as_any())?;
+        let runtime = bridge_runtime()?;
+        py.detach(|| runtime.block_on(crate::operations::execute(&self.client, input)))
+    }
+
+    fn execute_async<'py>(
+        &self,
+        py: Python<'py>,
+        operation: &str,
+        parameters: &Bound<'_, PyDict>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        self.check_loop(py)?;
+        if self.client.is_closed() {
+            return Err(PyRuntimeError::new_err(
+                "Alternator native client is closed",
+            ));
+        }
+        let input = crate::operations::input(operation, parameters.as_any())?;
+        bridge_runtime()?;
+        let client = self.client.clone();
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            crate::operations::execute(&client, input).await
+        })
+    }
+
     fn close(&self, py: Python<'_>) -> PyResult<()> {
         let runtime = bridge_runtime()?;
         self.client.start_close();

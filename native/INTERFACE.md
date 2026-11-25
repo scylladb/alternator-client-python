@@ -31,12 +31,16 @@ Rust values before releasing the GIL or spawning work. No runtime is owned or
 shut down by a client. The transport layer adds per-client task tracking, cancellation, loop affinity
 and shutdown without replacing this runtime.
 
-## Client boundary to implement in transport and converter changes
+## Client boundary
 
-Construction and close are exported by the transport implementation. Execution
-remains reserved for operation changes; the converter change exports the
-version-1 error classes described below. No successful placeholder data
-operations exist.
+Construction, close and data execution are exported. `execute` and
+`execute_async` support `GetItem`, `PutItem`, `UpdateItem`, `DeleteItem`, `Query`
+and `Scan`, including modern and legacy input members. Batch and transaction
+operations remain staged and raise `NotImplementedError`, as do unknown names.
+Both entrypoints convert inputs under the GIL, then use the routed Rust client
+through `Client::run` for retries, cancellation and final-attempt metadata.
+Async-created clients enforce their creating loop for both data entrypoints;
+raw sync close remains available after that loop has gone away.
 
 | Boundary | Signature and behavior |
 | --- | --- |
@@ -139,7 +143,8 @@ Python socket-read or retry timing. TLS always verifies chains and hostname.
 Rust `client::Client::run` is the sole complete-operation admission/registry seam.
 It returns `(SDK output, metadata::OperationMetadata)` or `registry::Closed`.
 OperationMetadata owns `attempts: u32` (including attempts without responses)
-and `responses: Vec<AttemptResponse>`; it dereferences to the response slice.
+and `responses: Vec<AttemptResponse>`, plus the last routed endpoint as
+`endpoint_url: Option<String>`; it dereferences to the response slice.
 Each captured response owns status, original wire header values as byte vectors,
 complete wire body and one-based SDK attempt count. Header names are strings;
 `request_id()` exposes a UTF-8 request ID when present, including ordinary ASCII
@@ -147,7 +152,9 @@ IDs. A native SDK interceptor records every actual attempt in the operation scop
 and attaches its number to a private request extension. This preserves correct
 RetryAttempts with header optimization, previous connection failures and final
 errors without any HTTP response. RetryAttempts is attempts.saturating_sub(1).
-Discovery has no operation capture scope. P5 converts these values into its response/error dictionaries.
+Discovery has no operation capture scope. The last routed endpoint is captured
+for timeout errors, including attempts without an HTTP response. Execution
+converts these values into its response/error dictionaries.
 
 Close closes admission synchronously, starts one cancellation-safe cleanup task
 on the shared runtime, joins upstream shutdown, drains registrations, clears
@@ -227,6 +234,6 @@ status/header-code fallback. Generic server errors retain their status-based
 ServiceError fallback. Complete-operation deadlines map to ReadTimeoutError
 under the existing native timeout policy.
 
-These additions retain interface version 1. Converter types and Rust projection
-helpers are available for #135/#136; no execute methods, public factories, or
-successful data-operation placeholders are exported by this change.
+These additions retain interface version 1. The six item/query/scan operations
+use these converters and projection helpers. Batch/transaction execution and
+public Python factories remain separate changes.

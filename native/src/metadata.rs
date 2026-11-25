@@ -34,6 +34,8 @@ impl AttemptResponse {
 pub struct OperationMetadata {
     /// Actual SDK attempts, including dispatch failures without an HTTP response.
     pub attempts: u32,
+    /// Last routed endpoint, including attempts ending without an HTTP response.
+    pub endpoint_url: Option<String>,
     pub responses: Vec<AttemptResponse>,
 }
 
@@ -99,6 +101,9 @@ impl aws_smithy_runtime_api::client::interceptors::Intercept for AttemptIntercep
         let attempt = cfg
             .load::<aws_smithy_runtime_api::client::retries::RequestAttempts>()
             .map_or(1, |attempt| attempt.attempts());
+        if let Some(capture) = current_capture() {
+            capture.lock().unwrap().endpoint_url = Some(context.request().uri().to_string());
+        }
         context.request_mut().add_extension(AttemptNumber(attempt));
         Ok(())
     }
