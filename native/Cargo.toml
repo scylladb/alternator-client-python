@@ -20,7 +20,7 @@ conversion-tests = ["python", "pyo3/auto-initialize"]
 
 [dependencies]
 tokio = { version = "=1.54.1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
-pyo3 = { version = "=0.29.0", optional = true }
+pyo3 = { version = "=0.29.2", optional = true }
 pyo3-async-runtimes = { version = "=0.29.0", features = ["tokio-runtime"], optional = true }
 
 alternator-client = { git = "https://github.com/scylladb/alternator-client-rust", rev = "d2044849bd3b0c100d18541b01df4a1a1eac3139" }
